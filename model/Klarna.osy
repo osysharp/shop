@@ -1,0 +1,111 @@
+// Klarna, through Klarna's Hosted Payment Page — pay now, pay later or in parts is Klarna's own page, as the card form
+// is Stripe's. The shape Klarna assumes is AUTHORISE at checkout, CAPTURE when the goods ship: the customer is not
+// charged for an order that never leaves the shop.
+//
+// ⚑ NO CREDENTIALS, NO KLARNA. `osy secret set KlarnaUsername` and `osy secret set KlarnaPassword` (from Klarna's
+//   merchant portal), and the market in the desk's settings (`KlarnaCountry`, `KlarnaLocale`), switch it on.
+//   `KlarnaPlayground` points it at Klarna's test environment — playground credentials only work there.
+//
+// ⚑ KLARNA REPORTS A FINISHED PAYMENT TO `/klarna/events`, and that address is the app's to declare — a package does
+//   not open routes on an app. Point one at `ShopKlarnaEvents`:
+//     new RestApi("Klarna") { Route = "klarna", Auth = new ApiAuth { Anonymous = true },
+//       Endpoints = [ new Endpoint(ShopKlarnaEvents) { Method = HttpMethod.Post, Path = "/events", Raw = true } ] }
+//   Without it the return page still settles the order; the event is what settles one whose customer closed the tab.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Klarna;
+using Osysharp.Workflow;
+
+// ⚠ A client is built where it is USED, never returned from a helper: it carries the password (SECRET_ESCAPES).
+
+/// Whether this shop can offer Klarna right now: credentials set, and a market to sell in.
+[AllowAnonymous]
+public bool KlarnaPaymentsOn() {
+  var shop = TheShop();
+  return Security.IsSecretSet("KlarnaUsername") && Security.IsSecretSet("KlarnaPassword")
+    && (shop.KlarnaCountry ?? "") != "" && (shop.KlarnaLocale ?? "") != "";
+}
+
+/// Klarna's live API, or its playground.
+public string KlarnaHost(ShopSettings shop) {
+  return shop.KlarnaPlayground ? "https://api.playground.klarna.com" : "https://api.klarna.com";
+}
+
+/// An amount in minor units, as Klarna counts.
+long Minor(decimal amount) {
+  return (long)Math.Round(amount * 100m);
+}
+
+/// Opens a Klarna session for an order — its lines, its delivery and its reference — puts it on Klarna's hosted page,
+/// and answers the page to send the customer to. The page places the order when they finish and sends them back to
+/// `/paid/{reference}/klarna-{order id}`, which `CheckCardPayment` reads back from Klarna before believing.
+public string StartKlarnaPayment(Order order, ShopSettings shop, KlarnaClient klarna) {
+  // VAT in basis points — 25 % is 2500. A shop that states no VAT sends none.
+  var taxRate = (long)Math.Round(shop.VatPercent * 100m);
+  List<BasketLine> basket = [];
+  foreach (var l in order.Lines) {
+    basket.Add(new BasketLine {
+      Name = l.VariantLabel == null ? l.ProductName : $"{l.ProductName} — {l.VariantLabel}",
+      Quantity = l.Quantity, UnitPrice = Minor(l.Price), TaxRate = taxRate,
+    });
+  }
+  if (order.Delivery > 0) {
+    basket.Add(new BasketLine { Name = "Delivery", Quantity = 1, UnitPrice = Minor(order.Delivery), TaxRate = taxRate });
+  }
+  var session = klarna.CreateSession(basket, order.Reference);
+  var back = $"{App.BaseUrl}/paid/{order.Reference}";
+  var page = klarna.CreateHostedPage(session.SessionId ?? "", back + "/klarna-{{order_id}}", back + "/cancelled",
+                                     back + "/cancelled", true, $"{App.BaseUrl}/klarna/events");
+  return page.RedirectUrl ?? "";
+}
+
+/// Settles an order from what KLARNA says about a Klarna order — never from what a return address or an unsigned
+/// callback claims. The Klarna order must name this reference, be for this order's total, be authorised, and have
+/// passed Klarna's fraud check; only then is the order paid. Safe to call twice: a paid order is left alone.
+public PaymentOutcome SettleKlarnaOrder(string reference, string klarnaOrderId, KlarnaClient klarna) {
+  var theirs = klarna.GetOrder(klarnaOrderId);
+  if (theirs.MerchantReference != reference) {
+    return new PaymentOutcome { Paid = false, Message = "That Klarna payment is not for this order." };
+  }
+  var order = Order.SingleOrDefault(o => o.Reference == reference);
+  if (order == null) { return new PaymentOutcome { Paid = false, Message = "There is no such order." }; }
+  if (theirs.OrderAmount != Minor(order.Total)) {
+    Log.Warning($"Klarna order {klarnaOrderId} is for {theirs.OrderAmount}, but {reference} totals {Minor(order.Total)}.");
+    return new PaymentOutcome { Paid = false, Message = "The Klarna payment does not match this order's total." };
+  }
+  var status = theirs.Status ?? "";
+  if (status != "AUTHORIZED" && status != "PART_CAPTURED" && status != "CAPTURED") {
+    return new PaymentOutcome { Paid = false, Message = "The payment has not gone through." };
+  }
+  if (theirs.FraudStatus == "PENDING") {
+    return new PaymentOutcome { Paid = false, Message = "Klarna is still checking the payment — we will mail you when it clears." };
+  }
+  if (theirs.FraudStatus != "ACCEPTED") {
+    return new PaymentOutcome { Paid = false, Message = "Klarna did not accept the payment." };
+  }
+  if (order.Status == OrderStatus.Reserved) {
+    OrderLifecycle.CorrelatePaymentReceived(reference, "Klarna", klarnaOrderId);
+  }
+  return new PaymentOutcome { Paid = true, Message = "Paid." };
+}
+
+/// The endpoint Klarna posts to when a hosted-page session completes. ⛔ Klarna does not sign it, so it is only ever a
+/// hint: the order it names is read back from Klarna with the shop's own credentials, and settled from THAT.
+[AllowAnonymous]
+public string ShopKlarnaEvents() {
+  var shop = TheShop();
+  return HandleKlarnaEvent(Request.RawBody ?? "", new KlarnaClient {
+    Username = Secret.KlarnaUsername, Password = Secret.KlarnaPassword, BaseUrl = KlarnaHost(shop) });
+}
+
+/// The event's logic, apart from where the credentials come from — so a test can stub Klarna and hand in a client.
+public string HandleKlarnaEvent(string body, KlarnaClient klarna) {
+  var e = JsonSerializer.Deserialize<KlarnaHostedPageEvent>(body);
+  var orderId = e.Session?.OrderId ?? "";
+  if (e.Session?.Status != "COMPLETED" || orderId == "") { return "ignored: " + (e.Session?.Status ?? "no session"); }
+  // Whose order it is comes from Klarna too: the callback's word is not taken for anything.
+  var reference = klarna.GetOrder(orderId).MerchantReference ?? "";
+  if (reference == "") { return "ignored: no reference"; }
+  return SettleKlarnaOrder(reference, orderId, klarna).Paid ? "ok" : "ignored: not paid";
+}

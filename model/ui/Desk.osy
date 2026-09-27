@@ -1,0 +1,534 @@
+// The staff's side of the shop, as components a store puts behind its own staff pages. Every panel is the kit's
+// logic and the store's theme — the store decides where the desk lives and what it is called.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Ui;
+using Osysharp.Storage;
+
+/// The whole desk: one tab per job. A store routes it wherever its staff pages live.
+[Composable]
+[Authorize(IsShopStaff)]
+public component ShopDesk() {
+  string tab = "figures";
+  action Show(string which) { tab = which; }
+
+  render {
+    Stack(gap: 6, w: "100%") {
+      Tabs() {
+        Tab("Figures", selected: tab == "figures", onPress: () => Show("figures"));
+        Tab("Products", selected: tab == "products", onPress: () => Show("products"));
+        Tab("Stock", selected: tab == "stock", onPress: () => Show("stock"));
+        Tab("Returns", selected: tab == "returns", onPress: () => Show("returns"));
+        Tab("Customers", selected: tab == "customers", onPress: () => Show("customers"));
+        Tab("Mail", selected: tab == "mail", onPress: () => Show("mail"));
+        Tab("Settings", selected: tab == "settings", onPress: () => Show("settings"));
+      }
+      if (tab == "figures") { DeskFigures(); }
+      if (tab == "products") { DeskProducts(); }
+      if (tab == "stock") { DeskStock(); }
+      if (tab == "returns") { DeskReturns(); }
+      if (tab == "customers") { DeskCustomers(); }
+      if (tab == "mail") { DeskOutbox(); }
+      if (tab == "settings") { DeskSettings(); }
+    }
+  }
+}
+
+/// The last 30 days in numbers, what sells, what is looked at, what sits — and marking things down to clear them.
+[Composable]
+[Authorize(IsShopStaff)]
+public component DeskFigures() {
+  live var shop = ShopSettings.FirstOrDefault();
+  live var sales = Sale.Where(s => s.State == SaleState.Live).OrderBy(s => s.EndsAt).ToList();
+  ShopTotals totals = null;
+  List<ProductFigures> top = [];
+  List<ProductFigures> viewed = [];
+  List<Product> slow = [];
+  Product marking = null;
+  int percent = 30;
+  int days = 14;
+  string problem = "";
+
+  on mount { Load(); }
+  action Load() {
+    totals = TotalsFor(30);
+    top = TopSellers(30, 8);
+    viewed = MostViewed(30, 8);
+    slow = SlowMovers(60, 8);
+  }
+  action AskMarkDown(Product p) { marking = p; percent = 30; days = 14; problem = ""; }
+  action Close() { marking = null; }
+  action ConfirmMarkDown() {
+    try { MarkDown(marking, percent, days); marking = null; slow = SlowMovers(60, 8); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action End(Sale s) { EndMarkdown(s.Product); }
+
+  render {
+    Stack(gap: 8) {
+      if (totals == null) { Spinner(); }
+      if (totals != null) {
+        Box(display: Display.Grid, cols: "repeat(auto-fit, minmax(160px, 1fr))", gap: 4) {
+          Metric("Orders, 30 days", text: $"{totals.Orders}");
+          Metric("Revenue", text: Money(totals.Revenue, shop));
+          Metric("Average order", text: Money(totals.AverageOrder, shop));
+          Metric("Returns", text: $"{totals.Returns} · {Money(totals.Refunded, shop)} back");
+        }
+      }
+      Box(display: Display.Grid, cols: "repeat(auto-fit, minmax(300px, 1fr))", gap: 6) {
+        Card("Best sellers", subtitle: "Units sold, last 30 days") {
+          Stack(gap: 2) {
+            if (top.Count == 0) { Text("Nothing sold yet.", color: Colors.TextMuted); }
+            foreach (var f in top) {
+              Row(justify: Justify.Between, gap: 3) {
+                Text(f.Product.Name);
+                Text($"{f.Units} · {Money(f.Revenue, shop)}", color: Colors.TextMuted);
+              }
+            }
+          }
+        }
+        Card("Most looked at", subtitle: "Page views, and how many became sales") {
+          Stack(gap: 2) {
+            if (viewed.Count == 0) { Text("No views counted yet.", color: Colors.TextMuted); }
+            foreach (var f in viewed) {
+              Row(justify: Justify.Between, gap: 3) {
+                Text(f.Product.Name);
+                Text($"{f.Views} views · {f.Conversion}% bought", color: Colors.TextMuted);
+              }
+            }
+          }
+        }
+      }
+      Card("Sitting on the shelf", subtitle: "Listed, in stock, not sold in 60 days — mark them down to clear them") {
+        Stack(gap: 2) {
+          if (slow.Count == 0) { Text("Everything is moving.", color: Colors.TextMuted); }
+          foreach (var p in slow) {
+            Row(justify: Justify.Between, align: Align.Center, gap: 3) {
+              Text($"{p.Name} · {Money(p.Price, shop)}");
+              Button("Mark down…", onPress: () => AskMarkDown(p), size: Size.Sm);
+            }
+          }
+        }
+      }
+      Card("On sale now") {
+        Stack(gap: 2) {
+          if (sales.Count == 0) { Text("Nothing is marked down.", color: Colors.TextMuted); }
+          foreach (var s in sales) {
+            Row(justify: Justify.Between, align: Align.Center, gap: 3) {
+              Text($"{s.Product.Name} · {s.Percent}% off until {s.EndsAt.ToString("d MMM")}");
+              Button("End sale", onPress: () => End(s), size: Size.Sm);
+            }
+          }
+        }
+      }
+    }
+    if (marking != null) {
+      Dialog($"Mark down {marking.Name}", onDismiss: Close,
+             subtitle: "The price drops everywhere at once, the old one shows struck through, and it goes back on the end date.") {
+        Stack(gap: 4) {
+          NumberField("Percent off", value: percent, min: 5, max: 90, unit: "%");
+          NumberField("For how many days", value: days, min: 1, max: 90);
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+          Row(gap: 3, justify: Justify.End) {
+            Button("Not now", onPress: Close);
+            Button("Mark down", onPress: ConfirmMarkDown, tone: Tone.Primary);
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Every size of every listed product with what is on the shelf and what is held for orders — and the one way to
+/// change it, with a reason.
+[Composable]
+[Authorize(IsShopStaff)]
+public component DeskStock() {
+  live var variants = Variant.Include(v => v.Product).Where(v => v.Product.Status == ProductStatus.Listed)
+    .OrderBy(v => v.Stock).ToList();
+  Variant adjusting = null;
+  int change = 1;
+  StockReason reason = StockReason.Received;
+  string note = "";
+  string problem = "";
+
+  action Ask(Variant v) { adjusting = v; change = 1; reason = StockReason.Received; note = ""; problem = ""; }
+  action Close() { adjusting = null; }
+  action Confirm() {
+    try { AdjustStock(adjusting, change, reason, note); adjusting = null; }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+
+  render {
+    Stack(gap: 1) {
+      Text("Lowest first. Held units belong to orders that are not paid yet.", color: Colors.TextMuted, pb: 3);
+      foreach (var v in variants) {
+        Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 2, borderTW: 1, border: Colors.Border, label: v.Product.Name) {
+          Stack(gap: 0, minW: "0") {
+            Text(VariantLabel(v) == "" ? v.Product.Name : $"{v.Product.Name} · {VariantLabel(v)}");
+            Text($"{v.Stock} on the shelf{(v.Reserved > 0 ? $" · {v.Reserved} held" : "")}",
+                 color: v.Stock == 0 ? Colors.Danger : Colors.TextMuted, fontSize: FontSize.Label);
+          }
+          Button("Adjust…", onPress: () => Ask(v), size: Size.Sm);
+        }
+      }
+    }
+    if (adjusting != null) {
+      Dialog($"Stock of {adjusting.Product.Name}", onDismiss: Close,
+             subtitle: $"{adjusting.Stock} on the shelf now. A negative number takes away.") {
+        Stack(gap: 4) {
+          NumberField("Change by", value: change, min: -999, max: 999);
+          Dropdown("Why", value: reason);
+          Field("Note (optional)", value: note, placeholder: "Delivery 14 from the supplier");
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+          Row(gap: 3, justify: Justify.End) {
+            Button("Cancel", onPress: Close);
+            Button("Save", onPress: Confirm, tone: Tone.Primary);
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Returns waiting for their parcel: receive one (and refund it) or decline it — and the ones already settled.
+[Composable]
+[Authorize(IsShopStaff)]
+public component DeskReturns() {
+  live var shop = ShopSettings.FirstOrDefault();
+  live var returns = ReturnRequest.Include(r => r.Lines).Include(r => r.Order).OrderByDescending(r => r.RequestedAt).ToList();
+  ReturnRequest declining = null;
+  string reason = "";
+  string problem = "";
+
+  action Receive(ReturnRequest r, bool restock) {
+    problem = "";
+    try { ReceiveReturn(r, restock); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action AskDecline(ReturnRequest r) { declining = r; reason = ""; }
+  action Close() { declining = null; }
+  action ConfirmDecline() { DeclineReturn(declining, reason); declining = null; }
+
+  render {
+    Stack(gap: 4) {
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      if (returns.Count == 0) { EmptyState("No returns", body: "When a customer sends something back it waits here for the parcel."); }
+      foreach (var r in returns) {
+        Card($"{r.Order.Reference} · {r.Status.Label}", subtitle: r.RequestedAt.ToString("d MMM yyyy")) {
+          Stack(gap: 2) {
+            foreach (var l in r.Lines) {
+              Text($"{l.Quantity} × {l.Line.ProductName}{(l.Line.VariantLabel == null ? "" : " (" + l.Line.VariantLabel + ")")}{(l.Reason == null ? "" : " — " + l.Reason)}");
+            }
+            if (r.Status == ReturnStatus.Refunded) { Text($"Refunded {Money(r.Amount, shop)}", color: Colors.TextMuted); }
+            if (r.Problem != null) { Text(r.Problem, color: Colors.TextMuted); }
+            if (r.Status == ReturnStatus.Requested) {
+              Row(gap: 2, justify: Justify.End, wrap: Wrapping.Wrap) {
+                Button("Decline…", onPress: () => AskDecline(r), size: Size.Sm);
+                Button("Received — not resellable", onPress: () => Receive(r, false), size: Size.Sm);
+                Button("Received — back in stock", onPress: () => Receive(r, true), tone: Tone.Primary, size: Size.Sm);
+              }
+            }
+          }
+        }
+      }
+    }
+    if (declining != null) {
+      Dialog($"Decline the return for {declining.Order.Reference}", onDismiss: Close,
+             subtitle: "The customer is mailed this reason.") {
+        Stack(gap: 4) {
+          Field("Reason", value: reason, placeholder: "It has been worn.");
+          Row(gap: 3, justify: Justify.End) {
+            Button("Cancel", onPress: Close);
+            Button("Decline", onPress: ConfirmDecline, tone: Tone.Danger);
+          }
+        }
+      }
+    }
+  }
+}
+
+/// The shop's customers — who they are and what they have bought — and one customer's orders.
+[Composable]
+[Authorize(IsShopStaff)]
+public component DeskCustomers() {
+  live var shop = ShopSettings.FirstOrDefault();
+  string search = "";
+  List<CustomerRow> rows = [];
+  ShopAccount showing = null;
+  List<Order> orders = [];
+
+  on mount { Find(); }
+  action Find() { rows = Customers(search); }
+  action Show(ShopAccount a) { showing = a; orders = OrdersOf(a); }
+  action Close() { showing = null; }
+
+  render {
+    Stack(gap: 3) {
+      Row(gap: 2, align: Align.End) {
+        Box(grow: 1) { Field("Search by name or email", value: search, onEnter: Find); }
+        Button("Search", onPress: Find);
+      }
+      if (rows.Count == 0) { Text("No customers yet.", color: Colors.TextMuted); }
+      foreach (var c in rows) {
+        Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 2, borderTW: 1, border: Colors.Border, label: c.Account.Email) {
+          Stack(gap: 0, minW: "0") {
+            Text(c.Account.Name ?? c.Account.Email);
+            Text($"{c.Account.Email} · {c.Orders} orders · {Money(c.Spent, shop)}", color: Colors.TextMuted, fontSize: FontSize.Label);
+          }
+          Button("Orders", onPress: () => Show(c.Account), size: Size.Sm);
+        }
+      }
+    }
+    if (showing != null) {
+      Dialog(showing.Name ?? showing.Email, onDismiss: Close,
+             subtitle: $"{showing.Email}{(showing.City == null ? "" : " · " + showing.City)}") {
+        Stack(gap: 2) {
+          if (orders.Count == 0) { Text("No orders.", color: Colors.TextMuted); }
+          foreach (var o in orders) {
+            Row(justify: Justify.Between, gap: 3) {
+              Text($"{o.Reference} · {o.PlacedAt.ToString("d MMM yyyy")} · {o.Status.Label}");
+              Text(Money(o.Total, shop), color: Colors.TextMuted);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Everything the shop has mailed, newest first — and what is waiting, when no mail provider is set up.
+[Composable]
+[Authorize(IsShopStaff)]
+public component DeskOutbox() {
+  live var mails = ShopMail.OrderByDescending(m => m.CreatedAt).Take(100).ToList();
+  ShopMail reading = null;
+
+  action Read(ShopMail m) { reading = m; }
+  action Close() { reading = null; }
+
+  render {
+    Stack(gap: 1) {
+      if (mails.Any(m => m.Status == MailStatus.Held)) {
+        Alert("Mail is not being sent: set the ResendApiKey secret and the shop's \"Mail from\" address. Until then it waits here.",
+              tone: Tone.Warning);
+      }
+      if (mails.Count == 0) { Text("Nothing has been mailed yet.", color: Colors.TextMuted); }
+      foreach (var m in mails) {
+        Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 2, borderTW: 1, border: Colors.Border, label: m.Subject) {
+          Stack(gap: 0, minW: "0") {
+            Text(m.Subject);
+            Text($"to {m.To} · {m.CreatedAt.ToString("d MMM, HH:mm")} · {m.Status.Label}", color: Colors.TextMuted, fontSize: FontSize.Label);
+          }
+          Button("Read", onPress: () => Read(m), size: Size.Sm);
+        }
+      }
+    }
+    if (reading != null) {
+      Dialog(reading.Subject, onDismiss: Close, subtitle: $"to {reading.To}") {
+        Text(reading.Text, whiteSpace: WhiteSpace.PreWrap);
+      }
+    }
+  }
+}
+
+/// The shop's own settings, edited in place — what a shop owner changes without a developer.
+[Composable]
+[Authorize(IsShopStaff)]
+public component DeskSettings() {
+  var shop = ShopSettings.Single();
+  string note = "";
+
+  action Save() { UnitOfWork.Commit(); note = "Saved."; }
+
+  render {
+    Stack(gap: 4, maxW: "640px") {
+      Field("Shop name", value: shop.Name);
+      Field("Mail from", value: shop.MailFrom, placeholder: "Your Shop <orders@yourshop.se>",
+            hint: "Mail goes out through Resend once this and the ResendApiKey secret are set.");
+      Field("Contact email", value: shop.ContactEmail);
+      Field("Web address", value: shop.SiteUrl, placeholder: "https://yourshop.se", hint: "So mails can link back to the shop.");
+      SectionLabel("Money");
+      DecimalField("VAT included in prices", value: shop.VatPercent, unit: "%");
+      DecimalField("Delivery fee", value: shop.DeliveryFee);
+      DecimalField("Free delivery from", value: shop.FreeDeliveryFrom, hint: "Zero: never free.");
+      TextAreaField("Bank details", value: shop.BankDetails, rows: 3);
+      SectionLabel("Orders");
+      NumberField("Days an unpaid order holds its goods", value: shop.HoldDays, min: 1, max: 30);
+      NumberField("Days to return after sending", value: shop.ReturnDays, min: 14, max: 365, hint: "The EU floor is 14 days from delivery.");
+      Switch("Offer delivery", value: shop.OffersDelivery);
+      Switch("Offer collection", value: shop.OffersCollection);
+      Switch("Take bank transfers", value: shop.OffersBankTransfer);
+      Switch("Take payment on collection", value: shop.OffersPayOnCollection);
+      TextAreaField("Collection address", value: shop.CollectionAddress, rows: 2);
+      SectionLabel("Klarna");
+      Field("Klarna country", value: shop.KlarnaCountry, placeholder: "SE",
+            hint: "Where Klarna sells for you. With a language below and the KlarnaUsername and KlarnaPassword secrets set, checkout offers Klarna.");
+      Field("Klarna language", value: shop.KlarnaLocale, placeholder: "sv-SE", hint: "It must agree with the country and the shop's currency.");
+      Switch("Use Klarna's playground (test payments)", value: shop.KlarnaPlayground);
+      SectionLabel("Your policies");
+      TextAreaField("Terms of sale", value: shop.Terms, rows: 6, hint: "Paragraphs are separated by a blank line.");
+      TextAreaField("Privacy notice", value: shop.Privacy, rows: 6);
+      TextAreaField("Returns policy", value: shop.ReturnsPolicy, rows: 4, hint: "Empty: the shop says the return window from above.");
+      Row(gap: 3, align: Align.Center) {
+        Button("Save settings", onPress: Save, tone: Tone.Primary);
+        if (note != "") { Text(note, color: Colors.TextMuted); }
+      }
+    }
+  }
+}
+
+/// The catalogue: every product with where it stands, a search, and the way in to a new one or an existing one.
+[Composable]
+[Authorize(IsShopStaff)]
+public component DeskProducts() {
+  live var shop = ShopSettings.FirstOrDefault();
+  live var products = Product.OrderBy(p => p.Status).ThenBy(p => p.Name).ToList();
+  live var allVariants = Variant.ToList();
+  live var categories = Category.OrderBy(c => c.Name).ToList();
+  string search = "";
+  Product editing = null;
+  bool creating = false;
+  string newName = "";
+  decimal newPrice = 0;
+  Category newCategory = null;
+  string problem = "";
+
+  action Edit(Product p) { editing = p; }
+  action Back() { editing = null; }
+  action AskNew() { creating = true; newName = ""; newPrice = 0; newCategory = null; problem = ""; }
+  action Close() { creating = false; }
+  action Create() {
+    try { editing = CreateProduct(newName, newCategory, newPrice); creating = false; }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+
+  render {
+    if (editing != null) {
+      Stack(gap: 4) {
+        Row() { Button("← All products", onPress: Back, size: Size.Sm); }
+        DeskProductEditor(editing);
+      }
+    }
+    if (editing == null) {
+      Stack(gap: 1) {
+        Row(gap: 2, align: Align.End, pb: 3) {
+          Box(grow: 1) { Field("Search products", value: search); }
+          Button("New product…", onPress: AskNew, tone: Tone.Primary);
+        }
+        foreach (var p in products.Where(x => search == "" || x.Name.ToLower().Contains(search.ToLower())).ToList()) {
+          Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 2, borderTW: 1, border: Colors.Border, label: p.Name) {
+            Stack(gap: 0, minW: "0") {
+              Text(p.Name);
+              Text($"{p.Status.Label} · {Money(p.Price, shop)} · {allVariants.Where(v => v.Product == p).Sum(v => v.Stock)} in stock",
+                   color: Colors.TextMuted, fontSize: FontSize.Label);
+            }
+            Button("Edit", onPress: () => Edit(p), size: Size.Sm);
+          }
+        }
+      }
+    }
+    if (creating) {
+      Dialog("New product", onDismiss: Close, subtitle: "It starts as a draft — nobody sees it until you list it.") {
+        Stack(gap: 4) {
+          Field("Name", value: newName);
+          Dropdown("Category", value: newCategory, options: categories, placeholder: "None") { c => Text(c.Name); }
+          DecimalField("Price", value: newPrice);
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+          Row(gap: 3, justify: Justify.End) {
+            Button("Cancel", onPress: Close);
+            Button("Create", onPress: Create, tone: Tone.Primary);
+          }
+        }
+      }
+    }
+  }
+}
+
+/// One product: its words, its price and where it stands; its sizes and their stock; its photographs.
+[Composable]
+[Authorize(IsShopStaff)]
+public component DeskProductEditor(Product product) {
+  live var categories = Category.OrderBy(c => c.Name).ToList();
+  live var variants = Variant.Where(v => v.Product == product).OrderBy(v => v.Rank).ToList();
+  live var images = ProductImage.Where(i => i.Product == product).OrderBy(i => i.Rank).ToList();
+  string name = product.Name;
+  string brand = product.Brand ?? "";
+  string summary = product.Summary ?? "";
+  string description = product.Description ?? "";
+  decimal price = product.Price;
+  ProductStatus status = product.Status;
+  Category category = product.Category;
+  string size = "";
+  string colour = "";
+  int stock = 1;
+  string note = "";
+  bool failed = false;
+
+  action Save() {
+    try { UpdateProduct(product, name, brand, summary, description, price, status, category); failed = false; note = "Saved."; }
+    catch (Exception ex) { failed = true; note = ex.Message; }
+  }
+  action AddSize() {
+    try { AddVariant(product, size, colour, stock); size = ""; colour = ""; stock = 1; failed = false; note = ""; }
+    catch (Exception ex) { failed = true; note = ex.Message; }
+  }
+  action AddPhoto(UploadedFile f) { AddProductPhoto(product, f.Path, ""); }
+  action Earlier(ProductImage i) { MovePhoto(i, -1); }
+  action Later(ProductImage i) { MovePhoto(i, 1); }
+  action Remove(ProductImage i) { RemovePhoto(i); }
+
+  render {
+    Box(display: Display.Grid, cols: "repeat(auto-fit, minmax(320px, 1fr))", gap: 8) {
+      Stack(gap: 4) {
+        SectionLabel("The product");
+        Field("Name", value: name);
+        Field("Brand", value: brand);
+        Dropdown("Category", value: category, options: categories, placeholder: "None") { c => Text(c.Name); }
+        DecimalField("Price", value: price);
+        Dropdown("Status", value: status);
+        Field("Summary", value: summary, hint: "One line, shown on the product's card.");
+        TextAreaField("Description", value: description, rows: 6);
+        if (note != "") { Alert(note, tone: failed ? Tone.Danger : Tone.Success); }
+        Row() { Button("Save product", onPress: Save, tone: Tone.Primary); }
+      }
+      Stack(gap: 6) {
+        Stack(gap: 2) {
+          SectionLabel("Sizes and stock");
+          if (variants.Count == 0) { Text("No sizes yet — add one before listing it.", color: Colors.TextMuted); }
+          foreach (var v in variants) {
+            Row(justify: Justify.Between, gap: 3, py: 1, borderTW: 1, border: Colors.Border) {
+              Text(VariantLabel(v) == "" ? "One size" : VariantLabel(v));
+              Text($"{v.Stock} in stock", color: Colors.TextMuted);
+            }
+          }
+          Row(gap: 2, align: Align.End, wrap: Wrapping.Wrap, pt: 2) {
+            Box(w: "90px") { Field("Size", value: size); }
+            Box(w: "120px") { Field("Colour", value: colour); }
+            Box(w: "90px") { NumberField("Stock", value: stock, min: 0); }
+            Button("Add size", onPress: AddSize);
+          }
+        }
+        Stack(gap: 2) {
+          SectionLabel("Photographs");
+          Box(display: Display.Grid, cols: "repeat(auto-fill, minmax(120px, 1fr))", gap: 3) {
+            foreach (var i in images) {
+              Stack(gap: 1) {
+                Image(src: File.Url(i.Path), alt: i.Alt ?? product.Name, aspectRatio: "3 / 4", objectFit: ObjectFit.Cover);
+                Row(gap: 1, justify: Justify.Between) {
+                  Button("←", onPress: () => Earlier(i), size: Size.Sm);
+                  Button("Remove", onPress: () => Remove(i), size: Size.Sm);
+                  Button("→", onPress: () => Later(i), size: Size.Sm);
+                }
+              }
+            }
+          }
+          Upload(accept: "image/*", onUploaded: AddPhoto) {
+            Text("Add a photograph…", px: 4, py: 2, borderW: 1, border: Colors.Border, rounded: Radius.Md, color: Colors.Primary);
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,217 @@
+// Accounts. ONE principal for everybody who signs in — a customer keeping their bag and seeing their orders, and the
+// staff who run the shop — told apart by role. An app has one `[Principal]`, so two kinds of people are two ROLES on
+// one table, never two tables.
+//
+// ⚑ SIGNING IN IS NEVER REQUIRED TO BUY. A visitor's bag belongs to their visit (Bag.osy) and checkout takes a guest.
+//   An account adds what a visit cannot keep: the bag across devices and weeks, the order history, and returns.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Workflow;
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+[Role] public enum ShopRole { Staff, Authenticator, Customer }
+
+public entity ShopRoleGrant {
+  [Required] ShopAccount Member;
+  [Required] ShopRole Role;
+  security {
+    allow read, update, delete when IsShopStaff;           // staff add and remove staff
+    // The sign-in makes a customer — and only a customer: a signup that could grant `Staff` would be the whole shop.
+    allow create when IsShopStaff || IsShopAuthenticator where Role == ShopRole.Customer || IsShopStaff;
+  }
+}
+
+policy IsShopStaff => ShopRoleGrant.Any(g => g.Member == user && g.Role == ShopRole.Staff);
+policy IsShopAuthenticator => ShopRoleGrant.Any(g => g.Member == user && g.Role == ShopRole.Authenticator);
+
+[Principal]
+public entity ShopAccount {
+  [Required, Unique, MaxLength(255)] string Email;
+  [MaxLength(200)] string PasswordHash;
+  [MaxLength(120)] string? Name;
+  [MaxLength(40)] string? Phone;
+  /// Where their orders usually go — what the checkout fills in for them.
+  [MaxLength(200)] string? Street;
+  [MaxLength(20)] string? PostCode;
+  [MaxLength(80)] string? City;
+  [MaxLength(80)] string? Country;
+  // ⚠ ONE RULE PER OPERATION, and each names the caller's own row beside the roles. This is the package's entity, so
+  //   the compiler derives the floor an app may only tighten from it, and it refuses an operation granted by a `when`
+  //   rule beside a `where` rule — the complement of that mix cannot be stated exactly. The roles are answered from
+  //   the caller's role in the `where` as well, sign-in included.
+  security {
+    allow read when IsAnonymous || IsAuthenticated where Id == user.Id || IsShopStaff || IsShopAuthenticator;
+    allow update when IsAnonymous || IsAuthenticated where Id == user.Id || IsShopStaff || IsShopAuthenticator;
+    allow create when IsShopStaff || IsShopAuthenticator;
+    allow delete when IsShopStaff;
+    deny read PasswordHash when !IsShopAuthenticator;      // nobody but the sign-in ever reads the hash…
+    deny update PasswordHash when !IsShopAuthenticator;    // …or writes it: a new password comes through a reset
+  }
+}
+
+/// A password-reset request: the token is mailed, only its HASH is kept, and it works once, for an hour.
+public entity ShopPasswordReset {
+  [Required] ShopAccount Account;
+  [Required, Unique, MaxLength(64)] string TokenHash;
+  DateTime ExpiresAt;
+  DateTime? UsedAt;
+  security { allow read, create, update when IsShopAuthenticator; }
+}
+
+[AuthMethod]
+public string ShopLogin(string email, string password) {
+  var a = ShopAccount.Where(x => x.Email == Normalised(email)).FirstOrDefault();
+  if (a == null) { Security.VerifyPassword(password); return ""; }
+  if (Security.VerifyPassword(password, a.PasswordHash)) { return Security.IssueJwt(a.Id, a.Email); }
+  return "";
+}
+
+/// Opens a customer account and signs it in. Throws the sentence to show when it cannot.
+[AuthMethod]
+public string ShopSignup(string email, string password, string name) {
+  var address = Normalised(email);
+  if (!address.Contains("@") || address.Length < 5) { throw new Exception("That does not look like an email address."); }
+  if (password.Length < 8) { throw new Exception("Choose a password of at least 8 characters."); }
+  // ⚠ Signup cannot hide whether an address has an account — the person has to be told to sign in instead. The login
+  //   and the reset are the two that never say.
+  if (ShopAccount.Any(a => a.Email == address)) { throw new Exception("There is already an account for that address — sign in, or reset the password."); }
+  var account = new ShopAccount {
+    Email = address, PasswordHash = Security.HashPassword(password),
+    Name = name.Trim() == "" ? null : name.Trim(),
+  };
+  new ShopRoleGrant { Member = account, Role = ShopRole.Customer };
+  UnitOfWork.Commit();
+  return Security.IssueJwt(account.Id, account.Email);
+}
+
+/// Mails a reset link to the address if it has an account. Says nothing either way — the same answer for an address
+/// with no account is what keeps this from telling a stranger who shops here.
+[AuthMethod]
+public string ShopRequestPasswordReset(string email) {
+  var account = ShopAccount.Where(a => a.Email == Normalised(email)).FirstOrDefault();
+  if (account == null) { return ""; }
+  var token = Security.RandomId(32);
+  new ShopPasswordReset {
+    Account = account, TokenHash = Crypto.Sha256Hex(token), ExpiresAt = DateTime.UtcNow.AddHours(1),
+  };
+  var shop = TheShop();
+  var link = shop.SiteUrl == null ? "" : $"{shop.SiteUrl.TrimEnd('/')}/account/reset/{token}";
+  Mail(account.Email, $"Reset your password at {shop.Name}",
+    $"Somebody — hopefully you — asked to reset the password for your {shop.Name} account.\n\n"
+    + (link == "" ? $"Your reset code: {token}\n" : $"Choose a new password here: {link}\n")
+    + "\nThe link works once, for an hour. If you did not ask, ignore this mail and nothing changes.");
+  UnitOfWork.Commit();
+  return "";
+}
+
+/// Sets a new password from a mailed token, and signs the account in. Throws the sentence to show when the token
+/// is wrong, used or old.
+[AuthMethod]
+public string ShopResetPassword(string token, string password) {
+  if (password.Length < 8) { throw new Exception("Choose a password of at least 8 characters."); }
+  var reset = ShopPasswordReset.Where(r => r.TokenHash == Crypto.Sha256Hex(token.Trim())).FirstOrDefault();
+  if (reset == null || reset.UsedAt != null || reset.ExpiresAt < DateTime.UtcNow) {
+    throw new Exception("That reset link has expired or was already used — ask for a new one.");
+  }
+  reset.UsedAt = DateTime.UtcNow;
+  reset.Account.PasswordHash = Security.HashPassword(password);
+  UnitOfWork.Commit();
+  return Security.IssueJwt(reset.Account.Id, reset.Account.Email);
+}
+
+/// The signed-in account, or null for a visitor.
+public ShopAccount? Me() {
+  return Session.CurrentUser;
+}
+
+/// Whether the signed-in account is staff — what a page asks before it offers the desk.
+public bool AmStaff() {
+  var me = Session.CurrentUser;
+  return me != null && ShopRoleGrant.Any(g => g.Member == me && g.Role == ShopRole.Staff);
+}
+
+/// Saves the details a signed-in customer keeps on their account.
+public void SaveMyDetails(string name, string phone, string street, string postCode, string city, string country) {
+  var me = Session.CurrentUser;
+  if (me == null) { throw new Exception("Sign in first."); }
+  me.Name = Blank(name); me.Phone = Blank(phone);
+  me.Street = Blank(street); me.PostCode = Blank(postCode); me.City = Blank(city); me.Country = Blank(country);
+  UnitOfWork.Commit();
+}
+
+/// An address as it is stored — trimmed and lower-case, so `Ada@x.se` and `ada@x.se ` are one account.
+string Normalised(string email) {
+  return email.Trim().ToLower();
+}
+
+/// Changes the signed-in account's password. The CURRENT password is required, so a session left open on a shared
+/// computer cannot be turned into a new password. Answers a fresh ticket, or throws the sentence to show.
+[AuthMethod]
+public string ShopChangePassword(string email, string currentPassword, string newPassword) {
+  var a = ShopAccount.Where(x => x.Email == Normalised(email)).FirstOrDefault();
+  if (a == null || !Security.VerifyPassword(currentPassword, a.PasswordHash)) {
+    if (a == null) { Security.VerifyPassword(currentPassword); }
+    throw new Exception("That is not your current password.");
+  }
+  if (newPassword.Length < 8) { throw new Exception("Choose a password of at least 8 characters."); }
+  a.PasswordHash = Security.HashPassword(newPassword);
+  UnitOfWork.Commit();
+  return Security.IssueJwt(a.Id, a.Email);
+}
+
+/// Moves the signed-in account to a new address, on the same terms: the current password proves it is the owner, and
+/// the address must be nobody else's. Answers a fresh ticket — the old one names the old address.
+[AuthMethod]
+public string ShopChangeEmail(string email, string currentPassword, string newEmail) {
+  var a = ShopAccount.Where(x => x.Email == Normalised(email)).FirstOrDefault();
+  if (a == null || !Security.VerifyPassword(currentPassword, a.PasswordHash)) {
+    if (a == null) { Security.VerifyPassword(currentPassword); }
+    throw new Exception("That is not your current password.");
+  }
+  var address = Normalised(newEmail);
+  if (!address.Contains("@") || address.Length < 5) { throw new Exception("That does not look like an email address."); }
+  if (address == a.Email) { return Security.IssueJwt(a.Id, a.Email); }
+  if (ShopAccount.Any(x => x.Email == address)) { throw new Exception("Another account already uses that address."); }
+  var old = a.Email;
+  a.Email = address;
+  // Both addresses are told: the old one is how the owner finds out if it was not them.
+  var shop = TheShop();
+  Mail(old, $"Your {shop.Name} account's address changed",
+    $"Your account now signs in as {address}. If you did not do this, reply to this mail straight away.");
+  Mail(address, $"Welcome to your {shop.Name} account at this address", $"Your account now signs in as {address}.");
+  UnitOfWork.Commit();
+  return Security.IssueJwt(a.Id, a.Email);
+}
+
+// ── the desk's view of customers ──────────────────────────────────────────────────────────────────────────────
+
+/// One customer as the desk lists them: who, and what they have bought.
+public class CustomerRow {
+  public ShopAccount Account;
+  public int Orders;
+  public decimal Spent;
+}
+
+/// The shop's customers — accounts holding the customer role — newest first, narrowed by a search over name and
+/// address. With what each has ordered and spent (paid orders only).
+[Authorize(IsShopStaff)]
+public List<CustomerRow> Customers(string search) {
+  var s = search.Trim().ToLower();
+  var accounts = ShopAccount
+    .Where(a => ShopRoleGrant.Any(g => g.Member == a && g.Role == ShopRole.Customer))
+    .OrderByDescending(a => a.CreatedAt).ToList()
+    .Where(a => s == "" || a.Email.Contains(s) || (a.Name ?? "").ToLower().Contains(s)).ToList();
+  var rows = new List<CustomerRow>();
+  foreach (var a in accounts) {
+    var paid = Order.Where(o => o.Account == a && o.PaidAt != null).ToList();
+    rows.Add(new CustomerRow { Account = a, Orders = paid.Count, Spent = paid.Sum(o => o.Total) });
+  }
+  return rows;
+}
+
+/// Every order one customer placed, newest first — the desk's view of a customer.
+[Authorize(IsShopStaff)]
+public List<Order> OrdersOf(ShopAccount customer) {
+  return Order.Where(o => o.Account == customer).OrderByDescending(o => o.PlacedAt).ToList();
+}

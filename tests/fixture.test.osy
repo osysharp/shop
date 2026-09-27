@@ -1,0 +1,79 @@
+// The shop floor every test starts from: a settings row, a small category tree, products with sizes and stock, a
+// draft nobody outside may see, a Bike (the app's own subtype), and one member of staff.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[TestFixture]
+void Floor() {
+  new ShopSettings { Name = "Kit Test Shop", Currency = "EUR", CurrencySymbol = "€", OrderPrefix = "KT-", HoldDays = 3,
+                     DeliveryFee = 9m, FreeDeliveryFrom = 200m, BankDetails = "IBAN SE00 0000 0000" };
+  var women = new Category { Name = "Women", Slug = "women" };
+  var shoes = new Category { Name = "Shoes", Slug = "womens-shoes", Parent = women };
+  var boots = new Category { Name = "Boots", Slug = "womens-boots", Parent = shoes };
+
+  var loafer = new Product { Name = "Loafer", Slug = "loafer", Category = shoes, Price = 120m };
+  new Variant { Product = loafer, Size = "38", Stock = 2 };
+  new Variant { Product = loafer, Size = "39", Stock = 1 };
+  var chelsea = new Product { Name = "Chelsea", Slug = "chelsea", Category = boots, Price = 180m };
+  new Variant { Product = chelsea, Size = "38", Stock = 1, Price = 190m };
+  var secret = new Product { Name = "Secret", Slug = "secret", Status = ProductStatus.Draft, Price = 1m };
+  new Variant { Product = secret, Stock = 5 };
+  var super = new Product { Name = "Super", Slug = "super", Brand = "Colnago", Price = 2100m };
+  new Variant { Product = super, Stock = 1 };
+  new ProductSpec { Product = super, Name = "Tubing", Value = "Columbus SL", Rank = 1 };
+  new ProductSpec { Product = super, Name = "Frame size", Value = "56 cm", Rank = 0 };
+
+  var anna = new ShopAccount { Email = "anna@shop.test", PasswordHash = Security.HashPassword("desk-pass-1") };
+  new ShopRoleGrant { Member = anna, Role = ShopRole.Staff };
+
+  // Two customers with accounts. Maja's is the one the order history and returns tests shop from.
+  var maja = new ShopAccount { Email = "maja@example.test", PasswordHash = Security.HashPassword("maja-pass-1"), Name = "Maja Berg" };
+  new ShopRoleGrant { Member = maja, Role = ShopRole.Customer };
+  var olle = new ShopAccount { Email = "olle@example.test", PasswordHash = Security.HashPassword("olle-pass-1"), Name = "Olle" };
+  new ShopRoleGrant { Member = olle, Role = ShopRole.Customer };
+}
+
+principal Maja => ShopAccount.Single(s => s.Email == "maja@example.test");
+principal Olle => ShopAccount.Single(s => s.Email == "olle@example.test");
+
+principal Desk => ShopAccount.Single(s => s.Email == "anna@shop.test");
+
+/// A product's variant in one size — or its only variant, when `size` is "".
+Variant Pick(string product, string size) {
+  return size == ""
+    ? Variant.Single(v => v.Product.Name == product)
+    : Variant.Single(v => v.Product.Name == product && v.Size == size);
+}
+
+/// Puts `quantity` of a variant in a visit's bag, failing the test if the shop refuses.
+void Bag(string visitId, string product, string size, int quantity) {
+  Assert.Equal("", AddToBag(visitId, Pick(product, size), quantity));
+}
+
+/// Places a visit's bag as a collection paid by bank transfer, the way the checkout does.
+Receipt Checkout(string visitId) {
+  return PlaceOrder(visitId, "Maja Berg", "maja@example.test", "", Fulfilment.Collect, Payment.BankTransfer,
+                    "", "", "", "");
+}
+
+/// One thing, bagged and ordered — answers the order's reference.
+string Buy(string visitId, string product, string size, int quantity) {
+  Bag(visitId, product, size, quantity);
+  return Checkout(visitId).Reference;
+}
+
+/// What a visitor would try: writing stock directly.
+void SetStock(Variant variant, int stock) {
+  variant.Stock = stock;
+  UnitOfWork.Commit();
+}
+
+/// Takes an order through payment (by transfer) and dispatch, as the desk does. Call it as staff.
+void PayAndSend(string reference) {
+  var order = Order.Single(o => o.Reference == reference);
+  MarkPaid(order, "");
+  Workflow.Settle(order);
+  MarkSent(order, "PostNord 1");
+  Workflow.Settle(order);
+}

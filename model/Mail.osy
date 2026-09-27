@@ -1,0 +1,70 @@
+// The shop's mail. Every message is a row in an outbox first, and a small workflow delivers it through Resend.
+//
+// ⚑ THE OUTBOX IS WHY MAIL CANNOT LOSE AN ORDER. A mail is written in the same commit as whatever it is about, and
+//   delivered after: a mail provider that is down, or not set up yet, leaves the order standing and the mail waiting.
+//   A shop with no provider at all still works — its mail sits in the outbox as `Held`, where the desk can read it.
+//
+// ⚑ AND NOBODY BUT THE SHOP WRITES IT. A visitor never creates a mail row: an order's confirmation is written by the
+//   order's workflow (which writes as the system), a reset link by the sign-in. Otherwise a stranger could send mail
+//   in the shop's name to anybody.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Resend;
+using Osysharp.Workflow;
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum MailStatus {
+  [Label("Waiting")] Queued,
+  [Label("Sent")] Sent,
+  [Label("Not sent — no mail provider")] Held,
+}
+
+public entity ShopMail {
+  [Required, MaxLength(255)] string To;
+  [Required, MaxLength(200)] string Subject;
+  [Required] string Text;
+  MailStatus Status;                                 // no default — ShopMailDelivery owns it
+  DateTime? SentAt;
+  /// The provider's id for the sent message — what its support asks for.
+  [MaxLength(80)] string? ProviderId;
+  [MaxLength(300)] string? Problem;
+  security {
+    allow read, update, delete when IsShopStaff;
+    allow create when IsShopStaff || IsShopAuthenticator;
+  }
+}
+
+public workflow ShopMailDelivery {
+  Tracks    = ShopMail.Status;
+  Autostart = true;
+  Initial   = Queued;
+
+  state Queued {
+    enter {
+      var shop = TheShop();
+      if (!Security.IsSecretSet("ResendApiKey") || shop.MailFrom == null) {
+        this.Item.Problem = "No mail provider is set up — set the ResendApiKey secret and the shop's MailFrom.";
+        goto Held;
+      }
+      // Keyed on the row: a retried start sends ONE mail, not two. A throw here leaves the mail Queued, and the start
+      // is retried later — which is what a provider that is briefly down should get.
+      this.Item.ProviderId = new ResendMailer { ApiKey = Secret.ResendApiKey, From = shop.MailFrom }.Send(
+        new EmailMessage {
+          To = [this.Item.To], Subject = this.Item.Subject, Text = this.Item.Text,
+          ReplyTo = shop.ContactEmail == null ? [] : [shop.ContactEmail],
+        },
+        "shopmail-" + this.Item.Id.ToString());
+      this.Item.SentAt = DateTime.UtcNow;
+      goto Sent;
+    }
+  }
+
+  terminal success Sent { }
+  terminal cancel Held { }
+}
+
+/// Puts a mail in the outbox. It is delivered once the caller commits.
+void Mail(string to, string subject, string text) {
+  new ShopMail { To = to, Subject = subject, Text = text };
+}

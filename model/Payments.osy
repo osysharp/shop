@@ -1,0 +1,110 @@
+// Card payments, through Stripe's hosted Checkout — the card form, 3-D Secure and the wallets are Stripe's page.
+// Three moves: open a session when an order is placed, ask Stripe how it went when the customer comes back, and let
+// Stripe's signed webhook tell the order it is paid.
+//
+// ⚑ NO KEY, NO CARD. With `StripeApiKey` and `StripeWebhookSecret` unset the checkout does not offer a card. `osy
+//   secret set StripeApiKey` (an `sk_test_…` key) and `osy secret set StripeWebhookSecret` (`whsec_…`) switch it on.
+//
+// ⚑ THE WEBHOOK'S ADDRESS IS THE APP'S TO DECLARE — a package does not open routes on an app. Point one at
+//   `ShopStripeEvents`:
+//     app.Apis = [ new RestApi("Stripe") { Route = "stripe", Auth = new ApiAuth { Anonymous = true },
+//       Endpoints = [ new Endpoint(ShopStripeEvents) { Method = HttpMethod.Post, Path = "/events", Raw = true,
+//                                                      Headers = ["Stripe-Signature"] } ] } ];
+
+namespace Osysharp.Shop;
+
+using Osysharp.Klarna;
+using Osysharp.Stripe;
+using Osysharp.Workflow;
+
+// ⚠ A client is built where it is USED, never returned from a helper: it carries the key, and a function's return
+//   value can reach a page (SECRET_ESCAPES).
+
+/// Whether this shop can take a card right now — both halves configured, because a session nobody will ever be told
+/// was paid would take the money and leave the order to lapse.
+[AllowAnonymous]
+public bool CardPaymentsOn() {
+  return Security.IsSecretSet("StripeApiKey") && Security.IsSecretSet("StripeWebhookSecret");
+}
+
+/// Opens a Stripe Checkout session for an order and answers the page to send the customer to. The reference is the
+/// session's client reference, so the webhook and the return page know WHICH order was paid. Amounts are integer
+/// minor units.
+///
+/// ⚠ THE IDEMPOTENCY KEY IS THE ORDER'S ID, NOT ITS REFERENCE. Stripe remembers a key for about a day across the whole
+/// account, and a reference is unique only within one database — a reset that restarts numbering, or a staging and a
+/// production shop on one account, would otherwise collide.
+public string StartCardPayment(Order order, string email, ShopSettings shop, StripeClient stripe) {
+  var session = stripe.CreateCheckoutSession(new CheckoutSessionRequest {
+    LineItems = [new CheckoutLineItem {
+      ProductName = $"{shop.Name} — order {order.Reference}",
+      UnitAmount = (long)(order.Total * 100m),
+      Currency = shop.Currency.ToLower(),
+    }],
+    CustomerEmail = email,
+    ClientReferenceId = order.Reference,
+    // Physical goods: Stripe cannot be merchant of record for them, and a new account refuses a session without this.
+    ManagedPayments = false,
+    SuccessUrl = $"{App.BaseUrl}/paid/{order.Reference}/{{CHECKOUT_SESSION_ID}}",
+    CancelUrl = $"{App.BaseUrl}/paid/{order.Reference}/cancelled",
+  }, "checkout-" + order.Id.ToString());
+  return session.Url ?? "";
+}
+
+/// What the customer's return from Stripe means — asked of STRIPE, server-side, never read off the address bar.
+public class PaymentOutcome {
+  public bool Paid;
+  public string Message = "";
+}
+
+[AllowAnonymous]
+public PaymentOutcome CheckCardPayment(string reference, string sessionId) {
+  if (sessionId == "cancelled" || sessionId == "") {
+    return new PaymentOutcome { Paid = false, Message = "The payment was not completed." };
+  }
+  if (sessionId.StartsWith("klarna-")) {
+    // Klarna's hosted page came back with the order it placed — a claim, read back from Klarna before it counts.
+    var shop = TheShop();
+    return SettleKlarnaOrder(reference, sessionId.Substring(7), new KlarnaClient {
+      Username = Secret.KlarnaUsername, Password = Secret.KlarnaPassword, BaseUrl = KlarnaHost(shop) });
+  }
+  var session = new StripeClient { ApiKey = Secret.StripeApiKey }.GetCheckoutSession(sessionId);
+  // The session must be THIS order's — somebody else's paid session id buys nothing here.
+  var ours = session.ClientReferenceId == reference;
+  return ours && session.PaymentStatus == "paid"
+    ? new PaymentOutcome { Paid = true, Message = "Paid." }
+    : new PaymentOutcome { Paid = false, Message = "The payment has not gone through." };
+}
+
+/// The endpoint Stripe posts to. Stripe cannot sign in, so THE SIGNATURE IS THE AUTHENTICATION: nothing past `Verify`
+/// runs for a request Stripe did not send.
+[AllowAnonymous]
+public string ShopStripeEvents() {
+  return HandleStripeEvent(Request.RawBody ?? "", Request.Header("Stripe-Signature") ?? "", Secret.StripeWebhookSecret,
+                           Secret.StripeApiKey.StartsWith("sk_live_"));
+}
+
+/// The webhook's logic, apart from where its secret comes from — so a test can sign a payload the way Stripe does.
+/// `live` is the key's mode: a test key's events settle test orders, and a test event never settles a live one.
+public string HandleStripeEvent(string body, string signature, string signingSecret, bool live) {
+  var e = new StripeWebhook { SigningSecret = signingSecret }.Verify(body, signature);   // throws → 400
+  if (e.Livemode != live) { return "ignored: wrong mode"; }
+  if (e.Type == "refund.created" || e.Type == "refund.updated") {
+    var paymentRef = e.Object?.PaymentIntent ?? "";
+    if (paymentRef == "") { return "ignored: a refund with no payment"; }
+    // One refund is either an order's (the desk refunded all of it) or a return's (part of it) — each answers only
+    // the one it is, and ignores the other.
+    OrderLifecycle.CorrelateRefundUpdate(paymentRef, e.Object?.Status ?? "", e.Object?.ObjectId ?? "");
+    ReturnLifecycle.CorrelateRefundUpdate(e.Object?.ObjectId ?? "", e.Object?.Status ?? "");
+    return "ok";
+  }
+  if (e.Type != "checkout.session.completed") { return "ignored: " + e.Type; }
+
+  var reference = e.Object?.ClientReferenceId ?? "";
+  if (reference == "" || e.Object?.PaymentStatus != "paid") { return "ignored: not a paid order"; }
+
+  var outcome = OrderLifecycle.CorrelatePaymentReceived(reference, "Card", e.Object?.PaymentIntent ?? "");
+  // NoSuchKey may be the webhook beating the order's own commit — ask Stripe to retry rather than drop it.
+  if (outcome == CorrelationOutcome.NoSuchKey) { throw new ConflictException($"No order {reference} yet."); }
+  return "ok";
+}

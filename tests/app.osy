@@ -1,0 +1,25 @@
+// The producer's test project for Osysharp.Shop — an ordinary app that depends on the kit by name, and the smallest
+// shop there is: the kit's model, a subtype for its own fields, and the three lines of wiring every shop writes.
+//
+// ⭐ IT READS THE WORKING TREE: the repository's `osy.workspace` lists `kits/*`, so `use Osysharp.Shop` resolves from
+//    the directory beside this one. ⛔ It does not ship — `tests` in ../package.osy is a setting, not a role.
+app ShopKitTests {
+  model "model/**/*.osy";
+  tests "**/*.test.osy";
+
+  // The kit reaches Stripe, Klarna and Resend and reads their secrets; the app grants them, or it does not compile.
+  use Osysharp.Shop@0 {
+    egress "api.stripe.com"; egress "api.resend.com"; egress "api.klarna.com"; egress "api.playground.klarna.com";
+    secret "StripeApiKey"; secret "StripeWebhookSecret"; secret "ResendApiKey";
+    secret "KlarnaUsername"; secret "KlarnaPassword";
+  }
+  use Osysharp.Klarna@0 { egress "api.klarna.com"; egress "api.playground.klarna.com"; }
+  use Osysharp.Stripe@0 { egress "api.stripe.com"; }
+  use Osysharp.Resend@0 { egress "api.resend.com"; }
+  // The tests stub `Http.Post`/`Http.Get`, and a stub needs the capability named here.
+  use Osysharp.Http;
+  use Osysharp.Workflow;
+  use Osysharp.Ui;
+  use Osysharp.Storage;
+  use Osysharp.PdfWriter@0;
+}

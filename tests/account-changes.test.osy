@@ -1,0 +1,40 @@
+// A signed-in account changes its own password and address — each on the strength of the current password.
+
+using Osysharp.Shop;
+
+[Test(Floor)]
+[runas(Maja)]
+void a_customer_changes_their_password_with_the_current_one() {
+  Assert.Throws<Exception>(() => ShopChangePassword("maja@example.test", "wrong", "a-new-pass-1"));
+  Assert.NotEqual("", ShopChangePassword("maja@example.test", "maja-pass-1", "a-new-pass-1"));
+  Assert.NotEqual("", ShopLogin("maja@example.test", "a-new-pass-1"));
+  Assert.Equal("", ShopLogin("maja@example.test", "maja-pass-1"));
+}
+
+[Test(Floor)]
+[runas(Maja)]
+void a_customer_moves_to_a_new_address_and_both_are_told() {
+  Assert.Throws<Exception>(() => ShopChangeEmail("maja@example.test", "maja-pass-1", "olle@example.test"));   // taken
+  Assert.NotEqual("", ShopChangeEmail("maja@example.test", "maja-pass-1", "Maja@New.test"));
+  Assert.NotEqual("", ShopLogin("maja@new.test", "maja-pass-1"));
+  runas (Desk) {
+    Assert.Equal(1, ShopMail.Count(m => m.To == "maja@example.test"));
+    Assert.Equal(1, ShopMail.Count(m => m.To == "maja@new.test"));
+  }
+}
+
+[Test(Floor)]
+void staff_list_their_customers_and_nobody_else_may() {
+  runas (Maja) { Buy("v-c1", "Loafer", "38", 1); }
+  runas (Desk) {
+    var reference = Order.Single().Reference;
+    MarkPaid(Order.Single(), "");
+    var all = Customers("");
+    Assert.Equal(2, all.Count);                      // Maja and Olle — not Anna, who is staff
+    var maja = Customers("berg").Single();
+    Assert.Equal(1, maja.Orders);
+    Assert.Equal(120m, maja.Spent);
+    Assert.Equal(reference, OrdersOf(maja.Account).Single().Reference);
+  }
+  runas (Maja) { Assert.Throws<Exception>(() => Customers("")); }
+}

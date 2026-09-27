@@ -1,0 +1,39 @@
+// The shop's staff identity is the PACKAGE's — its `[Role]` enum, its `[Principal]` and its `[AuthMethod]` login —
+// and this app names it once, in `app.AuthBootstrap` (model/shop.osy). These tests prove that identity works end to
+// end. `Floor` and `Desk` are declared in fixture.test.osy.
+
+using Osysharp.Shop;
+
+[Test(Floor)]
+void staff_sign_in_through_the_package_login() {
+  // Called anonymously, exactly as a signed-out visitor reaches it. It can read `ShopAccount` and its masked
+  // `PasswordHash` only because the platform arms the ephemeral AuthBootstrap principal — `ShopRole.Authenticator`,
+  // a role the PACKAGE declares — for the call. Without that principal the row read is denied and every correct
+  // password is refused, so a token here is the proof that the package's role was the one armed.
+  Assert.NotEqual("", ShopLogin("anna@shop.test", "desk-pass-1"));
+  Assert.Equal("", ShopLogin("anna@shop.test", "not-the-password"));
+  Assert.Equal("", ShopLogin("nobody@shop.test", "desk-pass-1"));
+}
+
+[Test(Floor)]
+void staff_may_write_the_catalogue_and_a_visitor_may_not() {
+  // `allow create, update, delete when IsShopStaff` — the package's policy over the package's grant table.
+  Assert.Denied(() => new Product { Name = "Bell", Slug = "bell", Price = 20m });
+  runas (Desk) {
+    new Product { Name = "Bell", Slug = "bell", Price = 20m };
+    UnitOfWork.Commit();
+    Assert.Equal(1, Product.Count(p => p.Name == "Bell"));
+  }
+}
+
+[Test(Floor)]
+void the_package_principal_is_the_user_in_the_apps_own_rules() {
+  runas (Desk) {
+    var anna = ShopAccount.Single(s => s.Email == "anna@shop.test");
+    new StaffNote { Author = anna, Text = "Order more loafers" };
+    UnitOfWork.Commit();
+    Assert.Equal(1, StaffNote.Count());
+  }
+  // `where Author == user` (model/note.osy) — a visitor who is not Anna sees none of her notes.
+  Assert.Equal(0, StaffNote.Count());
+}

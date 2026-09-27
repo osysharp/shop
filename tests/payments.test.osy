@@ -1,0 +1,160 @@
+// Card payments — every Stripe call is STUBBED, so no test reaches Stripe, and the webhook is signed here exactly as
+// Stripe signs it (HMAC-SHA256 over "{timestamp}.{body}").
+
+using Osysharp.Http;
+using Osysharp.Shop;
+using Osysharp.Klarna;
+using Osysharp.Stripe;
+using Osysharp.Workflow;
+
+/// A `checkout.session.completed` event for an order.
+string CompletedEvent(string reference, string paymentStatus) {
+  return "{\"id\":\"evt_1\",\"type\":\"checkout.session.completed\",\"created\":1,\"livemode\":false,"
+    + "\"data\":{\"object\":{\"id\":\"cs_1\",\"object\":\"checkout.session\",\"payment_status\":\"" + paymentStatus
+    + "\",\"payment_intent\":\"pi_" + reference + "\",\"client_reference_id\":\"" + reference + "\"}}}";
+}
+
+/// A refund event for an order's payment, as Stripe sends `refund.updated`.
+string RefundEvent(string paymentRef, string status) {
+  return "{\"id\":\"evt_r\",\"type\":\"refund.updated\",\"created\":1,\"livemode\":false,"
+    + "\"data\":{\"object\":{\"id\":\"re_9\",\"object\":\"refund\",\"status\":\"" + status
+    + "\",\"payment_intent\":\"" + paymentRef + "\"}}}";
+}
+
+string SignedBy(string secret, string payload) {
+  var ts = Convert.ToString(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+  return "t=" + ts + ",v1=" + Crypto.ToHex(Crypto.HmacSha256(Text.ToBytes(secret), Text.ToBytes(ts + "." + payload)));
+}
+
+/// An order for the Chelsea, paid by card through the signed webhook — answers its reference.
+string PaidByCard(string visitId) {
+  var reference = Buy(visitId, "Chelsea", "38", 1);
+  var payload = CompletedEvent(reference, "paid");
+  Assert.Equal("ok", HandleStripeEvent(payload, SignedBy("whsec_demo", payload), "whsec_demo", false));
+  return reference;
+}
+
+[Test(Floor)]
+void a_card_payment_opens_a_stripe_session_in_the_shops_currency_and_minor_units() {
+  var posted = new List<string>();
+  Http.Post.Stub((url, body) => {
+    posted.Add(body);
+    return new HttpResponse { StatusCode = 200, Body = "{\"id\":\"cs_7\",\"url\":\"https://checkout.stripe.com/c/pay/cs_7\"}" };
+  });
+  var reference = Buy("v-card", "Chelsea", "38", 1);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    var url = StartCardPayment(order, "maja@example.test", TheShop(), new StripeClient { ApiKey = "sk_test_x" });
+    Assert.Equal("https://checkout.stripe.com/c/pay/cs_7", url);
+  }
+  Assert.Contains("unit_amount%5D=19000", posted[0]);         // €190 is 19000 cents — never 190
+  Assert.Contains("currency%5D=eur", posted[0]);
+  Assert.Contains("client_reference_id=" + reference, posted[0]);
+  Assert.Contains("Kit%20Test%20Shop", posted[0]);                // the shop's own name on Stripe's page
+}
+
+[Test(Floor)]
+void stripes_signed_webhook_marks_the_order_paid() {
+  var reference = PaidByCard("v-card");
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Paid, order.Status);
+    Assert.Equal("Card", order.PaidWith);
+    Assert.Equal("pi_" + reference, order.PaymentRef);
+  }
+}
+
+[Test(Floor)]
+void a_forged_webhook_is_refused_and_pays_nothing() {
+  var reference = Buy("v-forged", "Chelsea", "38", 1);
+  var payload = CompletedEvent(reference, "paid");
+  Assert.Throws<Exception>(() => HandleStripeEvent(payload, SignedBy("whsec_guess", payload), "whsec_demo", false));
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Reserved, order.Status);
+  }
+}
+
+[Test(Floor)]
+void a_test_mode_event_cannot_pay_a_live_order() {
+  var reference = Buy("v-mode", "Chelsea", "38", 1);
+  var payload = CompletedEvent(reference, "paid");   // livemode:false
+  Assert.Equal("ignored: wrong mode", HandleStripeEvent(payload, SignedBy("whsec_demo", payload), "whsec_demo", true));
+}
+
+[Test(Floor)]
+void a_card_refund_goes_to_stripe_against_this_orders_payment() {
+  var reference = PaidByCard("v-refund");
+  var urls = new List<string>();
+  var posted = new List<string>();
+  Http.Post.Stub((url, body) => {
+    urls.Add(url);
+    posted.Add(body);
+    return new HttpResponse { StatusCode = 200, Body = "{\"id\":\"re_1\",\"status\":\"succeeded\",\"amount\":19000,\"currency\":\"eur\"}" };
+  });
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Workflow.Settle(order);
+    RefundOrderWith(order, "Returned", true, new StripeClient { ApiKey = "sk_test_x" }, new KlarnaClient());
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Refunded, order.Status);
+    Assert.Equal("re_1", order.RefundRef);
+  }
+  Assert.Equal("https://api.stripe.com/v1/refunds", urls[0]);
+  Assert.Contains("payment_intent=pi_" + reference, posted[0]);
+  Assert.Equal(1, Pick("Chelsea", "38").Stock);
+}
+
+[Test(Floor)]
+void a_pending_refund_is_processing_until_stripes_webhook_says_it_succeeded() {
+  var reference = PaidByCard("v-pending");
+  Http.Post.Stub((url, body) => new HttpResponse {
+    StatusCode = 200, Body = "{\"id\":\"re_9\",\"status\":\"pending\",\"amount\":19000,\"currency\":\"eur\"}" });
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Workflow.Settle(order);
+    RefundOrderWith(order, "Returned", true, new StripeClient { ApiKey = "sk_test_x" }, new KlarnaClient());
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.RefundProcessing, order.Status);
+  }
+  Assert.Equal(0, Pick("Chelsea", "38").Stock);   // not refunded yet, so not back on sale yet
+
+  var payload = RefundEvent("pi_" + reference, "succeeded");
+  Assert.Equal("ok", HandleStripeEvent(payload, SignedBy("whsec_demo", payload), "whsec_demo", false));
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Refunded, order.Status);
+  }
+  Assert.Equal(1, Pick("Chelsea", "38").Stock);
+}
+
+[Test(Floor)]
+void a_refund_stripe_fails_goes_back_to_paid_and_says_why() {
+  var reference = PaidByCard("v-failing");
+  Http.Post.Stub((url, body) => new HttpResponse {
+    StatusCode = 200, Body = "{\"id\":\"re_9\",\"status\":\"pending\",\"amount\":19000,\"currency\":\"eur\"}" });
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Workflow.Settle(order);
+    RefundOrderWith(order, "Returned", true, new StripeClient { ApiKey = "sk_test_x" }, new KlarnaClient());
+    Workflow.Settle(order);
+  }
+  var payload = RefundEvent("pi_" + reference, "failed");
+  HandleStripeEvent(payload, SignedBy("whsec_demo", payload), "whsec_demo", false);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Paid, order.Status);
+    Assert.Equal("Stripe: the refund failed.", order.RefundProblem);
+  }
+}
+
+[Test(Floor)]
+void a_visitor_cannot_refund_an_order() {
+  var reference = PaidByCard("v-thief");
+  var order = Order.Single(o => o.Reference == reference);
+  Assert.Throws<Exception>(() => RefundOrderWith(order, "to me", true, new StripeClient { ApiKey = "sk_test_x" }, new KlarnaClient()));
+}

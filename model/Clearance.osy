@@ -1,0 +1,112 @@
+// Clearance. Staff mark a product down by a percentage until a date; its price drops everywhere at once, the regular
+// price shows struck through beside it, and on the end date it goes back by itself.
+//
+// ⚑ THE MARKDOWN WRITES THE PRICE, it does not add a second one. Every page, the bag and the checkout already read
+//   `Price` (and `WasPrice` for the struck-through one), so a sale that lived in another field would have to be taught
+//   to each of them — and the one that was missed would charge the regular price. What the markdown keeps is the
+//   REGULAR price, so ending it is exact.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Workflow;
+
+public enum SaleState {
+  [Label("On sale")] Live,
+  [Label("Ended")] Ended,
+}
+
+public entity Sale {
+  [Required] Product Product;
+  /// How much off, in percent.
+  int Percent;
+  /// The product's price before the markdown — what it goes back to.
+  decimal RegularPrice;
+  DateTime EndsAt;
+  SaleState State;                               // no default — SaleLife owns it
+  [ForeignKey(Sale)] SaleSize[] Sizes;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;  // the sale shelf is public
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// A size with a price of its own, marked down alongside — with its regular price, to go back to.
+public entity SaleSize {
+  [Required] Sale Sale;
+  [Required] Variant Variant;
+  decimal RegularPrice;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+public workflow SaleLife {
+  Tracks    = Sale.State;
+  Autostart = true;
+  Initial   = Live;
+
+  /// Staff end the sale before its date.
+  event EndNow();
+
+  state Live {
+    enter {
+      var m = this.Item;
+      m.Product.WasPrice = m.RegularPrice;
+      m.Product.Price = Reduced(m.RegularPrice, m.Percent);
+      foreach (var s in m.Sizes) { s.Variant.Price = Reduced(s.RegularPrice, m.Percent); }
+    }
+    subscribe EndNow() as Stop {
+      Finished {
+        Within = this.Item.EndsAt - DateTime.UtcNow;
+        Unfinished { goto Ended; }
+      }
+    }
+    on Stop() { goto Ended; }
+  }
+
+  terminal success Ended {
+    enter {
+      var m = this.Item;
+      m.Product.Price = m.RegularPrice;
+      m.Product.WasPrice = null;
+      foreach (var s in m.Sizes) { s.Variant.Price = s.RegularPrice; }
+    }
+  }
+}
+
+/// A price less `percent`, to whole units — a sale price reads "€84", not "€83.97".
+decimal Reduced(decimal price, int percent) {
+  return Math.Round(price * (100 - percent) / 100, 0);
+}
+
+/// Marks a product down by `percent` for `days`. Refuses a second markdown on a product already on sale.
+[Authorize(IsShopStaff)]
+public Sale MarkDown(Product product, int percent, int days) {
+  if (percent < 5 || percent > 90) { throw new Exception("A markdown is between 5 and 90 percent."); }
+  if (days < 1) { throw new Exception("A sale runs for at least a day."); }
+  if (Sale.Any(m => m.Product == product && m.State == SaleState.Live)) {
+    throw new Exception($"{product.Name} is already on sale — end that one first.");
+  }
+  if (product.WasPrice != null) { throw new Exception($"{product.Name} already shows a struck-through price — clear it first."); }
+  var m = new Sale { Product = product, Percent = percent, RegularPrice = product.Price, EndsAt = DateTime.UtcNow.AddDays(days) };
+  foreach (var v in product.Variants.ToList().Where(v => v.Price != null)) {
+    new SaleSize { Sale = m, Variant = v, RegularPrice = v.Price.Value };
+  }
+  UnitOfWork.Commit();
+  return m;
+}
+
+/// Ends a product's sale now, and its price goes back.
+[Authorize(IsShopStaff)]
+public void EndMarkdown(Product product) {
+  var m = Sale.Where(x => x.Product == product && x.State == SaleState.Live).FirstOrDefault();
+  if (m == null) { throw new Exception($"{product.Name} is not on sale."); }
+  SaleLife.RaiseEndNow(m);
+}
+
+/// What is on sale now — the sale shelf.
+[AllowAnonymous]
+public List<Product> OnSale() {
+  return Sale.Where(m => m.State == SaleState.Live).OrderByDescending(m => m.Percent).Select(m => m.Product).ToList();
+}

@@ -1,0 +1,174 @@
+// Klarna — every Klarna call is STUBBED, so no test reaches Klarna. What is proved: the session carries the order,
+// a return address or an unsigned callback pays nothing until KLARNA confirms it, sending an order charges it, and a
+// refund cancels what was never charged and refunds what was.
+
+using Osysharp.Http;
+using Osysharp.Klarna;
+using Osysharp.Shop;
+using Osysharp.Stripe;
+using Osysharp.Workflow;
+
+KlarnaClient TestKlarna() {
+  return new KlarnaClient { Username = "u", Password = "p", BaseUrl = "https://api.playground.klarna.com",
+                            PurchaseCountry = "SE", PurchaseCurrency = "EUR", Locale = "sv-SE" };
+}
+
+/// Klarna's answer for one of its orders — what a stubbed `GetOrder` reads.
+HttpResponse KlarnaOrder(string reference, long amount, string status, string fraud) {
+  return new HttpResponse { StatusCode = 200,
+    Body = "{\"order_id\":\"k-1\",\"status\":\"" + status + "\",\"fraud_status\":\"" + fraud + "\",\"order_amount\":"
+      + Convert.ToString(amount) + ",\"merchant_reference1\":\"" + reference + "\"}" };
+}
+
+/// Settles an order as Klarna having authorised it. Stub `GetOrder` first — a stub is a test's.
+void SettleAsAuthorised(string reference, string klarnaId) {
+  Assert.True(SettleKlarnaOrder(reference, klarnaId, TestKlarna()).Paid);
+}
+
+[Test(Floor)]
+void a_klarna_payment_sends_the_orders_lines_and_reference_to_klarnas_hosted_page() {
+  var urls = new List<string>();
+  var posted = new List<string>();
+  Http.Post.Stub((url, body) => {
+    urls.Add(url);
+    posted.Add(body);
+    return new HttpResponse { StatusCode = 200,
+      Body = "{\"session_id\":\"s-1\",\"redirect_url\":\"https://pay.playground.klarna.com/eu/hpp/h-1\"}" };
+  });
+  var reference = Buy("v-k", "Chelsea", "38", 1);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Assert.Equal("https://pay.playground.klarna.com/eu/hpp/h-1", StartKlarnaPayment(order, TheShop(), TestKlarna()));
+  }
+  Assert.Equal("https://api.playground.klarna.com/payments/v1/sessions", urls[0]);
+  Assert.Contains("\"order_amount\":19000", posted[0]);                  // €190 is 19000 cents — never 190
+  Assert.Contains("\"merchant_reference1\":\"" + reference + "\"", posted[0]);
+  Assert.Contains("Chelsea", posted[0]);
+  Assert.Equal("https://api.playground.klarna.com/hpp/v1/sessions", urls[1]);
+  Assert.Contains("/paid/" + reference + "/klarna-{{order_id}}", posted[1]);
+  Assert.Contains("/klarna/events", posted[1]);
+}
+
+[Test(Floor)]
+void an_order_klarna_authorised_is_paid_with_klarnas_order_on_record() {
+  var reference = Buy("v-k", "Chelsea", "38", 1);
+  Http.Get.Stub((url, headers) => KlarnaOrder(reference, 19000, "AUTHORIZED", "ACCEPTED"));
+  SettleAsAuthorised(reference, "k-1");
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Paid, order.Status);
+    Assert.Equal("Klarna", order.PaidWith);
+    Assert.Equal("k-1", order.PaymentRef);
+  }
+}
+
+[Test(Floor)]
+void a_klarna_order_for_another_reference_or_another_amount_pays_nothing() {
+  var reference = Buy("v-k", "Chelsea", "38", 1);
+  Http.Get.Stub((url, headers) => KlarnaOrder("KT-9999", 19000, "AUTHORIZED", "ACCEPTED"));
+  Assert.False(SettleKlarnaOrder(reference, "k-1", TestKlarna()).Paid);   // somebody else's paid order
+  Http.Get.Stub((url, headers) => KlarnaOrder(reference, 100, "AUTHORIZED", "ACCEPTED"));
+  Assert.False(SettleKlarnaOrder(reference, "k-1", TestKlarna()).Paid);   // a €1 basket under this reference
+  Http.Get.Stub((url, headers) => KlarnaOrder(reference, 19000, "AUTHORIZED", "PENDING"));
+  Assert.False(SettleKlarnaOrder(reference, "k-1", TestKlarna()).Paid);   // Klarna has not cleared it yet
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Reserved, order.Status);
+  }
+}
+
+[Test(Floor)]
+void klarnas_completed_callback_pays_the_order_klarna_confirms_and_nothing_else() {
+  var reference = Buy("v-k", "Chelsea", "38", 1);
+  var completed = "{\"event_id\":\"e-1\",\"session\":{\"session_id\":\"h-1\",\"status\":\"COMPLETED\",\"order_id\":\"k-1\"}}";
+  Http.Get.Stub((url, headers) => KlarnaOrder(reference, 19000, "CANCELLED", "ACCEPTED"));               // a forged "completed" for a dead order
+  Assert.Equal("ignored: not paid", HandleKlarnaEvent(completed, TestKlarna()));
+  Http.Get.Stub((url, headers) => KlarnaOrder(reference, 19000, "AUTHORIZED", "ACCEPTED"));
+  Assert.Equal("ok", HandleKlarnaEvent(completed, TestKlarna()));
+  Assert.Equal("ok", HandleKlarnaEvent(completed, TestKlarna()));      // Klarna retries: still one payment
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Paid, order.Status);
+    Assert.Equal("k-1", order.PaymentRef);
+  }
+}
+
+[Test(Floor)]
+void sending_a_klarna_order_charges_it_and_a_refused_capture_leaves_it_unsent() {
+  var reference = Buy("v-k", "Chelsea", "38", 1);
+  Http.Get.Stub((url, headers) => KlarnaOrder(reference, 19000, "AUTHORIZED", "ACCEPTED"));
+  SettleAsAuthorised(reference, "k-1");
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Workflow.Settle(order);
+    Http.Post.Stub((url, body) => new HttpResponse { StatusCode = 403, Body = "{\"error_code\":\"CAPTURE_NOT_ALLOWED\"}" });
+    Assert.Throws<Exception>(() => MarkSentWith(order, "PostNord 1", TestKlarna()));
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Paid, order.Status);
+
+    var urls = new List<string>();
+    Http.Post.Stub((url, body) => { urls.Add(url); return new HttpResponse { StatusCode = 201, Body = "{\"capture_id\":\"c-1\"}" }; });
+    MarkSentWith(order, "PostNord 1", TestKlarna());
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Fulfilled, order.Status);
+    Assert.Equal("https://api.playground.klarna.com/ordermanagement/v1/orders/k-1/captures", urls[0]);
+  }
+}
+
+[Test(Floor)]
+void refunding_an_unsent_klarna_order_cancels_it_and_a_sent_one_is_refunded() {
+  var unsent = Buy("v-k1", "Chelsea", "38", 1);
+  var sent = Buy("v-k2", "Loafer", "38", 1);
+  Http.Get.Stub((url, headers) => KlarnaOrder(unsent, 19000, "AUTHORIZED", "ACCEPTED"));
+  SettleAsAuthorised(unsent, "k-1");
+  Http.Get.Stub((url, headers) => KlarnaOrder(sent, 12000, "AUTHORIZED", "ACCEPTED"));
+  SettleAsAuthorised(sent, "k-2");
+  var urls = new List<string>();
+  Http.Post.Stub((url, body) => { urls.Add(url); return new HttpResponse { StatusCode = 201, Body = "{}" }; });
+  runas (Desk) {
+    var a = Order.Single(o => o.Reference == unsent);
+    Workflow.Settle(a);
+    RefundOrderWith(a, "Changed mind", true, new StripeClient(), TestKlarna());
+    Workflow.Settle(a);
+    Assert.Equal(OrderStatus.Refunded, a.Status);
+    Assert.Equal("https://api.playground.klarna.com/ordermanagement/v1/orders/k-1/cancel", urls[0]);
+
+    var b = Order.Single(o => o.Reference == sent);
+    Workflow.Settle(b);
+    MarkSentWith(b, "", TestKlarna());
+    Workflow.Settle(b);
+    RefundOrderWith(b, "Damaged", false, new StripeClient(), TestKlarna());
+    Workflow.Settle(b);
+    Assert.Equal(OrderStatus.Refunded, b.Status);
+    Assert.Equal("https://api.playground.klarna.com/ordermanagement/v1/orders/k-2/refunds", urls[2]);
+  }
+}
+
+[Test(Floor)]
+void a_returned_line_of_a_klarna_order_is_refunded_for_what_that_line_cost() {
+  var reference = "";
+  runas (Maja) { reference = Buy("v-kr", "Loafer", "38", 2); }
+  Http.Get.Stub((url, headers) => KlarnaOrder(reference, 24000, "AUTHORIZED", "ACCEPTED"));
+  SettleAsAuthorised(reference, "k-3");
+  var posted = new List<string>();
+  var urls = new List<string>();
+  Http.Post.Stub((url, body) => { urls.Add(url); posted.Add(body); return new HttpResponse { StatusCode = 201, Body = "{}" }; });
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Workflow.Settle(order);
+    MarkSentWith(order, "", TestKlarna());
+    Workflow.Settle(order);
+  }
+  runas (Maja) { ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, "Too small"); }
+  runas (Desk) {
+    var ret = ReturnRequest.Single();
+    ReceiveReturnWith(ret, true, new StripeClient(), TestKlarna());
+    Workflow.Settle(ret);
+    Assert.Equal(ReturnStatus.Refunded, ret.Status);
+  }
+  Assert.Equal("https://api.playground.klarna.com/ordermanagement/v1/orders/k-3/refunds", urls[1]);
+  Assert.Contains("\"refunded_amount\":12000", posted[1]);   // one of two loafers, €120
+}

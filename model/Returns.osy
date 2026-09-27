@@ -1,0 +1,218 @@
+// Returns. A customer who bought signed in sends things back from their order history: they pick what, and why, one
+// line at a time, while the return is still waiting for the parcel. Staff open the parcel, and the return refunds what
+// came back — to the card through Stripe, or by hand for any other payment — and puts it back in stock.
+//
+// ⚑ A RETURN REFUNDS ITS OWN LINES, never the order's face value. An order can be returned in parts, and each part is
+//   refunded for what those lines cost — the order itself stays `Sent`. A whole-order refund is the desk's separate
+//   `RefundOrder`, for when the shop gives everything back unasked.
+//
+// ⚑ THE CUSTOMER NEVER WRITES AN AMOUNT. They choose lines and quantities; what that is worth is worked out when the
+//   parcel is received, from the prices on the order.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Klarna;
+using Osysharp.Stripe;
+using Osysharp.Workflow;
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum ReturnStatus {
+  [Label("Waiting for the parcel")] Requested,
+  [Label("Refund on its way")] Refunding,
+  [Label("Refunded")] Refunded,
+  [Label("Declined")] Declined,
+}
+
+public entity ReturnRequest {
+  [Required] Order Order;
+  ReturnStatus Status;                               // no default — ReturnLifecycle owns it
+  DateTime RequestedAt;
+  DateTime? ReceivedAt;
+  DateTime? RefundedAt;
+  /// What the returned lines cost — worked out when the parcel is received.
+  decimal Amount;
+  /// Whether what came back goes on sale again.
+  bool Restock = true;
+  /// Stripe's id for this return's refund — how its webhooks find the return again.
+  [MaxLength(80), Unique] string? RefundRef;
+  /// Why it was declined, or what went wrong with the refund, in a sentence for the customer.
+  [MaxLength(300)] string? Problem;
+  [ForeignKey(Return)] ReturnLine[] Lines;
+  security {
+    allow read, create when IsAuthenticated where Order.Account == user || IsShopStaff;
+    allow update, delete when IsShopStaff;
+  }
+}
+
+public entity ReturnLine {
+  [Required] ReturnRequest Return;
+  [Required] OrderLine Line;
+  int Quantity = 1;
+  [MaxLength(300)] string? Reason;
+  security {
+    allow read, create, delete when IsAuthenticated where Return.Order.Account == user || IsShopStaff;
+    allow update when IsShopStaff;
+  }
+}
+
+public workflow ReturnLifecycle {
+  Tracks    = ReturnRequest.Status;
+  Autostart = true;
+  Initial   = Requested;
+
+  /// The parcel is in and the refund has been asked for.
+  event Received();
+  event Decline(string reason);
+  /// What the refund's money did — straight away for a payment refunded by hand, from Stripe for a card.
+  [CorrelateOn(this.Item.RefundRef == refundRef)]
+  event RefundUpdate(string refundRef, string status);
+
+  state Requested {
+    subscribe Received() as Opened;
+    subscribe Decline() as Declining;
+    on Opened() { goto Refunding; }
+    on Declining(string reason) {
+      this.Item.Problem = reason;
+      MailCustomer(this.Item.Order, $"Your return for order {this.Item.Order.Reference}",
+        $"We cannot accept this return: {reason} Reply to this mail if you think that is wrong.");
+      goto Declined;
+    }
+  }
+
+  state Refunding {
+    subscribe RefundUpdate() as Settled;
+    on Settled(string refundRef, string status) {
+      if (status == "succeeded") { goto Refunded; }
+      if (status == "failed" || status == "canceled") { this.Item.Problem = $"The refund {status} at Stripe — the shop will look at it."; }
+    }
+  }
+
+  terminal success Refunded {
+    enter {
+      this.Item.RefundedAt = DateTime.UtcNow;
+      this.Item.Problem = null;
+      MailCustomer(this.Item.Order, $"Refunded — your return for order {this.Item.Order.Reference}",
+        $"Your parcel has arrived and we have refunded {Money(this.Item.Amount, TheShop())}. "
+        + (this.Item.Order.PaidWith == "Card" ? "It reaches your card within a few working days." : "We will send it back the way you paid."));
+    }
+  }
+  terminal cancel Declined { }
+}
+
+/// Adds `quantity` of a line to the order's waiting return, starting one if there is none. For the customer whose
+/// account placed the order, while it is inside the shop's return window. Throws the sentence to show.
+public ReturnRequest ReturnItem(OrderLine line, int quantity, string reason) {
+  var me = Session.CurrentUser;
+  var order = line.Order;
+  if (me == null || order.Account != me) { throw new Exception("Sign in with the account that placed the order to return from it."); }
+  if (order.Status != OrderStatus.Fulfilled || order.FulfilledAt == null) {
+    throw new Exception(order.Status == OrderStatus.Paid
+      ? "It has not been sent yet — write to the shop to call it off."
+      : $"Order {order.Reference} is {order.Status.Label}, so nothing in it can be returned.");
+  }
+  var shop = TheShop();
+  if (order.FulfilledAt.Value.AddDays(shop.ReturnDays) < DateTime.UtcNow) {
+    throw new Exception($"Returns are open for {shop.ReturnDays} days after an order is sent, and that has passed.");
+  }
+  if (quantity < 1) { throw new Exception("Choose how many to return."); }
+  var already = ReturnLine.Where(r => r.Line == line && r.Return.Status != ReturnStatus.Declined).Sum(r => r.Quantity);
+  if (already + quantity > line.Quantity) {
+    throw new Exception(line.Quantity - already <= 0 ? "That is already on its way back." : $"You can return {line.Quantity - already} more of that.");
+  }
+  var open = ReturnRequest.Where(r => r.Order == order && r.Status == ReturnStatus.Requested).FirstOrDefault();
+  if (open == null) { open = new ReturnRequest { Order = order, RequestedAt = DateTime.UtcNow }; }
+  new ReturnLine { Return = open, Line = line, Quantity = quantity, Reason = reason.Trim() == "" ? null : reason.Trim() };
+  UnitOfWork.Commit();
+  return open;
+}
+
+/// Takes a line back out of a return that is still waiting for the parcel.
+public void UndoReturnLine(ReturnLine line) {
+  if (line.Return.Status != ReturnStatus.Requested) { throw new Exception("That return has already been received."); }
+  line.Delete();
+  UnitOfWork.Commit();
+}
+
+/// The returns of the signed-in customer's orders, newest first.
+public List<ReturnRequest> MyReturns() {
+  var me = Session.CurrentUser;
+  if (me == null) { return []; }
+  return ReturnRequest.Where(r => r.Order.Account == me).OrderByDescending(r => r.RequestedAt).ToList();
+}
+
+/// The customer calls off an order that is reserved and not yet paid — its goods go back on sale.
+public void CancelMyOrder(Order order) {
+  var me = Session.CurrentUser;
+  if (me == null || order.Account != me) { throw new Exception("Sign in with the account that placed the order."); }
+  if (order.Status != OrderStatus.Reserved) {
+    throw new Exception(order.Status == OrderStatus.Paid
+      ? "It is paid already — write to the shop and they will refund it."
+      : $"Order {order.Reference} is {order.Status.Label}.");
+  }
+  OrderLifecycle.RaiseCancel(order, "Cancelled by the customer");
+}
+
+// ── the desk's half ───────────────────────────────────────────────────────────────────────────────────────────
+
+/// The parcel is in: puts what came back in stock when `restock` says so, and refunds what those lines cost.
+[Authorize(IsShopStaff)]
+public void ReceiveReturn(ReturnRequest ret, bool restock) {
+  // The Stripe key only for a card's refund — a return paid any other way never needs it, and a shop with no card
+  // payments has none to give.
+  ReceiveReturnWith(ret, restock,
+    ret.Order.PaidWith == "Card" ? new StripeClient { ApiKey = Secret.StripeApiKey } : new StripeClient(),
+    ret.Order.PaidWith == "Klarna"
+      ? new KlarnaClient { Username = Secret.KlarnaUsername, Password = Secret.KlarnaPassword, BaseUrl = KlarnaHost(TheShop()) }
+      : new KlarnaClient());
+}
+
+/// `ReceiveReturn`, apart from where the keys come from — so a test can stub Stripe or Klarna and hand in a client.
+[Authorize(IsShopStaff)]
+public void ReceiveReturnWith(ReturnRequest ret, bool restock, StripeClient stripe, KlarnaClient klarna) {
+  if (ret.Status != ReturnStatus.Requested) { throw new Exception($"That return is {ret.Status.Label}."); }
+  var lines = ret.Lines.ToList();
+  if (lines.Count == 0) { throw new Exception("That return has nothing in it."); }
+  ret.Amount = lines.Sum(l => l.Line.Price * l.Quantity);
+  ret.Restock = restock;
+  ret.ReceivedAt = DateTime.UtcNow;
+  if (restock) {
+    foreach (var l in lines) {
+      l.Line.Variant.Stock = l.Line.Variant.Stock + l.Quantity;
+      new StockMove { Variant = l.Line.Variant, Change = l.Quantity, Reason = StockReason.Returned,
+                      Note = $"Return on {ret.Order.Reference}", By = Session.CurrentUser };
+      SendStockAlerts(l.Line.Variant);
+    }
+  }
+  UnitOfWork.Commit();
+  ReturnLifecycle.RaiseReceived(ret);
+
+  var order = ret.Order;
+  if (order.PaidWith == "Klarna" && order.PaymentRef != null) {
+    // A returned parcel was sent, so Klarna charged for it: refund what those lines cost against the capture.
+    klarna.Refund(order.PaymentRef, Minor(ret.Amount), $"Return on {order.Reference}");
+    ret.RefundRef = "klarna-" + ret.Id.ToString();
+    UnitOfWork.Commit();
+    ReturnLifecycle.CorrelateRefundUpdate(ret.RefundRef, "succeeded");
+    return;
+  }
+  if (order.PaidWith != "Card") {
+    // Any other payment goes back by hand; recording it is the whole step.
+    ret.RefundRef = "manual-" + ret.Id.ToString();
+    UnitOfWork.Commit();
+    ReturnLifecycle.CorrelateRefundUpdate(ret.RefundRef, "succeeded");
+    return;
+  }
+  if (order.PaymentRef == null) { throw new Exception($"{order.Reference} has no Stripe payment on record — refund it from the Stripe dashboard."); }
+  // In minor units, as Stripe counts; keyed on the return, so a retry refunds ONCE.
+  var refund = stripe.CreateRefund(order.PaymentRef, (long)Math.Round(ret.Amount * 100), "requested_by_customer", "return-" + ret.Id.ToString());
+  ret.RefundRef = refund.RefundId;
+  UnitOfWork.Commit();
+  ReturnLifecycle.CorrelateRefundUpdate(ret.RefundRef ?? "", refund.Status ?? "pending");
+}
+
+/// Turns a return down, with the reason the customer is mailed.
+[Authorize(IsShopStaff)]
+public void DeclineReturn(ReturnRequest ret, string reason) {
+  if (ret.Status != ReturnStatus.Requested) { throw new Exception($"That return is {ret.Status.Label}."); }
+  ReturnLifecycle.RaiseDecline(ret, reason.Trim() == "" ? "It does not meet the shop's returns policy." : reason.Trim());
+}

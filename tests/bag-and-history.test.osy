@@ -1,0 +1,98 @@
+// The saved bag and the order history: a bag that follows the account, says what went stale, and orders the customer
+// can see and nobody else can.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Floor)]
+void a_visit_bag_joins_the_account_on_sign_in() {
+  Bag("v-join", "Loafer", "38", 1);                  // shopping signed out…
+  runas (Maja) {
+    Assert.Equal(1, BagCount("v-join"));            // …and it is there once signed in
+    Assert.Equal("", AddToBag("v-other-device", Pick("Chelsea", "38"), 1));
+    Assert.Equal(2, BagCount("v-other-device"));    // one bag, on any device
+  }
+  Assert.Equal(0, BagCount("v-join"));              // the visit's own bag is gone
+}
+
+[Test(Floor)]
+void a_saved_bag_says_what_went_stale_and_checkout_waits_for_it() {
+  runas (Maja) { Bag("v-stale", "Loafer", "38", 2); Bag("v-stale", "Chelsea", "38", 1); }
+  runas (Desk) {
+    Pick("Loafer", "38").Stock = 1;
+    Pick("Chelsea", "38").Stock = 0;
+    Product.Single(p => p.Name == "Loafer").Price = 99m;
+    UnitOfWork.Commit();
+  }
+  runas (Maja) {
+    var lines = BagFor("v-stale", false).Lines.ToList();
+    Assert.Equal("Only one is left.", LineProblem(lines.Single(l => l.Variant.Product.Name == "Loafer")));
+    Assert.Equal("Sold out since you added it.", LineProblem(lines.Single(l => l.Variant.Product.Name == "Chelsea")));
+    Assert.True(BagNeedsFixing("v-stale"));
+
+    // The checkout refuses a bag the customer has not seen as it now is — and makes it true, saying what changed.
+    var refused = Assert.Throws<Exception>(() => Checkout("v-stale"));
+    Assert.Contains("Chelsea (38) has sold out", refused.Message);
+    Assert.Contains("only one Loafer (38) is left", refused.Message);
+    Assert.Contains("Loafer (38) is now €99", refused.Message);
+    Assert.False(BagNeedsFixing("v-stale"));
+    Assert.Equal("", FixBag("v-stale"));             // nothing left to change
+    Assert.Equal(1, BagCount("v-stale"));
+    Assert.Equal(99m, Checkout("v-stale").Total);
+  }
+}
+
+[Test(Floor)]
+void a_moved_price_is_pointed_out() {
+  runas (Maja) { Bag("v-price", "Super", "", 1); }
+  runas (Desk) { Product.Single(p => p.Name == "Super").Price = 1900m; UnitOfWork.Commit(); }
+  runas (Maja) {
+    Assert.Equal("Now €1,900 — down from €2,100.", LineProblem(BagFor("v-price", false).Lines.Single()));
+  }
+}
+
+[Test(Floor)]
+void an_account_sees_its_own_orders_and_their_address_and_nobody_else_does() {
+  var reference = "";
+  runas (Maja) {
+    reference = Buy("v-hist", "Loafer", "39", 1);
+    Assert.Equal(1, MyOrders().Count);
+    Assert.Equal(reference, MyOrders()[0].Reference);
+    Assert.Equal("Maja Berg", OrderContact.Single().Name);
+  }
+  runas (Olle) {
+    Assert.Equal(0, MyOrders().Count);
+    Assert.Equal(0, OrderContact.Count());
+  }
+  Assert.Equal(0, OrderContact.Count());            // nor a visitor
+}
+
+[Test(Floor)]
+void an_order_is_confirmed_by_mail_with_its_lines_and_vat() {
+  runas (Desk) { var shop = TheShop(); shop.VatPercent = 25m; UnitOfWork.Commit(); }
+  var reference = Buy("v-mail", "Loafer", "38", 1);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Assert.Equal(24m, order.Vat);                    // 120 incl. 25% → 24 of it is VAT
+    var mail = ShopMail.Single(m => m.Subject.Contains(reference));
+    Assert.Equal("maja@example.test", mail.To);
+    Assert.Contains("1 × Loafer (38) — €120", mail.Text);
+    Assert.Contains("VAT €24 included", mail.Text);
+  }
+}
+
+[Test(Floor)]
+void a_customer_cancels_an_unpaid_order_and_not_someone_elses() {
+  var reference = "";
+  runas (Maja) { reference = Buy("v-mine", "Chelsea", "38", 1); }
+  runas (Olle) {
+    var order = Order.Single(o => o.Reference == reference);
+    Assert.Throws<Exception>(() => CancelMyOrder(order));
+  }
+  runas (Maja) {
+    var order = Order.Single(o => o.Reference == reference);
+    CancelMyOrder(order);
+  }
+  runas (Desk) { Workflow.Settle(Order.Single(o => o.Reference == reference)); }
+  Assert.Equal(1, Pick("Chelsea", "38").Stock);
+}

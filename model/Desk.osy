@@ -1,0 +1,238 @@
+// What staff do to an order. The catalogue needs no functions of its own — staff write products, variants and
+// photographs directly, and `security { }` on each is what lets them.
+//
+// ⚑ `[Authorize(IsShopStaff)]` IS THE LOCK. A refund's real effect — money leaving through Stripe — touches no row, so
+//   no `security { }` rule could refuse it. The attribute is checked however the function is reached.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Klarna;
+using Osysharp.Stripe;
+using Osysharp.Workflow;
+
+/// A bank transfer has arrived — or the customer paid at the counter: the same event a card payment raises.
+[Authorize(IsShopStaff)]
+public void MarkPaid(Order order, string how) {
+  if (order.Status != OrderStatus.Reserved) { throw new Exception($"{order.Reference} is {order.Status.Label}, not waiting for payment."); }
+  OrderLifecycle.CorrelatePaymentReceived(order.Reference, how.Trim() == "" ? order.Payment.Label : how.Trim(), "");
+}
+
+/// The order has gone out — posted with a tracking number, or collected. A Klarna order is CHARGED here, not at
+/// checkout: Klarna's model is authorise when ordered, capture when shipped.
+[Authorize(IsShopStaff)]
+public void MarkSent(Order order, string tracking) {
+  // Klarna's credentials only for a Klarna order — a shop that never offered Klarna has none to give.
+  MarkSentWith(order, tracking, order.PaidWith == "Klarna"
+    ? new KlarnaClient { Username = Secret.KlarnaUsername, Password = Secret.KlarnaPassword, BaseUrl = KlarnaHost(TheShop()) }
+    : new KlarnaClient());
+}
+
+/// `MarkSent`, apart from where the Klarna credentials come from — so a test can stub Klarna and hand in a client.
+[Authorize(IsShopStaff)]
+public void MarkSentWith(Order order, string tracking, KlarnaClient klarna) {
+  if (order.Status != OrderStatus.Paid) { throw new Exception($"{order.Reference} is {order.Status.Label} — only a paid order is sent."); }
+  if (order.PaidWith == "Klarna") {
+    if (order.PaymentRef == null) { throw new Exception($"{order.Reference} was paid with Klarna, but no Klarna order is on record for it."); }
+    // Before the order moves: a capture Klarna refused leaves it Paid, to be tried again, not Sent and never charged.
+    klarna.Capture(order.PaymentRef, 0, $"Order {order.Reference}");
+  }
+  OrderLifecycle.RaiseFulfil(order, tracking.Trim());
+}
+
+/// Calls a reservation off and puts its goods back.
+[Authorize(IsShopStaff)]
+public void CancelOrder(Order order, string reason) {
+  if (order.Status != OrderStatus.Reserved) {
+    throw new Exception($"{order.Reference} is {order.Status.Label}, not reserved — a paid order is refunded, not cancelled.");
+  }
+  OrderLifecycle.RaiseCancel(order, reason.Trim() == "" ? "Cancelled by the shop" : reason.Trim());
+}
+
+/// Gives a paid or sent order's money back — to the card through Stripe, or by hand for any other payment — and puts
+/// the goods back in stock when `restock` says they came back. Safe to press again on an order whose refund was
+/// requested but did not reach Stripe: the retry makes ONE refund, not two.
+[Authorize(IsShopStaff)]
+public void RefundOrder(Order order, string reason, bool restock) {
+  // Each key only for its own kind of payment — a shop that never took cards, or Klarna, has none to give.
+  RefundOrderWith(order, reason, restock,
+    order.PaidWith == "Card" ? new StripeClient { ApiKey = Secret.StripeApiKey } : new StripeClient(),
+    order.PaidWith == "Klarna"
+      ? new KlarnaClient { Username = Secret.KlarnaUsername, Password = Secret.KlarnaPassword, BaseUrl = KlarnaHost(TheShop()) }
+      : new KlarnaClient());
+}
+
+/// `RefundOrder`, apart from where the keys come from — so a test can stub Stripe or Klarna and hand in a client.
+[Authorize(IsShopStaff)]
+public void RefundOrderWith(Order order, string reason, bool restock, StripeClient stripe, KlarnaClient klarna) {
+  if (order.Status != OrderStatus.Paid && order.Status != OrderStatus.Fulfilled && order.Status != OrderStatus.RefundRequested) {
+    throw new Exception($"{order.Reference} is {order.Status.Label} — only a paid order can be refunded.");
+  }
+  order.RestockOnRefund = restock;
+  UnitOfWork.Commit();
+  // Recorded before Stripe is called — so a call that fails leaves the order saying a refund was asked for.
+  if (order.Status != OrderStatus.RefundRequested) {
+    OrderLifecycle.RaiseRequestRefund(order, reason.Trim() == "" ? "Refunded by the shop" : reason.Trim());
+  }
+
+  if (order.PaidWith == "Klarna" && order.PaymentRef != null) {
+    // Klarna charges when the goods are sent: an order never sent was never charged, so it is CANCELLED — Klarna
+    // refuses to refund what it did not capture. Klarna answers at once, so the refund is done when this returns.
+    if (order.FulfilledAt == null) { klarna.Cancel(order.PaymentRef); }
+    else { klarna.Refund(order.PaymentRef, 0, reason.Trim() == "" ? null : reason.Trim()); }
+    OrderLifecycle.RaiseRefundUpdate(order, "", "succeeded", "");
+    return;
+  }
+  if (order.PaidWith != "Card") {
+    // Any other payment is refunded by hand; recording it is the whole step.
+    OrderLifecycle.RaiseRefundUpdate(order, "", "succeeded", "");
+    return;
+  }
+  if (order.PaymentRef == null) {
+    throw new Exception($"{order.Reference} was paid by card, but no Stripe payment is on record for it — refund it "
+      + "from the Stripe dashboard.");
+  }
+  // Keyed on the order's id: a second click, or a retry after a timeout, refunds ONCE (see StartCardPayment).
+  var refund = stripe.CreateRefund(order.PaymentRef, 0, "requested_by_customer", "refund-" + order.Id.ToString());
+  OrderLifecycle.CorrelateRefundUpdate(order.PaymentRef, refund.Status ?? "pending", refund.RefundId ?? "");
+}
+
+/// Ends an order with no money moving and puts its goods back — an order entered by mistake.
+[Authorize(IsShopStaff)]
+public void VoidOrder(Order order, string reason) {
+  OrderLifecycle.RaiseVoid(order, reason.Trim() == "" ? "Voided by the shop" : reason.Trim());
+}
+
+// ── stock ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum StockReason {
+  [Label("Delivery in")] Received,
+  [Label("Count corrected")] Correction,
+  [Label("Damaged or lost")] Damaged,
+  [Label("Returned")] Returned,
+}
+
+/// One change to a variant's stock, and why — so the number on the shelf can be explained later.
+public entity StockMove {
+  [Required] Variant Variant;
+  int Change;
+  [Required] StockReason Reason;
+  [MaxLength(200)] string? Note;
+  ShopAccount? By;
+  security { allow read, create when IsShopStaff; }
+}
+
+/// Changes a variant's stock by `change` (negative takes away), and records why. Answers the new stock. Anybody
+/// waiting for it to come back is mailed when it does.
+[Authorize(IsShopStaff)]
+public int AdjustStock(Variant variant, int change, StockReason reason, string note) {
+  if (change == 0) { return variant.Stock; }
+  if (variant.Stock + change < 0) { throw new Exception($"There are only {variant.Stock} — you cannot take away {-change}."); }
+  variant.Stock = variant.Stock + change;
+  new StockMove { Variant = variant, Change = change, Reason = reason, Note = note.Trim() == "" ? null : note.Trim(), By = Session.CurrentUser };
+  SendStockAlerts(variant);
+  UnitOfWork.Commit();
+  return variant.Stock;
+}
+
+/// Variants at or under `threshold` in stock, among what is listed — what to reorder.
+[Authorize(IsShopStaff)]
+public List<Variant> LowStock(int threshold) {
+  return Variant.Where(v => v.Product.Status == ProductStatus.Listed && v.Stock <= threshold)
+    .OrderBy(v => v.Stock).ToList();
+}
+
+// ── the catalogue ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A new product, drafted — invisible to customers until it is listed. Answers it, with a slug made from its name.
+[Authorize(IsShopStaff)]
+public Product CreateProduct(string name, Category? category, decimal price) {
+  if (name.Trim() == "") { throw new Exception("A product needs a name."); }
+  if (price < 0) { throw new Exception("A price cannot be negative."); }
+  var slug = SlugOf(name);
+  if (Product.Any(p => p.Slug == slug)) { slug = slug + "-" + Security.RandomHex(4); }
+  var product = new Product { Name = name.Trim(), Slug = slug, Category = category, Price = price, Status = ProductStatus.Draft };
+  UnitOfWork.Commit();
+  return product;
+}
+
+/// Saves what the editor holds.
+[Authorize(IsShopStaff)]
+public void UpdateProduct(Product product, string name, string brand, string summary, string description, decimal price,
+                          ProductStatus status, Category? category) {
+  if (name.Trim() == "") { throw new Exception("A product needs a name."); }
+  if (price < 0) { throw new Exception("A price cannot be negative."); }
+  if (status == ProductStatus.Listed && product.Variants.Count() == 0) {
+    throw new Exception("Add at least one size before listing it — a product with none cannot be bought.");
+  }
+  product.Name = name.Trim();
+  product.Brand = brand.Trim() == "" ? null : brand.Trim();
+  product.Summary = summary.Trim() == "" ? null : summary.Trim();
+  product.Description = description.Trim() == "" ? null : description.Trim();
+  product.Price = price;
+  product.Status = status;
+  product.Category = category;
+  UnitOfWork.Commit();
+}
+
+/// A size (or colour) of a product, with the stock that arrived with it — recorded as a delivery.
+[Authorize(IsShopStaff)]
+public Variant AddVariant(Product product, string size, string colour, int stock) {
+  if (stock < 0) { throw new Exception("Stock cannot be negative."); }
+  var v = new Variant {
+    Product = product, Size = size.Trim() == "" ? null : size.Trim(), Colour = colour.Trim() == "" ? null : colour.Trim(),
+    Stock = stock, Rank = product.Variants.Count(),
+  };
+  if (stock > 0) { new StockMove { Variant = v, Change = stock, Reason = StockReason.Received, Note = "First stock", By = Session.CurrentUser }; }
+  UnitOfWork.Commit();
+  return v;
+}
+
+/// Takes a product off sale for good, keeping it for the orders that name it.
+[Authorize(IsShopStaff)]
+public void ArchiveProduct(Product product) {
+  product.Status = ProductStatus.Archived;
+  UnitOfWork.Commit();
+}
+
+/// Adds an uploaded photograph to a product: the file is copied into the public store, where the shop serves it.
+[Authorize(IsShopStaff)]
+public ProductImage AddProductPhoto(Product product, string uploadedPath, string alt) {
+  var bytes = File.ReadAllBytes(uploadedPath);
+  var dot = uploadedPath.LastIndexOf('.');
+  var ext = dot < 0 ? ".jpg" : uploadedPath.Substring(dot).ToLower();
+  var path = $"public/products/{product.Slug}-{Security.RandomHex(6)}{ext}";
+  File.WriteAllBytes(path, bytes);
+  var image = new ProductImage { Product = product, Path = path, Alt = alt.Trim() == "" ? product.Name : alt.Trim(), Rank = product.Images.Count() };
+  UnitOfWork.Commit();
+  return image;
+}
+
+/// Moves a photograph one place earlier (`-1`) or later (`+1`); the first is the cover.
+[Authorize(IsShopStaff)]
+public void MovePhoto(ProductImage image, int by) {
+  var images = image.Product.Images.OrderBy(i => i.Rank).ToList();
+  var at = images.IndexOf(image);
+  var to = at + by;
+  if (at < 0 || to < 0 || to >= images.Count) { return; }
+  images.RemoveAt(at);
+  images.Insert(to, image);
+  for (var i = 0; i < images.Count; i++) { images[i].Rank = i; }
+  UnitOfWork.Commit();
+}
+
+[Authorize(IsShopStaff)]
+public void RemovePhoto(ProductImage image) {
+  image.Delete();
+  UnitOfWork.Commit();
+}
+
+/// A name as a URL segment: "Cotton trench coat" → "cotton-trench-coat".
+string SlugOf(string name) {
+  var s = "";
+  foreach (var c in name.Trim().ToLower()) {
+    if (char.IsLetterOrDigit(c)) { s = s + c; }
+    else if (s.Length > 0 && !s.EndsWith("-")) { s = s + "-"; }
+  }
+  return s.TrimEnd('-');
+}

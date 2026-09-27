@@ -1,0 +1,108 @@
+// What the shop can learn from itself: what sells, what people look at, and what sits. No personal data — a view is a
+// count per product per day, never a person.
+
+namespace Osysharp.Shop;
+
+/// How many times a product's page was opened on one day.
+///
+/// ⚑ A COUNT, NOT A LOG. One row per product per day, raised in place, so a busy page costs one small row a day rather
+///   than one per visit, and nothing here can say who looked. Two first views racing may each start a row for the day;
+///   the statistics sum them, so nothing is lost and nothing needs a lock.
+public entity ProductDayViews {
+  [Required] Product Product;
+  DateTime Day;
+  int Count;
+  security {
+    allow create, update when IsAnonymous || IsAuthenticated;   // a visitor's page open counts itself — nothing more
+    allow read, delete when IsShopStaff;
+  }
+}
+
+/// Counts one opening of a product's page. The product page calls it; it answers nothing and never fails the page.
+[AllowAnonymous]
+public void ViewedProduct(Product product) {
+  var today = DateTime.UtcNow.Date;
+  var raised = ProductDayViews.Where(v => v.Product == product && v.Day == today).Update(v => { v.Count = v.Count + 1; });
+  if (raised == 0) {
+    new ProductDayViews { Product = product, Day = today, Count = 1 };
+    UnitOfWork.Commit();
+  }
+}
+
+/// One product's figures over a period.
+public class ProductFigures {
+  public Product Product;
+  public int Units;
+  public decimal Revenue;
+  public int Views;
+  /// Orders per hundred views, when there were views — the page that is looked at and not bought is the one to fix.
+  public decimal Conversion;
+}
+
+/// The best sellers over the last `days`, by units sold in paid orders — with each one's revenue, views and conversion.
+[Authorize(IsShopStaff)]
+public List<ProductFigures> TopSellers(int days, int count) {
+  var figures = FiguresSince(DateTime.UtcNow.AddDays(-days));
+  return figures.Where(f => f.Units > 0).OrderByDescending(f => f.Units).ThenByDescending(f => f.Revenue).Take(count).ToList();
+}
+
+/// The most looked-at products over the last `days`, with how many of the looks became sales.
+[Authorize(IsShopStaff)]
+public List<ProductFigures> MostViewed(int days, int count) {
+  var figures = FiguresSince(DateTime.UtcNow.AddDays(-days));
+  return figures.Where(f => f.Views > 0).OrderByDescending(f => f.Views).Take(count).ToList();
+}
+
+/// Listed products with stock that have not sold in `days` — what to promote or mark down, longest-sitting first.
+[Authorize(IsShopStaff)]
+public List<Product> SlowMovers(int days, int count) {
+  var since = DateTime.UtcNow.AddDays(-days);
+  var sold = OrderLine.Where(l => l.Order.PaidAt != null && l.Order.PlacedAt >= since).Select(l => l.Variant.Product.Id).ToList();
+  return Product.Where(p => p.Status == ProductStatus.Listed && p.CreatedAt < since).OrderBy(p => p.CreatedAt).ToList()
+    .Where(p => !sold.Contains(p.Id) && p.Variants.ToList().Any(v => v.Stock > 0))
+    .Take(count).ToList();
+}
+
+/// What paid orders brought in over the last `days` — the headline numbers for the desk.
+public class ShopTotals {
+  public int Orders;
+  public decimal Revenue;
+  public decimal AverageOrder;
+  public int Returns;
+  public decimal Refunded;
+}
+
+[Authorize(IsShopStaff)]
+public ShopTotals TotalsFor(int days) {
+  var since = DateTime.UtcNow.AddDays(-days);
+  var paid = Order.Where(o => o.PaidAt != null && o.PlacedAt >= since).ToList();
+  var returns = ReturnRequest.Where(r => r.RequestedAt >= since).ToList();
+  return new ShopTotals {
+    Orders = paid.Count,
+    Revenue = paid.Sum(o => o.Total),
+    AverageOrder = paid.Count == 0 ? 0 : Math.Round(paid.Sum(o => o.Total) / paid.Count, 2),
+    Returns = returns.Count,
+    Refunded = returns.Where(r => r.Status == ReturnStatus.Refunded).Sum(r => r.Amount),
+  };
+}
+
+List<ProductFigures> FiguresSince(DateTime since) {
+  var lines = OrderLine.Where(l => l.Order.PaidAt != null && l.Order.PlacedAt >= since).Include(l => l.Variant.Product).ToList();
+  var views = ProductDayViews.Where(v => v.Day >= since.Date).Include(v => v.Product).ToList();
+  var byProduct = new Dictionary<Guid, ProductFigures>();
+  foreach (var l in lines) {
+    var p = l.Variant.Product;
+    if (!byProduct.ContainsKey(p.Id)) { byProduct[p.Id] = new ProductFigures { Product = p }; }
+    byProduct[p.Id].Units = byProduct[p.Id].Units + l.Quantity;
+    byProduct[p.Id].Revenue = byProduct[p.Id].Revenue + l.Price * l.Quantity;
+  }
+  foreach (var v in views) {
+    if (!byProduct.ContainsKey(v.Product.Id)) { byProduct[v.Product.Id] = new ProductFigures { Product = v.Product }; }
+    byProduct[v.Product.Id].Views = byProduct[v.Product.Id].Views + v.Count;
+  }
+  var all = byProduct.Values.ToList();
+  foreach (var f in all) {
+    f.Conversion = f.Views == 0 ? 0 : Math.Round(100m * f.Units / f.Views, 1);
+  }
+  return all;
+}

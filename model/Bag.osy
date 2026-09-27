@@ -1,0 +1,219 @@
+// The bag. A visitor's bag belongs to their VISIT (`Visitor.Id`, sent from the browser); a signed-in customer's
+// belongs to their ACCOUNT, and follows them across devices and weeks. The first time a signed-in customer's visit is
+// seen, what that visit had in its bag moves into the account's — so signing in half-way through shopping loses nothing.
+//
+// The visit id names a visit and authorises nothing — what may be bought, and how many, is decided by these functions
+// and by the order's workflow, on the server.
+//
+// ⚑ A SAVED BAG GOES STALE, and says so. A bag kept for a week holds things that have sold, run short or changed
+//   price since. `LineProblem` says which, in the customer's words, and `FixBag` makes the bag true — nothing is
+//   silently changed under them, and the checkout refuses a bag that is not.
+
+namespace Osysharp.Shop;
+
+public entity Bag {
+  /// The visit it was started on. A signed-in customer's bag keeps the last one it was seen on.
+  [MaxLength(64)] string? VisitId;
+  /// Whose bag it is — null for a visitor who has not signed in.
+  ShopAccount? Owner;
+  [ForeignKey(Bag)] BagLine[] Lines;
+  security { allow read, create, update, delete when IsAnonymous || IsAuthenticated where Owner == null || Owner == user || IsShopStaff; }
+}
+
+public entity BagLine {
+  [Required] Bag Bag;
+  [Required] Variant Variant;
+  int Quantity = 1;
+  /// What one cost when it went in — so a price that moved since can be pointed out rather than sprung at checkout.
+  decimal PriceWhenAdded;
+  security { allow read, create, update, delete when IsAnonymous || IsAuthenticated where Bag.Owner == null || Bag.Owner == user || IsShopStaff; }
+}
+
+/// The bag this caller is filling: the account's when signed in (taking over the visit's, once), else the visit's.
+/// Null when there is none yet and `create` is false.
+[AllowAnonymous]
+public Bag? BagFor(string visitId, bool create) {
+  var me = Session.CurrentUser;
+  var visitBag = Bag.Include(b => b.Lines).FirstOrDefault(b => b.VisitId == visitId && b.Owner == null);
+  if (me == null) {
+    if (visitBag == null && create) { visitBag = new Bag { VisitId = visitId }; }
+    return visitBag;
+  }
+  var mine = Bag.Include(b => b.Lines).FirstOrDefault(b => b.Owner == me);
+  if (mine == null && visitBag == null && !create) { return null; }
+  if (mine == null) { mine = new Bag { Owner = me, VisitId = visitId }; }
+  if (visitBag != null) {
+    // Signed in with things already in the visit's bag: they join the account's, never more than there are.
+    foreach (var l in visitBag.Lines) {
+      var same = mine.Lines.FirstOrDefault(x => x.Variant == l.Variant);
+      if (same == null) {
+        new BagLine { Bag = mine, Variant = l.Variant, Quantity = l.Quantity, PriceWhenAdded = l.PriceWhenAdded };
+      } else {
+        same.Quantity = Math.Min(same.Quantity + l.Quantity, Math.Max(l.Variant.Stock, same.Quantity));
+      }
+      l.Delete();
+    }
+    // The lines go in their own commit, before the bag: a line's rule asks whose BAG it is in, and a bag deleted in
+    // the same commit is no longer there to answer.
+    UnitOfWork.Commit();
+    visitBag.Delete();
+  }
+  mine.VisitId = visitId;
+  UnitOfWork.Commit();
+  return mine;
+}
+
+/// Puts `quantity` of a variant in the caller's bag, or adds to what is there. Answers "" when it went in, or the
+/// sentence to show when it did not — sold out, not that many left, not on sale.
+[AllowAnonymous]
+public string AddToBag(string visitId, Variant variant, int quantity) {
+  if (quantity < 1) { return "Choose how many."; }
+  if (variant.Product.Status != ProductStatus.Listed) { return "That is no longer for sale."; }
+  if (variant.Stock == 0) { return "Sold out."; }
+  var bag = BagFor(visitId, true);
+  var line = bag.Lines.FirstOrDefault(l => l.Variant == variant);
+  var wanted = (line == null ? 0 : line.Quantity) + quantity;
+  if (wanted > variant.Stock) {
+    return variant.Stock == 1 ? "There is only one." : $"There are only {variant.Stock}.";
+  }
+  if (line == null) { new BagLine { Bag = bag, Variant = variant, Quantity = quantity, PriceWhenAdded = PriceOf(variant) }; }
+  else { line.Quantity = wanted; }
+  UnitOfWork.Commit();
+  return "";
+}
+
+/// Changes how many of a line the bag holds; zero takes it out.
+[AllowAnonymous]
+public string SetQuantity(BagLine line, int quantity) {
+  if (quantity <= 0) { line.Delete(); UnitOfWork.Commit(); return ""; }
+  if (quantity > line.Variant.Stock) { return line.Variant.Stock == 0 ? "Sold out." : $"There are only {line.Variant.Stock}."; }
+  line.Quantity = quantity;
+  UnitOfWork.Commit();
+  return "";
+}
+
+[AllowAnonymous]
+public void RemoveFromBag(BagLine line) {
+  line.Delete();
+  UnitOfWork.Commit();
+}
+
+/// What has changed about a line since it went in the bag, as the customer reads it — or "" when nothing has.
+[AllowAnonymous]
+public string LineProblem(BagLine line) {
+  var v = line.Variant;
+  if (v.Product.Status != ProductStatus.Listed) { return "No longer for sale."; }
+  if (v.Stock == 0) { return "Sold out since you added it."; }
+  if (line.Quantity > v.Stock) { return v.Stock == 1 ? "Only one is left." : $"Only {v.Stock} are left."; }
+  var now = PriceOf(v);
+  if (now != line.PriceWhenAdded && line.PriceWhenAdded > 0) {
+    var shop = TheShop();
+    return now < line.PriceWhenAdded
+      ? $"Now {Money(now, shop)} — down from {Money(line.PriceWhenAdded, shop)}."
+      : $"Now {Money(now, shop)} — it was {Money(line.PriceWhenAdded, shop)} when you added it.";
+  }
+  return "";
+}
+
+/// Whether anything in the bag needs the customer's attention before it can be bought.
+[AllowAnonymous]
+public bool BagNeedsFixing(string visitId) {
+  var bag = BagFor(visitId, false);
+  return bag != null && bag.Lines.ToList().Any(l => LineProblem(l) != "");
+}
+
+/// Makes the bag true: what sold out or left sale leaves it, what ran short drops to what is left, and a moved price
+/// is accepted. Answers what it changed — "Loafer (38) has sold out; only one Chelsea (38) is left" — or "".
+[AllowAnonymous]
+public string FixBag(string visitId) {
+  var bag = BagFor(visitId, false);
+  if (bag == null) { return ""; }
+  var changes = new List<string>();
+  foreach (var l in bag.Lines.ToList()) {
+    var v = l.Variant;
+    var what = VariantLabel(v) == "" ? v.Product.Name : $"{v.Product.Name} ({VariantLabel(v)})";
+    if (v.Product.Status != ProductStatus.Listed || v.Stock == 0) {
+      changes.Add($"{what} has sold out");
+      l.Delete();
+    } else {
+      if (l.Quantity > v.Stock) {
+        changes.Add(v.Stock == 1 ? $"only one {what} is left" : $"only {v.Stock} of {what} are left");
+        l.Quantity = v.Stock;
+      }
+      var now = PriceOf(v);
+      if (l.PriceWhenAdded > 0 && now != l.PriceWhenAdded) { changes.Add($"{what} is now {Money(now, TheShop())}"); }
+      l.PriceWhenAdded = now;
+    }
+  }
+  UnitOfWork.Commit();
+  return string.Join("; ", changes);
+}
+
+/// What the bag's contents cost, before delivery.
+public decimal BagSubtotal(Bag bag) {
+  return bag.Lines.Sum(l => (l.Variant.Price ?? l.Variant.Product.Price) * l.Quantity);
+}
+
+/// How many things are in the bag — what the bag icon's badge says.
+[AllowAnonymous]
+public int BagCount(string visitId) {
+  var bag = BagFor(visitId, false);
+  return bag == null ? 0 : bag.Lines.Sum(l => l.Quantity);
+}
+
+/// A variant is back: asks to be mailed when it is. Answers the sentence to show.
+[AllowAnonymous]
+public string NotifyMe(Variant variant, string email) {
+  var address = email.Trim().ToLower();
+  if (!address.Contains("@")) { return "We need an email address to tell you."; }
+  if (variant.Stock > 0) { return "It is in stock now."; }
+  // No check for an alert already waiting: a visitor may not read the alerts, and the mail goes once per address.
+  new StockAlert { Variant = variant, Email = address };
+  UnitOfWork.Commit();
+  return "We will mail you when it is back.";
+}
+
+/// A whole product is gone: waits for ANY of its sizes to come back, one alert per sold-out size. Answers the sentence
+/// to show.
+[AllowAnonymous]
+public string NotifyWhenBack(Product product, string email) {
+  var address = email.Trim().ToLower();
+  if (!address.Contains("@")) { return "We need an email address to tell you."; }
+  var gone = product.Variants.ToList().Where(v => v.Stock == 0).ToList();
+  if (gone.Count == 0) { return "It is in stock now."; }
+  foreach (var v in gone) { new StockAlert { Variant = v, Email = address }; }
+  UnitOfWork.Commit();
+  return "We will mail you when it is back.";
+}
+
+/// Somebody waiting for a variant to come back.
+public entity StockAlert {
+  [Required] Variant Variant;
+  [Required, MaxLength(255)] string Email;
+  DateTime? SentAt;
+  security {
+    allow create when IsAnonymous || IsAuthenticated;
+    allow read, update, delete when IsShopStaff;
+  }
+}
+
+/// Mails everybody waiting for a variant that is back in stock, once per address. Runs as whoever raised the stock —
+/// staff restocking, or an order's workflow giving goods back.
+void SendStockAlerts(Variant variant) {
+  if (variant.Stock <= 0) { return; }
+  var waiting = StockAlert.Where(a => a.Variant == variant && a.SentAt == null).ToList();
+  if (waiting.Count == 0) { return; }
+  var shop = TheShop();
+  var what = VariantLabel(variant) == "" ? variant.Product.Name : $"{variant.Product.Name} ({VariantLabel(variant)})";
+  var mailed = new List<string>();
+  foreach (var a in waiting) {
+    if (!mailed.Contains(a.Email)) {
+      Mail(a.Email, $"{what} is back at {shop.Name}",
+        $"You asked us to tell you: {what} is back in stock at {shop.Name}, for {Money(PriceOf(variant), shop)}.\n\n"
+        + (shop.SiteUrl == null ? "" : $"{shop.SiteUrl.TrimEnd('/')}/product/{variant.Product.Slug}\n\n")
+        + "There may not be many — it goes to whoever orders first.");
+      mailed.Add(a.Email);
+    }
+    a.SentAt = DateTime.UtcNow;
+  }
+}

@@ -1,0 +1,189 @@
+// The catalogue — categories in a tree, products in them, several photographs per product, and the variants a
+// customer actually buys: a size, a colour, or both, each with its own stock.
+//
+// ⚑ A PRODUCT IS BOUGHT THROUGH A VARIANT, ALWAYS. A product with no options has exactly one variant (no size, no
+//   colour). That keeps one road through the bag, the order and the stock, whatever the shop sells. A thrift shop is
+//   the same catalogue with every variant's stock at 1.
+//
+// ⚑ WHAT IS PARTICULAR TO YOUR GOODS IS DATA: a product's `Specs` are its spec sheet — "Frame size: 56 cm",
+//   "Material: 100% merino", "Era: 1970s" — so the desk adds a line without a developer and without a recompile.
+//   A subtype of your own — `entity Bike : Product { … }` — adds the fields that are the same for every product
+//   you sell, and may state its own `security { }`.
+
+namespace Osysharp.Shop;
+
+/// A shelf — "Women", "Women › Shoes", "Women › Shoes › Boots". `Parent` makes the tree; a top-level category has none.
+public entity Category {
+  [Required, MaxLength(80)] string Name;
+  /// What the address says — `/shop/womens-shoes`. Unique across the whole tree.
+  [Required, Unique, MaxLength(80)] string Slug;
+  Category? Parent;
+  [MaxLength(600)] string? Blurb;
+  /// A picture for the shelf — a path in the app's public file store, like a product photo's.
+  [MaxLength(300)] string? Picture;
+  int Rank = 0;
+  [ForeignKey(Parent)] Category[] Children;
+  [ForeignKey(Category)] Product[] Products;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// Where a product is in its life. A DRAFT is the desk's and nobody else's; ARCHIVED is off the shop floor but kept,
+/// because orders name it.
+public enum ProductStatus {
+  [Label("Draft")] Draft,
+  [Label("Listed")] Listed,
+  [Label("Archived")] Archived,
+}
+
+/// A thing the shop sells. Customers buy one of its `Variants`; its `Images` are shown in `Rank` order, the first as
+/// the cover.
+public entity Product {
+  [Required, MaxLength(120)] string Name;
+  [Required, Unique, MaxLength(120)] string Slug;
+  [MaxLength(80)] string? Brand;
+  Category? Category;
+  /// One line for a card.
+  [MaxLength(300)] string? Summary;
+  /// The full story, for the product's own page.
+  [MaxLength(4000)] string? Description;
+  decimal Price;
+  /// What it cost before — shown struck through when it is higher than `Price`.
+  decimal? WasPrice;
+  ProductStatus Status = ProductStatus.Listed;
+  bool Featured = false;
+  int Rank = 0;
+  [ForeignKey(Product)] ProductImage[] Images;
+  [ForeignKey(Product)] Variant[] Variants;
+  [ForeignKey(Product)] ProductSpec[] Specs;
+
+  // ⚠ What a page shows about a product — its cover, whether it is sold, reserved or available — is read off its
+  //   loaded `Images` and `Variants` (`bike.Variants.All(v => v.Stock == 0)`), not off computed properties: a computed
+  //   member over a child COLLECTION compiles and then cannot be read yet. The server-side
+  //   answers are the functions at the foot of this file.
+
+  security {
+    // Anyone sees a listed or archived product; a draft is the desk's alone. ONE rule on purpose: a `where` alone
+    // does not admit an anonymous visitor, and a second `allow read` beside it would mix conditions the default
+    // Narrowable authority refuses.
+    allow read when IsAnonymous || IsAuthenticated where Status != ProductStatus.Draft || IsShopStaff;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// One photograph of a product. `Colour`, when set, ties it to the variants of that colour, so choosing "Black" can
+/// show the black one.
+///
+/// ⚑ THE PHOTO IS A PATH in the app's public file store (`public/products/loafer-1.jpg`), shown with
+///   `Image(src: File.Url(image.Path))`. One representation for both ways a photo arrives: `osy import` carries the
+///   bytes of a data file's `"files": { "Path": "public/products" }` column, and a desk upload writes the file and
+///   stores its path. A public path is what an `<img>` can fetch — it sends no sign-in.
+public entity ProductImage {
+  [Required] Product Product;
+  [Required, MaxLength(300)] string Path;
+  /// What the photograph shows — read aloud to anyone who cannot see it.
+  [MaxLength(200)] string? Alt;
+  [MaxLength(40)] string? Colour;
+  int Rank = 0;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// One line of a product's spec sheet, shown in `Rank` order.
+public entity ProductSpec {
+  [Required] Product Product;
+  [Required, MaxLength(60)] string Name;
+  [Required, MaxLength(300)] string Value;
+  int Rank = 0;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+
+/// What a customer actually buys: a product in one size and/or one colour, with its own stock.
+///
+/// ⚑ STOCK IS ONLY EVER TAKEN BY AN ORDER'S WORKFLOW (see Orders.osy), which writes as the system. A visitor cannot
+///   write it, and `[ConcurrencyCheck]` makes two orders racing for the last one meet: one wins, the other is retried
+///   and sees it gone.
+public entity Variant {
+  [Required] Product Product;
+  [MaxLength(40)] string? Size;
+  [MaxLength(40)] string? Colour;
+  [MaxLength(60)] string? Sku;
+  [ConcurrencyCheck] int Stock = 0;
+  /// Units held by orders that are not paid yet — taken from `Stock`, and back in it if the order lapses. Written by
+  /// the order's workflow alone, like `Stock`.
+  int Reserved = 0;
+  /// Overrides the product's price for this variant — a larger size that costs more.
+  decimal? Price;
+  int Rank = 0;
+
+  /// What this variant costs.
+  decimal EffectivePrice => Price ?? Product.Price;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// What this variant costs — `variant.EffectivePrice`, as a function for server code that prefers one.
+public decimal PriceOf(Variant variant) {
+  return variant.Price ?? variant.Product.Price;
+}
+
+/// The category and every category under it, three levels deep — what "Women" should list.
+public bool IsUnder(Category? category, Category shelf) {
+  if (category == null) { return false; }
+  if (category == shelf) { return true; }
+  if (category.Parent == null) { return false; }
+  if (category.Parent == shelf) { return true; }
+  return category.Parent.Parent != null && category.Parent.Parent == shelf;
+}
+
+/// The value of one line of a product's spec sheet — `Spec(bike.Specs, "Frame size")` — or "" when it has none.
+///
+/// ⚑ THE READ HELPERS TAKE THE LOADED ROWS, NOT THE PRODUCT, so a page can call them while it renders: a function that
+///   only reads what it is handed runs in place, and one that navigates from an entity is a trip to the server,
+///   which a render cannot make. Load the product with `.Include(p => p.Specs)` (and `Images`, `Variants`) and hand
+///   those in. (An entity cannot carry a method yet — `bike.Spec("Year")` is the shape this wants to become.)
+public string Spec(ProductSpec[] specs, string name) {
+  return specs.Where(s => s.Name == name).Select(s => s.Value).FirstOrDefault() ?? "";
+}
+
+/// "M", "Black", "Black / M" — or "" for a product with no options.
+public string VariantLabel(Variant variant) {
+  var size = variant.Size ?? "";
+  var colour = variant.Colour ?? "";
+  if (size != "" && colour != "") { return $"{colour} / {size}"; }
+  return size != "" ? size : colour;
+}
+
+/// The cover photograph — the first by `Rank` — as a path in the file store, or "" when it has none.
+public string CoverPhoto(ProductImage[] images) {
+  return images.OrderBy(i => i.Rank).Select(i => i.Path).FirstOrDefault() ?? "";
+}
+
+/// Whether an unpaid order is holding some of this product — "reserved" rather than "sold"; it comes back if the
+/// order lapses.
+public bool OnHold(Variant[] variants) {
+  return variants.Any(v => v.Reserved > 0);
+}
+
+/// Gone for good: nothing to buy and nothing merely reserved.
+public bool Sold(Variant[] variants) {
+  return variants.All(v => v.Stock == 0 && v.Reserved == 0);
+}
+
+/// How a list of products is ordered on the search and sale pages.
+public enum ProductSort {
+  [Label("Newest")] Newest,
+  [Label("Price, low to high")] PriceLow,
+  [Label("Price, high to low")] PriceHigh,
+  [Label("Name")] Name,
+}

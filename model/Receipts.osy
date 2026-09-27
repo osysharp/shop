@@ -1,0 +1,83 @@
+// A receipt as a PDF: what was bought, what it cost, the VAT inside it and how it was paid — the document a customer
+// keeps for their records and a return needs. Written by Osysharp.PdfWriter and kept as a PRIVATE file; the link to
+// it is signed and expires, so a receipt is never a public address.
+
+namespace Osysharp.Shop;
+
+using Osysharp.PdfWriter;
+using Osysharp.Storage;
+
+/// The receipt's link, for the account whose order it is or for staff. Written when asked for, so it always shows
+/// the order as it now stands.
+public string ReceiptLink(Order order) {
+  var me = Session.CurrentUser;
+  if (me == null) { throw new Exception("Sign in to fetch a receipt."); }
+  if (order.Account != me && !ShopRoleGrant.Any(g => g.Member == me && g.Role == ShopRole.Staff)) {
+    throw new Exception("That order is not on your account.");
+  }
+  var path = $"receipts/{order.Id}.pdf";
+  File.WriteAllBytes(path, ReceiptPdf(order));
+  return File.SignedUrl(path);
+}
+
+/// The receipt itself.
+public byte[] ReceiptPdf(Order order) {
+  var shop = TheShop();
+  var doc = new PdfDocument { Title = $"Receipt {order.Reference} — {shop.Name}" };
+  var left = 56.0;
+  var right = 539.0;
+  var y = 780.0;
+
+  doc.Text(left, y, shop.Name, 20, true);
+  if (shop.ContactEmail != null) { doc.TextRight(right, y, shop.ContactEmail, 9); }
+  y = y - 44;
+  doc.Text(left, y, "Receipt", 14, true);
+  doc.TextRight(right, y, order.Reference, 14, true);
+  y = y - 18;
+  doc.Text(left, y, $"Placed {order.PlacedAt.ToString("d MMMM yyyy")} · {order.Status.Label}", 10);
+  if (order.PaidAt != null) { doc.TextRight(right, y, $"Paid {order.PaidAt.Value.ToString("d MMMM yyyy")}" + (order.PaidWith == null ? "" : $" · {order.PaidWith}"), 10); }
+
+  var contact = order.Contact.FirstOrDefault();
+  if (contact != null) {
+    y = y - 30;
+    doc.Text(left, y, contact.Name, 10, true);
+    foreach (var line in new List<string> { contact.Street ?? "", $"{contact.PostCode ?? ""} {contact.City ?? ""}".Trim(), contact.Country ?? "", contact.Email }) {
+      if (line != "") { y = y - 14; doc.Text(left, y, line, 10); }
+    }
+  }
+
+  y = y - 34;
+  doc.Text(left, y, "Item", 9, true);
+  doc.TextRight(right - 90, y, "Qty", 9, true);
+  doc.TextRight(right, y, "Amount", 9, true);
+  y = y - 8;
+  doc.Line(left, y, right, y, 0.5, 0.6);
+  foreach (var l in order.Lines.ToList()) {
+    y = y - 18;
+    doc.Text(left, y, l.VariantLabel == null ? l.ProductName : $"{l.ProductName} ({l.VariantLabel})", 10);
+    doc.TextRight(right - 90, y, $"{l.Quantity}", 10);
+    doc.TextRight(right, y, Money(l.Price * l.Quantity, shop), 10);
+  }
+  y = y - 12;
+  doc.Line(left, y, right, y, 0.5, 0.6);
+  if (order.Delivery > 0) {
+    y = y - 18;
+    doc.Text(left, y, "Delivery", 10);
+    doc.TextRight(right, y, Money(order.Delivery, shop), 10);
+  }
+  y = y - 22;
+  doc.Text(left, y, "Total", 12, true);
+  doc.TextRight(right, y, Money(order.Total, shop), 12, true);
+  if (order.Vat > 0) {
+    y = y - 16;
+    doc.TextRight(right, y, $"of which VAT {Money(order.Vat, shop)}", 9);
+  }
+
+  y = 90;
+  doc.Line(left, y + 14, right, y + 14, 0.5, 0.8);
+  foreach (var line in doc.Wrap($"Not right? You may return what you bought within {shop.ReturnDays} days of it being sent — sign in and return it from your orders.", right - left, 9)) {
+    doc.Text(left, y, line, 9);
+    y = y - 12;
+  }
+  return doc.ToBytes();
+}

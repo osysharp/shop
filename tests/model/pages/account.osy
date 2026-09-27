@@ -1,0 +1,15 @@
+// The account pages a store writes around the kit's components — here as bare as a page can be, so the tests drive
+// the components and nothing else.
+using Osysharp.Shop;
+using Osysharp.Ui;
+
+[Page("/")] [AllowAnonymous] component KitHome() { render { Text("Kit test shop"); } }
+[Page("/account/sign-in")] [AllowAnonymous] component KitSignIn() { render { ShopSignIn(); } }
+[Page("/account/new")] [AllowAnonymous] component KitSignUp() { render { ShopSignUp(); } }
+[Page("/account/forgot")] [AllowAnonymous] component KitForgot() { render { ShopForgotPassword(); } }
+[Page("/account/reset/{token}")] [AllowAnonymous] component KitReset(string token) { render { ShopChooseNewPassword(token); } }
+[Page("/account")] component KitAccount() { render { ShopAccountPanel(); } }
+[Page("/desk")] component KitDesk() { render { ShopDesk(); } }
+[Page("/search")] [AllowAnonymous] component KitSearch() { render { ShopSearchPage(); } }
+[Page("/sale")] [AllowAnonymous] component KitSale() { render { ShopSearchPage(onlySale: true); } }
+[Page("/returns-policy")] [AllowAnonymous] component KitReturns() { render { ShopPolicy("returns"); } }

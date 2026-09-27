@@ -1,0 +1,34 @@
+// Finding things: the search, its size filter, the sale shelf and a policy page.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Floor)]
+void a_search_finds_by_name_and_narrows_by_size() {
+  Ui.Visit("/search");
+  Assert.Visible("Loafer");
+  Assert.Visible("Chelsea");
+  Assert.Hidden("Secret");                           // a draft is never found
+  Ui.Fill("Search", "loaf");
+  Assert.Visible("Loafer");
+  Assert.Hidden("Chelsea");
+  Ui.Fill("Search", "");
+  Ui.Click("39");
+  Assert.Visible("Loafer");
+  Assert.Hidden("Chelsea");                          // Chelsea has no 39
+}
+
+[Test(Floor)]
+void the_sale_page_shows_only_what_is_marked_down() {
+  runas (Desk) { Workflow.Settle(MarkDown(Product.Single(p => p.Name == "Chelsea"), 20, 5)); }
+  Ui.Visit("/sale");
+  Assert.Visible("Chelsea");
+  Assert.Hidden("Loafer");
+  Assert.Visible("€144");                            // 180 less 20%
+}
+
+[Test(Floor)]
+void the_returns_policy_says_the_window_when_the_shop_wrote_nothing() {
+  Ui.Visit("/returns-policy");
+  Assert.Visible("You may send back anything you bought within 30 days of it being sent.");
+}

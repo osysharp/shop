@@ -1,0 +1,475 @@
+// Orders. A visitor places the bag as an order and pays by card (Stripe's hosted page — see Payments.osy), by bank
+// transfer, or on collection. With no Stripe keys set the card is simply not offered.
+//
+// ⚑ THE ORDER'S WORKFLOW TAKES THE STOCK. An order is committed first and its workflow then DECIDES (`Placed`): if
+//   every line's stock is still there it takes it and the order is `Reserved`; if not, the order is `Unavailable` and
+//   says what ran out. The workflow writes as the system, which is what lets an anonymous visitor's order take stock
+//   the visitor could never write — and `Variant.Stock`'s `[ConcurrencyCheck]` makes two orders racing for the last
+//   one meet, so the second is retried and finds it gone. `PlaceOrder` reads the outcome on the line after its commit.
+//
+// ⚑ THE ORDER CARRIES NO PERSONAL DATA, and that split is what lets a visitor see their own receipt. An order is a
+//   reference, amounts, a status and its lines. WHO placed it lives in `OrderContact`, which only staff read.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Klarna;
+using Osysharp.Stripe;
+using Osysharp.Workflow;
+
+Counter OrderNumber = new() { Start = 1040 };
+
+public enum Fulfilment {
+  [Label("Collect")] Collect,
+  [Label("Delivery")] Deliver,
+}
+
+public enum Payment {
+  [Label("Card")] Card,
+  [Label("Bank transfer")] BankTransfer,
+  [Label("Pay on collection")] OnCollection,
+  [Label("Klarna")] Klarna,
+}
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum OrderStatus {
+  [Label("Placed")] Placed,
+  [Label("Reserved")] Reserved,
+  [Label("Unavailable")] Unavailable,
+  [Label("Paid")] Paid,
+  [Label("Sent")] Fulfilled,
+  [Label("Lapsed")] Lapsed,
+  [Label("Cancelled")] Cancelled,
+  [Label("Refund requested")] RefundRequested,
+  [Label("Refund processing")] RefundProcessing,
+  [Label("Refunded")] Refunded,
+  [Label("Voided")] Voided,
+}
+
+public entity Order {
+  [Counter(OrderNumber)] int Number;
+  /// What the customer quotes — the shop's prefix and the number. Unique: a payment finds its order by it.
+  [Unique, MaxLength(24)] string Reference;
+  [Required] Fulfilment Fulfilment;
+  [Required] Payment Payment;
+  decimal Subtotal;
+  decimal Delivery;
+  decimal Total;
+  /// Copied from the shop when the order is placed, so changing the setting later does not move a live hold.
+  int HoldDays = 3;
+  DateTime PlacedAt;
+  OrderStatus Status;                                // no default — OrderLifecycle owns it
+  /// Why the order could not go through (`Unavailable`), in a sentence for the customer.
+  [MaxLength(400)] string? Problem;
+  [MaxLength(40)] string? PaidWith;
+  DateTime? PaidAt;
+  DateTime? FulfilledAt;
+  /// The courier's tracking number, or how it was handed over.
+  [MaxLength(120)] string? Tracking;
+  [MaxLength(300)] string? CancelReason;
+  /// Stripe's payment id for a card payment — what a refund is made against, and how Stripe's refund events find
+  /// this order again.
+  [MaxLength(80), Unique] string? PaymentRef;
+  [MaxLength(80)] string? RefundRef;
+  [MaxLength(300)] string? RefundReason;
+  [MaxLength(300)] string? RefundProblem;
+  /// Whether a refund puts the goods back in stock — true when they came back, false when they did not.
+  bool RestockOnRefund = true;
+  /// The account it was placed from — null for a guest. What puts it in the customer's order history.
+  ShopAccount? Account;
+  /// The VAT part of the total, at the shop's rate when the order was placed.
+  decimal Vat;
+  [ForeignKey(Order)] OrderLine[] Lines;
+  [ForeignKey(Order)] OrderContact[] Contact;        // exactly one — staff's to read
+  security {
+    allow read, create when IsAnonymous || IsAuthenticated;
+    allow update when IsShopStaff;
+  }
+}
+
+/// Who an order is for, and where it goes. Staff's to read — nobody else's.
+public entity OrderContact {
+  [Required, Unique] Order Order;
+  [Required, MaxLength(120)] string Name;
+  [Required, MaxLength(200)] string Email;
+  [MaxLength(40)] string? Phone;
+  [MaxLength(200)] string? Street;
+  [MaxLength(20)] string? PostCode;
+  [MaxLength(80)] string? City;
+  [MaxLength(80)] string? Country;
+  security {
+    allow create when IsAnonymous || IsAuthenticated;
+    // Staff, and the customer whose account placed the order — their own address, in their own order history.
+    allow read when IsAuthenticated where Order.Account == user || IsShopStaff;
+    allow update when IsShopStaff;
+  }
+}
+
+/// One thing ordered. The product's name and the variant's label are COPIED at the time of the order, so a renamed
+/// or archived product never rewrites what somebody bought.
+public entity OrderLine {
+  [Required] Order Order;
+  [Required] Variant Variant;
+  [Required, MaxLength(120)] string ProductName;
+  [MaxLength(80)] string? VariantLabel;
+  int Quantity = 1;
+  decimal Price;
+  /// Whether this line's units are out of stock on the order's account — set when the workflow takes them, cleared
+  /// when it gives them back.
+  bool Held = false;
+  security {
+    allow read, create when IsAnonymous || IsAuthenticated;
+    allow update, delete when IsShopStaff;
+  }
+}
+
+/// What the customer is shown once their order is placed. `PayUrl` is Stripe's page for a card order — the checkout
+/// sends the browser there — and empty otherwise, or when Stripe could not be reached (`PayProblem` says so).
+public class Receipt {
+  public string Reference;
+  public OrderStatus Status;
+  public decimal Total;
+  public Payment Payment;
+  public Fulfilment Fulfilment;
+  public string PayUrl = "";
+  public string PayProblem = "";
+}
+
+// ── the order's life ───────────────────────────────────────────────────────────────────────────────────────────
+//
+// ⚑ A PAYMENT FINDS ITS ORDER BY REFERENCE, and never by reading the row. Whoever reports a payment — Stripe's
+//   webhook, or staff marking a transfer received — is not somebody who may read a customer's order, and does not
+//   need to be: `[CorrelateOn]` deposits the event into the run that owns that reference.
+//
+// ⚑ AND A RESERVATION THAT IS NOT PAID LAPSES, after the shop's `HoldDays`, and its goods go back on sale.
+public workflow OrderLifecycle {
+  Tracks    = Order.Status;
+  Autostart = true;
+  Initial   = Placed;
+
+  [CorrelateOn(this.Item.Reference == reference)]
+  event PaymentReceived(string reference, string how, string paymentRef);
+
+  /// Staff call a reservation off before it lapses. Only while RESERVED: a paid order is refunded, not cancelled.
+  event Cancel(string reason);
+
+  /// A paid order has been sent, or collected.
+  event Fulfil(string tracking);
+
+  /// A refund, in the three steps the money takes: staff REQUEST it, Stripe may take a while (PROCESSING), and it is
+  /// REFUNDED once Stripe says so — or back where it was if Stripe says it failed.
+  event RequestRefund(string reason);
+
+  /// What Stripe says about a refund — from its answer to the request and from its signed `refund.*` webhooks. One
+  /// event for both, found by the payment it refunds, so the two cannot tell the order different stories.
+  [CorrelateOn(this.Item.PaymentRef == paymentRef)]
+  event RefundUpdate(string paymentRef, string status, string refundRef);
+
+  /// Ends the order whatever state it is in and puts its goods back, with no money moving — for a demo shop's reset,
+  /// or an order entered by mistake.
+  event Void(string reason);
+
+  state Placed {
+    enter {
+      var gone = this.Item.Lines
+        .Where(l => l.Variant.Stock < l.Quantity || l.Variant.Product.Status != ProductStatus.Listed)
+        .ToList();
+      if (gone.Count > 0) {
+        this.Item.Problem = string.Join("; ", gone.Select(l => GoneSentence(l)));
+        goto Unavailable;
+      }
+      foreach (var l in this.Item.Lines) {
+        l.Variant.Stock = l.Variant.Stock - l.Quantity;
+        l.Variant.Reserved = l.Variant.Reserved + l.Quantity;
+        l.Held = true;
+      }
+      MailCustomer(this.Item, $"Your order {this.Item.Reference}", ConfirmationText(this.Item));
+      goto Reserved;
+    }
+  }
+
+  terminal cancel Unavailable { }
+
+  state Reserved {
+    subscribe PaymentReceived() as Payment {
+      Finished {
+        Within = TimeSpan.FromDays(this.Item.HoldDays);
+        Unfinished { goto Lapsed; }
+      }
+    }
+    subscribe Cancel() as Cancellation;
+    subscribe Void() as VoidReserved;
+    on Payment(string reference, string how, string paymentRef) {
+      // Paid: what was reserved is sold. Out of `Reserved`, and still out of `Stock`.
+      foreach (var l in this.Item.Lines.Where(x => x.Held)) { l.Variant.Reserved = l.Variant.Reserved - l.Quantity; }
+      this.Item.PaidWith = how;
+      this.Item.PaymentRef = paymentRef == "" ? null : paymentRef;
+      this.Item.PaidAt = DateTime.UtcNow;
+      MailCustomer(this.Item, $"Paid — order {this.Item.Reference}",
+        $"Thank you — we have your payment of {Money(this.Item.Total, TheShop())} for order {this.Item.Reference}. "
+        + (this.Item.Fulfilment == Fulfilment.Deliver ? "We will mail you again when it is on its way." : "We will mail you when it is ready to collect."));
+      goto Paid;
+    }
+    on Cancellation(string reason) {
+      this.Item.CancelReason = reason;
+      goto Cancelled;
+    }
+    on VoidReserved(string reason) { this.Item.CancelReason = reason; goto Voided; }
+  }
+
+  state Paid {
+    subscribe Fulfil() as Sent;
+    subscribe RequestRefund() as RefundAsked;
+    subscribe Void() as VoidPaid;
+    on Sent(string tracking) {
+      this.Item.Tracking = tracking == "" ? null : tracking;
+      this.Item.FulfilledAt = DateTime.UtcNow;
+      MailCustomer(this.Item,
+        this.Item.Fulfilment == Fulfilment.Deliver ? $"On its way — order {this.Item.Reference}" : $"Collected — order {this.Item.Reference}",
+        (this.Item.Fulfilment == Fulfilment.Deliver
+          ? "Your order has been sent." + (this.Item.Tracking == null ? "" : $" Tracking: {this.Item.Tracking}.")
+          : "Your order has been collected. Enjoy it.")
+        + $" If it is not right you may return it within {TheShop().ReturnDays} days.");
+      goto Fulfilled;
+    }
+    on RefundAsked(string reason) {
+      this.Item.RefundReason = reason;
+      this.Item.RefundProblem = null;
+      goto RefundRequested;
+    }
+    on VoidPaid(string reason) { this.Item.CancelReason = reason; goto Voided; }
+  }
+
+  // Not terminal: a sent order can still be refunded — a return.
+  state Fulfilled {
+    subscribe RequestRefund() as ReturnAsked;
+    subscribe Void() as VoidFulfilled;
+    on ReturnAsked(string reason) {
+      this.Item.RefundReason = reason;
+      this.Item.RefundProblem = null;
+      goto RefundRequested;
+    }
+    on VoidFulfilled(string reason) { this.Item.CancelReason = reason; goto Voided; }
+  }
+
+  state RefundRequested {
+    subscribe RefundUpdate() as StripeSays;
+    subscribe Void() as VoidRequested;
+    on StripeSays(string paymentRef, string status, string refundRef) {
+      this.Item.RefundRef = refundRef == "" ? this.Item.RefundRef : refundRef;
+      if (status == "succeeded") { goto Refunded; }
+      if (status == "failed" || status == "canceled") {
+        this.Item.RefundProblem = $"Stripe: the refund {status}.";
+        if (this.Item.FulfilledAt != null) { goto Fulfilled; }
+        goto Paid;
+      }
+      goto RefundProcessing;
+    }
+    on VoidRequested(string reason) { this.Item.CancelReason = reason; goto Voided; }
+  }
+
+  state RefundProcessing {
+    subscribe RefundUpdate() as StripeSaysLater;
+    subscribe Void() as VoidProcessing;
+    on StripeSaysLater(string paymentRef, string status, string refundRef) {
+      if (status == "succeeded") { goto Refunded; }
+      if (status == "failed" || status == "canceled") {
+        this.Item.RefundProblem = $"Stripe: the refund {status}.";
+        if (this.Item.FulfilledAt != null) { goto Fulfilled; }
+        goto Paid;
+      }
+    }
+    on VoidProcessing(string reason) { this.Item.CancelReason = reason; goto Voided; }
+  }
+
+  terminal cancel Refunded {
+    enter {
+      if (this.Item.RestockOnRefund) { GiveBack(this.Item); }
+      MailCustomer(this.Item, $"Refunded — order {this.Item.Reference}",
+        $"We have refunded {Money(this.Item.Total, TheShop())} for order {this.Item.Reference}. "
+        + (this.Item.PaidWith == "Card" ? "It reaches your card within a few working days." : "We will send it back the way you paid."));
+    }
+  }
+  terminal cancel Lapsed { enter { GiveBack(this.Item); } }
+  terminal cancel Cancelled { enter { GiveBack(this.Item); } }
+  terminal cancel Voided { enter { GiveBack(this.Item); } }
+}
+
+/// Why one line could not be had, as the customer reads it.
+string GoneSentence(OrderLine line) {
+  var what = line.VariantLabel == null ? line.ProductName : $"{line.ProductName} ({line.VariantLabel})";
+  if (line.Variant.Product.Status != ProductStatus.Listed || line.Variant.Stock == 0) { return $"{what} has sold out"; }
+  return line.Variant.Stock == 1 ? $"only one {what} is left" : $"only {line.Variant.Stock} of {what} are left";
+}
+
+/// Puts an order's goods back in stock. Only lines that are holding stock — so an order that never took any, or
+/// already gave it back, changes nothing. An unpaid order's units also leave `Reserved`; a paid one's left it when
+/// it was paid.
+void GiveBack(Order order) {
+  foreach (var line in order.Lines.Where(l => l.Held)) {
+    line.Variant.Stock = line.Variant.Stock + line.Quantity;
+    if (order.PaidAt == null) { line.Variant.Reserved = line.Variant.Reserved - line.Quantity; }
+    line.Held = false;
+    SendStockAlerts(line.Variant);
+  }
+}
+
+/// Mails the customer an order's news. Written by the order's workflow, which writes as the system — a visitor never
+/// creates a mail row themselves.
+void MailCustomer(Order order, string subject, string text) {
+  var contact = order.Contact.FirstOrDefault();
+  if (contact == null) { return; }
+  var shop = TheShop();
+  Mail(contact.Email, $"{subject} — {shop.Name}", $"Hello {contact.Name},\n\n{text}\n\n{shop.Name}"
+    + (shop.ContactEmail == null ? "" : $"\n{shop.ContactEmail}"));
+}
+
+/// The confirmation mail's body: what was ordered, what it costs, and how to pay and receive it.
+string ConfirmationText(Order order) {
+  var shop = TheShop();
+  var lines = string.Join("\n", order.Lines.ToList().Select(l =>
+    $"  {l.Quantity} × {l.ProductName}{(l.VariantLabel == null ? "" : " (" + l.VariantLabel + ")")} — {Money(l.Price * l.Quantity, shop)}"));
+  var pay = order.Payment == Payment.BankTransfer
+    ? $"Please pay {Money(order.Total, shop)} by bank transfer within {order.HoldDays} days, quoting {order.Reference}:\n{shop.BankDetails ?? ""}"
+    : order.Payment == Payment.OnCollection
+      ? $"You pay {Money(order.Total, shop)} when you collect."
+      : "You are paying by card; we will confirm when it is through.";
+  var hand = order.Fulfilment == Fulfilment.Deliver
+    ? "We will send it to the address you gave."
+    : $"Collect it from: {shop.CollectionAddress ?? "the shop"}.";
+  return $"Thank you — your order {order.Reference} is reserved for you.\n\n{lines}\n"
+    + (order.Delivery > 0 ? $"  Delivery — {Money(order.Delivery, shop)}\n" : "")
+    + $"  Total — {Money(order.Total, shop)}"
+    + (order.Vat > 0 ? $" (VAT {Money(order.Vat, shop)} included)" : "")
+    + $"\n\n{pay}\n\n{hand}";
+}
+
+/// Places the visit's bag as one order. Answers the receipt when the goods are reserved; when something in the bag
+/// has sold in the meantime, it fixes the bag to what is left and throws the sentence that says what changed —
+/// nothing is reserved in that case, so the visitor looks again at a bag that is now true.
+[AllowAnonymous]
+public Receipt PlaceOrder(string visitId, string name, string email, string phone, Fulfilment fulfilment,
+                          Payment payment, string street, string postCode, string city, string country) {
+  var shop = TheShop();
+  var bag = BagFor(visitId, false);
+  if (bag == null || bag.Lines.Count() == 0) { throw new Exception("Your bag is empty."); }
+  if (bag.Lines.ToList().Any(l => LineProblem(l) != "")) {
+    // Nothing is bought at a price or a quantity the customer has not seen: the bag is made true, and they look again.
+    throw new Exception($"Something in your bag changed since you added it: {FixBag(visitId)}. Your bag now holds what is left — look it over, then place the order.");
+  }
+
+  if (name.Trim() == "") { throw new Exception("Tell us your name."); }
+  if (!email.Contains("@")) { throw new Exception("We need an email address to send the confirmation to."); }
+  if (fulfilment == Fulfilment.Deliver && !shop.OffersDelivery) { throw new Exception("This shop does not deliver — choose collection."); }
+  if (fulfilment == Fulfilment.Collect && !shop.OffersCollection) { throw new Exception("This shop only delivers."); }
+  if (fulfilment == Fulfilment.Deliver && (street.Trim() == "" || postCode.Trim() == "" || city.Trim() == "" || country.Trim() == "")) {
+    throw new Exception("For delivery we need the full address.");
+  }
+  if (payment == Payment.Card && !CardPaymentsOn()) {
+    throw new Exception("Card payments are not switched on for this shop — choose another way to pay.");
+  }
+  if (payment == Payment.Klarna && !KlarnaPaymentsOn()) {
+    throw new Exception("Klarna is not switched on for this shop — choose another way to pay.");
+  }
+  if (payment == Payment.BankTransfer && !shop.OffersBankTransfer) { throw new Exception("This shop does not take bank transfers."); }
+  if (payment == Payment.OnCollection && (!shop.OffersPayOnCollection || fulfilment != Fulfilment.Collect)) {
+    throw new Exception("Paying on collection needs a collection.");
+  }
+
+  var subtotal = BagSubtotal(bag);
+  var delivery = fulfilment == Fulfilment.Deliver ? DeliveryFor(subtotal, shop) : 0;
+  var order = new Order {
+    Fulfilment = fulfilment, Payment = payment,
+    Subtotal = subtotal, Delivery = delivery, Total = subtotal + delivery,
+    HoldDays = shop.HoldDays,
+    PlacedAt = DateTime.UtcNow,
+    Account = Session.CurrentUser,
+    Vat = shop.VatPercent <= 0 ? 0 : Math.Round((subtotal + delivery) * shop.VatPercent / (100 + shop.VatPercent), 2),
+  };
+  order.Reference = $"{shop.OrderPrefix}{order.Number}";
+  new OrderContact {
+    Order = order, Name = name.Trim(), Email = email.Trim(), Phone = Blank(phone),
+    // An address only for a delivery — a collection's order has none, rather than four empty strings.
+    Street = fulfilment == Fulfilment.Deliver ? Blank(street) : null,
+    PostCode = fulfilment == Fulfilment.Deliver ? Blank(postCode) : null,
+    City = fulfilment == Fulfilment.Deliver ? Blank(city) : null,
+    Country = fulfilment == Fulfilment.Deliver ? Blank(country) : null,
+  };
+  foreach (var l in bag.Lines) {
+    var label = VariantLabel(l.Variant);
+    new OrderLine {
+      Order = order, Variant = l.Variant, Quantity = l.Quantity, Price = PriceOf(l.Variant),
+      ProductName = l.Variant.Product.Name, VariantLabel = label == "" ? null : label,
+    };
+  }
+  UnitOfWork.Commit();
+  // The order's workflow has decided by now — see OrderLifecycle's `Placed`.
+
+  if (order.Status == OrderStatus.Unavailable) {
+    // Make the bag true: what sold out leaves it, what ran short drops to what is left.
+    foreach (var l in bag.Lines) {
+      if (l.Variant.Stock == 0 || l.Variant.Product.Status != ProductStatus.Listed) { l.Delete(); }
+      else if (l.Quantity > l.Variant.Stock) { l.Quantity = l.Variant.Stock; }
+    }
+    UnitOfWork.Commit();
+    throw new Exception($"Something in your bag went a moment before you: {order.Problem}. Your bag now holds what is left.");
+  }
+
+  foreach (var l in bag.Lines) { l.Delete(); }
+  UnitOfWork.Commit();
+
+  var receipt = new Receipt {
+    Reference = order.Reference, Status = order.Status, Total = order.Total, Payment = payment, Fulfilment = fulfilment,
+  };
+  if (payment == Payment.Card) {
+    // ⚠ AFTER the commit, deliberately: the goods are reserved whether or not Stripe answers. A Stripe outage must not
+    //   lose the customer their order — it leaves the reservation standing and says how else to pay.
+    try {
+      receipt.PayUrl = StartCardPayment(order, email.Trim(), shop, new StripeClient { ApiKey = Secret.StripeApiKey });
+    }
+    catch (Exception ex) {
+      Log.Warning($"Card payment for {order.Reference} could not be started: {ex.Message}");
+      receipt.PayProblem = $"Card payment could not be started just now. Your order is reserved for {shop.HoldDays} days"
+        + (shop.OffersBankTransfer ? " — pay by bank transfer with the details below." : " — try the card again shortly.");
+    }
+  }
+  if (payment == Payment.Klarna) {
+    // After the commit, as for a card: a Klarna outage leaves the reservation standing.
+    try {
+      receipt.PayUrl = StartKlarnaPayment(order, shop, new KlarnaClient {
+        Username = Secret.KlarnaUsername, Password = Secret.KlarnaPassword, BaseUrl = KlarnaHost(shop),
+        PurchaseCountry = shop.KlarnaCountry ?? "", PurchaseCurrency = shop.Currency, Locale = shop.KlarnaLocale ?? "",
+      });
+    }
+    catch (Exception ex) {
+      Log.Warning($"Klarna payment for {order.Reference} could not be started: {ex.Message}");
+      receipt.PayProblem = $"Klarna could not be reached just now. Your order is reserved for {shop.HoldDays} days"
+        + (shop.OffersBankTransfer ? " — pay by bank transfer with the details below." : " — try again shortly.");
+    }
+  }
+  return receipt;
+}
+
+/// A typed value, or nothing when the customer left it blank.
+string? Blank(string value) {
+  var t = value.Trim();
+  return t == "" ? null : t;
+}
+
+/// The receipt for an order, by its reference — what the "thank you" page shows. Anyone holding the reference may
+/// read it; it carries no personal data.
+[AllowAnonymous]
+public Receipt? ReceiptFor(string reference) {
+  var order = Order.SingleOrDefault(o => o.Reference == reference);
+  if (order == null) { return null; }
+  return new Receipt {
+    Reference = order.Reference, Status = order.Status, Total = order.Total,
+    Payment = order.Payment, Fulfilment = order.Fulfilment,
+  };
+}
+
+/// The signed-in customer's orders, newest first. Empty for a visitor.
+public List<Order> MyOrders() {
+  var me = Session.CurrentUser;
+  if (me == null) { return []; }
+  return Order.Where(o => o.Account == me).OrderByDescending(o => o.PlacedAt).ToList();
+}

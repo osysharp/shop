@@ -1,0 +1,27 @@
+// What an app on the kit writes itself: how staff sign in, and where Stripe posts.
+
+
+
+using Osysharp.Shop;
+
+
+// The kit ships the identity — `ShopRole`, `ShopAccount` and its sign-in functions — and the app wires them. A PasswordAuth field is
+// named by its bare property name on the `[Principal]`, wherever that principal was declared.
+app.Auth = new PasswordAuth { LoginField = Email, PasswordField = PasswordHash };
+app.AuthBootstrap = new AuthBootstrap {
+  Role = ShopRole.Authenticator,
+  Login = ShopLogin, Signup = ShopSignup,
+  PasswordResetRequest = ShopRequestPasswordReset, PasswordReset = ShopResetPassword,
+  PasswordChange = ShopChangePassword, EmailChange = ShopChangeEmail,
+};
+
+app.Apis = [
+  new RestApi("Stripe") {
+    Route = "stripe",
+    // Open, because Stripe has no account here to sign in with. The kit's `Verify` is the lock.
+    Auth  = new ApiAuth { Anonymous = true },
+    Endpoints = [
+      new Endpoint(ShopStripeEvents) { Method = HttpMethod.Post, Path = "/events", Raw = true, Headers = ["Stripe-Signature"] },
+    ],
+  },
+];

@@ -1,0 +1,165 @@
+// Placing orders: the order's workflow takes the stock, and a bag that asks for more than is left is refused and
+// made true.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Floor)]
+void placing_an_order_reserves_the_goods_and_takes_them_from_stock() {
+  Bag("v-1", "Loafer", "38", 2);
+  var receipt = Checkout("v-1");
+
+  Assert.Equal(OrderStatus.Reserved, receipt.Status);
+  Assert.StartsWith("KT-", receipt.Reference);          // the shop's own prefix
+  Assert.Equal(240m, receipt.Total);
+  Assert.Equal(0, Pick("Loafer", "38").Stock);          // both taken
+  Assert.Equal(0, BagCount("v-1"));                     // and the bag is empty
+}
+
+[Test(Floor)]
+void an_order_for_more_than_is_left_is_refused_and_the_bag_is_made_true() {
+  Bag("v-slow", "Loafer", "38", 2);                     // there were two when this visitor looked…
+  Buy("v-fast", "Loafer", "38", 1);                     // …and somebody else took one
+
+  var e = Assert.Throws<Exception>(() => Checkout("v-slow"));
+  Assert.Contains("only one Loafer (38) is left", e.Message);
+  Assert.Equal(1, BagCount("v-slow"));                  // the bag now asks for what there is
+  Assert.Equal(1, Pick("Loafer", "38").Stock);          // and nothing was taken
+}
+
+[Test(Floor)]
+void a_thing_that_sold_out_leaves_the_bag_and_says_so() {
+  Bag("v-slow", "Chelsea", "38", 1);
+  Buy("v-fast", "Chelsea", "38", 1);
+
+  var e = Assert.Throws<Exception>(() => Checkout("v-slow"));
+  Assert.Contains("Chelsea (38) has sold out", e.Message);
+  Assert.Equal(0, BagCount("v-slow"));
+}
+
+[Test(Floor)]
+void the_bag_refuses_more_than_there_is() {
+  Assert.Equal("There is only one.", AddToBag("v-1", Pick("Loafer", "39"), 2));
+  Assert.Equal("", AddToBag("v-1", Pick("Loafer", "39"), 1));
+  Assert.Equal("There is only one.", AddToBag("v-1", Pick("Loafer", "39"), 1));   // one is already in the bag
+}
+
+[Test(Floor)]
+void a_variant_price_overrides_the_product_price() {
+  var receipt = PlaceOrderFor("v-1", "Chelsea", "38");
+  Assert.Equal(190m, receipt.Total);
+}
+
+Receipt PlaceOrderFor(string visitId, string product, string size) {
+  Bag(visitId, product, size, 1);
+  return Checkout(visitId);
+}
+
+[Test(Floor)]
+void a_delivery_costs_the_fee_until_the_bag_reaches_free_delivery() {
+  Bag("v-cheap", "Loafer", "39", 1);
+  var cheap = PlaceOrder("v-cheap", "Maja Berg", "maja@example.test", "", Fulfilment.Deliver, Payment.BankTransfer,
+                         "Storgatan 1", "111 22", "Stockholm", "Sweden");
+  Assert.Equal(129m, cheap.Total);                      // 120 + 9
+
+  Bag("v-dear", "Loafer", "38", 2);
+  var dear = PlaceOrder("v-dear", "Maja Berg", "maja@example.test", "", Fulfilment.Deliver, Payment.BankTransfer,
+                        "Storgatan 1", "111 22", "Stockholm", "Sweden");
+  Assert.Equal(240m, dear.Total);                       // over 200: free
+}
+
+[Test(Floor)]
+void a_delivery_needs_an_address() {
+  Bag("v-1", "Loafer", "39", 1);
+  var e = Assert.Throws<Exception>(() => PlaceOrder("v-1", "Maja Berg", "maja@example.test", "", Fulfilment.Deliver,
+                                                    Payment.BankTransfer, "", "", "", ""));
+  Assert.Contains("full address", e.Message);
+}
+
+[Test(Floor)]
+void a_one_of_a_kind_thing_is_bought_once_and_carries_its_spec_sheet() {
+  var super = Product.Include(p => p.Specs).Single(p => p.Name == "Super");
+  Assert.Equal("Columbus SL", Spec(super.Specs, "Tubing"));
+  Assert.Equal("", Spec(super.Specs, "Groupset"));
+  Assert.Equal("Frame size", super.Specs.OrderBy(s => s.Rank).First().Name);
+
+  var reference = Buy("v-bike", "Super", "", 1);
+  Assert.Equal(0, Pick("Super", "").Stock);
+  var held = Product.Include(p => p.Variants).Single(p => p.Name == "Super");
+  Assert.True(OnHold(held.Variants));                            // reserved, not sold — it comes back if the order lapses
+  Assert.False(Sold(held.Variants));
+  runas (Desk) {
+    MarkPaid(Order.Single(o => o.Reference == reference), "");
+    Workflow.Settle(Order.Single(o => o.Reference == reference));
+  }
+  var paid = Product.Include(p => p.Variants).Single(p => p.Name == "Super");
+  Assert.False(OnHold(paid.Variants));
+  Assert.True(Sold(paid.Variants));
+  Assert.Equal("Sold out.", AddToBag("v-late", Pick("Super", ""), 1));
+}
+
+[Test(Floor)]
+void a_draft_is_the_desks_and_nobody_elses() {
+  Assert.Equal(0, Product.Count(p => p.Name == "Secret"));
+  runas (Desk) { Assert.Equal(1, Product.Count(p => p.Name == "Secret")); }
+}
+
+[Test(Floor)]
+void a_visitor_cannot_write_stock() {
+  Assert.Throws<Exception>(() => SetStock(Pick("Loafer", "38"), 50));
+  Assert.Equal(2, Pick("Loafer", "38").Stock);
+}
+
+[Test(Floor)]
+void a_visitor_cannot_read_who_ordered() {
+  Buy("v-1", "Loafer", "39", 1);
+  Assert.Equal(0, OrderContact.Count());
+  runas (Desk) { Assert.Equal(1, OrderContact.Count()); }
+}
+
+[Test(Floor)]
+void an_unpaid_reservation_lapses_and_its_goods_go_back_on_sale() {
+  var reference = Buy("v-lapse", "Loafer", "38", 2);
+  Assert.Equal(0, Pick("Loafer", "38").Stock);
+
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    TestClock.Advance(TimeSpan.FromDays(3) + TimeSpan.FromHours(1));
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Lapsed, order.Status);
+  }
+  Assert.Equal(2, Pick("Loafer", "38").Stock);
+  Assert.Equal(1, OrderLine.Count());                   // the order still says what it was for
+}
+
+[Test(Floor)]
+void a_category_knows_what_is_under_it() {
+  var women = Category.Single(c => c.Slug == "women");
+  var boots = Category.Single(c => c.Slug == "womens-boots");
+  Assert.True(IsUnder(boots, women));
+  Assert.False(IsUnder(women, boots));
+  Assert.Equal(2, Product.Where(p => p.Category != null).ToList().Count(p => IsUnder(p.Category, women)));
+}
+
+[Test(Floor)]
+void a_price_is_written_the_shops_way() {
+  var shop = TheShop();
+  Assert.Equal("€1,200", Money(1200m, shop));
+  Assert.Equal("€24.50", Money(24.5m, shop));
+}
+
+[Test(Floor)]
+void a_visitor_sees_every_listed_product_and_no_draft() {
+  // Anonymous — the shop floor is public. Loafer, Chelsea and Super; the draft is not among them.
+  Assert.Equal(3, Product.Count());
+  Assert.Equal(3, Product.Include(p => p.Variants).Include(p => p.Images).ToList().Count);
+}
+
+[Test(Floor)]
+void a_projection_is_followed_by_its_own_terminal() {
+  // Server-side in-memory LINQ over loaded rows: a Select does not end the query.
+  var super = Product.Include(p => p.Specs).Single(p => p.Name == "Super");
+  Assert.Equal(2, super.Specs.Select(s => s.Name).Count());
+  Assert.True(super.Specs.Select(s => s.Name).Any());
+  Assert.Equal("Frame size", super.Specs.OrderBy(s => s.Rank).Select(s => s.Name).FirstOrDefault());
+}

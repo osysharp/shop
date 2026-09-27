@@ -1,0 +1,24 @@
+package Osysharp.Shop {
+  version     "0.1.0";
+  minPlatform "0.9.0";
+  summary     "an online shop's backend — catalogue, accounts, bag, orders, card and Klarna payments, returns, mail and the staff desk.";
+  model "model/**/*.osy";
+  use Osysharp.Workflow;
+  use Osysharp.Ui;
+  use Osysharp.Storage;
+  use Osysharp.PdfWriter@0;
+  use Osysharp.Stripe@0 { egress "api.stripe.com"; }
+  use Osysharp.Klarna@0 { egress "api.klarna.com"; egress "api.playground.klarna.com"; }
+  use Osysharp.Http;
+  use Osysharp.Resend@0 { egress "api.resend.com"; }
+  egress "api.stripe.com";
+  egress "api.resend.com";
+  egress "api.klarna.com";
+  egress "api.playground.klarna.com";
+  secret "StripeApiKey";
+  secret "StripeWebhookSecret";
+  secret "ResendApiKey";
+  secret "KlarnaUsername";
+  secret "KlarnaPassword";
+  tests "tests";
+}

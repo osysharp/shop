@@ -1,0 +1,9 @@
+// An app entity OWNED by the package's principal: `user` in this app's own rules is the signed-in `ShopAccount`,
+// exactly as it would be for a `[Principal]` the app declared itself.
+using Osysharp.Shop;
+
+entity StaffNote {
+  [Required("A note needs an author.")] ShopAccount Author;
+  [MaxLength(200)] string Text;
+  security { allow read, create, update, delete where Author == user; }
+}

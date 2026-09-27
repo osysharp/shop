@@ -1,0 +1,75 @@
+// The shop itself — its name, its money, how it hands goods over and how it is paid. One row, which the desk edits:
+// a shop owner changes the delivery fee or the bank details without a developer and without a recompile.
+
+namespace Osysharp.Shop;
+
+/// THE SHOP — one row. Seed it with the app's data (`data/shop.json`) or from the desk; every function that needs a
+/// name, a currency or a rule reads it through `TheShop()`.
+public entity ShopSettings {
+  [Required, MaxLength(80)] string Name;
+  /// ISO 4217, as Stripe wants it: "EUR", "SEK", "USD".
+  [Required, MaxLength(3)] string Currency = "EUR";
+  /// How a price is written: "€" before the number, or "kr" after it (`SymbolAfter`).
+  [Required, MaxLength(6)] string CurrencySymbol = "€";
+  bool SymbolAfter = false;
+  /// Put in front of every order number — "RC-" makes order 1041 read "RC-1041".
+  [MaxLength(8)] string OrderPrefix = "";
+  /// How long an unpaid order holds its goods before they go back on sale.
+  int HoldDays = 3;
+  bool OffersCollection = true;
+  bool OffersDelivery = true;
+  bool OffersBankTransfer = true;
+  bool OffersPayOnCollection = true;
+  decimal DeliveryFee = 0;
+  /// A delivery is free from this subtotal up. Zero: never free.
+  decimal FreeDeliveryFrom = 0;
+  [MaxLength(400)] string? BankDetails;
+  [MaxLength(300)] string? CollectionAddress;
+  [MaxLength(200)] string? ContactEmail;
+  /// Where the shop lives on the web — "https://shop.example" — so a mail can link back to it. Without it a
+  /// password-reset mail carries a code to type instead of a link.
+  [MaxLength(200)] string? SiteUrl;
+  /// Who the shop's mail comes from — "Rust & Chrome <orders@rustandchrome.se>". Mail is sent through Resend once
+  /// this and the `ResendApiKey` secret are both set; until then it waits in the outbox, where the desk can read it.
+  [MaxLength(200)] string? MailFrom;
+  /// How many days after an order is sent the customer may return it. The law's floor in the EU is 14 from delivery.
+  int ReturnDays = 30;
+  /// The VAT a price INCLUDES, in percent — 25 in Sweden. A receipt states the VAT part of the total. Zero: none shown.
+  decimal VatPercent = 0;
+  /// The shop's own words for its terms, its privacy notice and its returns policy — shown on their own pages and
+  /// edited from the desk. Paragraphs are separated by a blank line.
+  string? Terms;
+  string? Privacy;
+  string? ReturnsPolicy;
+  /// Where Klarna sells for this shop — ISO 3166 "SE" — and in which language, "sv-SE". They must agree with each
+  /// other and with `Currency`. Klarna is offered once both are set and the `KlarnaUsername`/`KlarnaPassword`
+  /// secrets are.
+  [MaxLength(2)] string? KlarnaCountry;
+  [MaxLength(10)] string? KlarnaLocale;
+  /// Klarna's test environment. Playground credentials work only there, live ones only against the live API.
+  bool KlarnaPlayground = false;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update when IsShopStaff;
+  }
+}
+
+/// The shop's one settings row. A shop with none has not been set up, and says so rather than inventing a name.
+[AllowAnonymous]
+public ShopSettings TheShop() {
+  var shop = ShopSettings.FirstOrDefault();
+  if (shop == null) { throw new Exception("This shop has not been set up yet — it has no ShopSettings row. Add one (osy import, or the desk)."); }
+  return shop;
+}
+
+/// A price as the shop writes it: "€1,200", "€24.50", "349 kr". Whole amounts drop the cents.
+public string Money(decimal amount, ShopSettings shop) {
+  var number = amount == Math.Round(amount) ? $"{amount:N0}" : $"{amount:N2}";
+  return shop.SymbolAfter ? $"{number} {shop.CurrencySymbol}" : $"{shop.CurrencySymbol}{number}";
+}
+
+/// What delivery costs for a bag worth `subtotal`.
+public decimal DeliveryFor(decimal subtotal, ShopSettings shop) {
+  if (shop.FreeDeliveryFrom > 0 && subtotal >= shop.FreeDeliveryFrom) { return 0; }
+  return shop.DeliveryFee;
+}

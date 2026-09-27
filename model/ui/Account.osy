@@ -1,0 +1,403 @@
+// The customer's side of an account, as components a store puts on its own pages. Every colour, face and size comes
+// from the UI kit's theme tokens, so each store's theme dresses them — the store writes the page, the route and the
+// words around them, and none of the logic.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Ui;
+
+/// Sign in. `then` is where to go afterwards when the visitor was not sent here from somewhere else.
+[Composable]
+public component ShopSignIn(string then = "/account") {
+  string email = "";
+  string password = "";
+  string problem = "";
+
+  action Submit() {
+    problem = "";
+    var ticket = ShopLogin(email, password);
+    if (ticket == "") { problem = "That email and password do not match an account."; }
+    else { Session.SignIn(ticket, then); }
+  }
+
+  render {
+    Stack(gap: 5, w: "100%", maxW: "420px") {
+      PageHead("Sign in", subtitle: "Your bag, your orders and your returns, on any device.");
+      Field("Email", value: email, type: "email", onEnter: Submit);
+      Field("Password", value: password, type: "password", onEnter: Submit);
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      Button("Sign in", onPress: Submit, tone: Tone.Primary, size: Size.Lg);
+      Row(gap: 5, wrap: Wrapping.Wrap) {
+        TextLink("Create an account", to: "/account/new");
+        TextLink("Forgotten your password?", to: "/account/forgot");
+      }
+    }
+  }
+}
+
+/// Open an account — and be signed in to it.
+[Composable]
+public component ShopSignUp(string then = "/account") {
+  string name = "";
+  string email = "";
+  string password = "";
+  string problem = "";
+
+  action Submit() {
+    problem = "";
+    try { Session.SignIn(ShopSignup(email, password, name), then); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+
+  render {
+    Stack(gap: 5, w: "100%", maxW: "420px") {
+      PageHead("Create an account", subtitle: "Keep your bag between visits, follow your orders and send things back.");
+      Field("Your name", value: name);
+      Field("Email", value: email, type: "email");
+      Field("Password", value: password, type: "password", hint: "At least 8 characters.", onEnter: Submit);
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      Button("Create account", onPress: Submit, tone: Tone.Primary, size: Size.Lg);
+      TextLink("I already have an account", to: "/account/sign-in");
+    }
+  }
+}
+
+/// Ask for a reset link. Says the same whether or not the address has an account.
+[Composable]
+public component ShopForgotPassword() {
+  string email = "";
+  bool sent = false;
+
+  action Submit() { ShopRequestPasswordReset(email); sent = true; }
+
+  render {
+    Stack(gap: 5, w: "100%", maxW: "420px") {
+      PageHead("Forgotten your password?", subtitle: "We will mail you a link to choose a new one.");
+      if (!sent) {
+        Field("Email", value: email, type: "email", onEnter: Submit);
+        Button("Send the link", onPress: Submit, tone: Tone.Primary, size: Size.Lg);
+      }
+      if (sent) {
+        Alert($"If there is an account for {email}, a link is on its way. It works once, for an hour.", tone: Tone.Success);
+        TextLink("Back to sign in", to: "/account/sign-in");
+      }
+    }
+  }
+}
+
+/// Choose a new password from a mailed link — and be signed in.
+[Composable]
+public component ShopChooseNewPassword(string token) {
+  string password = "";
+  string again = "";
+  string problem = "";
+
+  action Submit() {
+    problem = "";
+    if (password != again) { problem = "The two passwords are not the same."; return; }
+    try { Session.SignIn(ShopResetPassword(token, password), "/account"); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+
+  render {
+    Stack(gap: 5, w: "100%", maxW: "420px") {
+      PageHead("Choose a new password");
+      Field("New password", value: password, type: "password", hint: "At least 8 characters.");
+      Field("The same again", value: again, type: "password", onEnter: Submit);
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      Button("Save and sign in", onPress: Submit, tone: Tone.Primary, size: Size.Lg);
+    }
+  }
+}
+
+/// The signed-in customer's account: orders and returns, their details, and their sign-in.
+[Composable]
+public component ShopAccountPanel() {
+  var me = Session.CurrentUser;
+  string tab = "orders";
+
+  action Show(string which) { tab = which; }
+  action SignOut() { Session.SignOut(); }
+
+  render {
+    Stack(gap: 6, w: "100%", maxW: "960px") {
+      Row(justify: Justify.Between, align: Align.End, gap: 4, wrap: Wrapping.Wrap) {
+        PageHead("Your account", subtitle: me == null ? "" : me.Email);
+        Button("Sign out", onPress: SignOut);
+      }
+      Tabs() {
+        Tab("Orders", selected: tab == "orders", onPress: () => Show("orders"));
+        Tab("Details", selected: tab == "details", onPress: () => Show("details"));
+        Tab("Sign-in", selected: tab == "sign-in", onPress: () => Show("sign-in"));
+      }
+      if (tab == "orders") { ShopOrderHistory(); }
+      if (tab == "details") { ShopMyDetails(); }
+      if (tab == "sign-in") { ShopMySignIn(); }
+    }
+  }
+}
+
+/// Name, phone and the address the checkout fills in.
+[Composable]
+public component ShopMyDetails() {
+  var me = Session.CurrentUser;
+  string name = me == null ? "" : me.Name ?? "";
+  string phone = me == null ? "" : me.Phone ?? "";
+  string street = me == null ? "" : me.Street ?? "";
+  string postCode = me == null ? "" : me.PostCode ?? "";
+  string city = me == null ? "" : me.City ?? "";
+  string country = me == null ? "" : me.Country ?? "";
+  string note = "";
+
+  action Save() {
+    SaveMyDetails(name, phone, street, postCode, city, country);
+    note = "Saved.";
+  }
+
+  render {
+    Stack(gap: 4, maxW: "560px") {
+      Field("Name", value: name);
+      Field("Phone", value: phone, type: "tel");
+      SectionLabel("Delivery address");
+      Field("Street", value: street);
+      Row(gap: 3) {
+        Box(w: "40%") { Field("Postcode", value: postCode); }
+        Box(grow: 1) { Field("City", value: city); }
+      }
+      Field("Country", value: country);
+      Row(gap: 3, align: Align.Center) {
+        Button("Save details", onPress: Save, tone: Tone.Primary);
+        if (note != "") { Text(note, color: Colors.TextMuted); }
+      }
+    }
+  }
+}
+
+/// Change the password or the address the account signs in with — each needs the current password.
+[Composable]
+public component ShopMySignIn() {
+  var me = Session.CurrentUser;
+  string current = "";
+  string password = "";
+  string newEmail = "";
+  string emailPassword = "";
+  string passwordNote = "";
+  string emailNote = "";
+  bool passwordFailed = false;
+  bool emailFailed = false;
+
+  action ChangePassword() {
+    try {
+      Session.SignIn(ShopChangePassword(me!.Email, current, password), "/account");
+      current = ""; password = ""; passwordFailed = false; passwordNote = "Your password is changed.";
+    }
+    catch (Exception ex) { passwordFailed = true; passwordNote = ex.Message; }
+  }
+
+  action ChangeEmail() {
+    try {
+      Session.SignIn(ShopChangeEmail(me!.Email, emailPassword, newEmail), "/account");
+      emailPassword = ""; emailFailed = false; emailNote = $"You now sign in as {newEmail}. We have told your old address too.";
+    }
+    catch (Exception ex) { emailFailed = true; emailNote = ex.Message; }
+  }
+
+  render {
+    Stack(gap: 8, maxW: "560px") {
+      Stack(gap: 4) {
+        SectionLabel("Password");
+        Field("Current password", value: current, type: "password");
+        Field("New password", value: password, type: "password", hint: "At least 8 characters.");
+        if (passwordNote != "") { Alert(passwordNote, tone: passwordFailed ? Tone.Danger : Tone.Success); }
+        Button("Change password", onPress: ChangePassword);
+      }
+      Stack(gap: 4) {
+        SectionLabel("Email address");
+        Field("New email address", value: newEmail, type: "email");
+        Field("Current password", value: emailPassword, type: "password");
+        if (emailNote != "") { Alert(emailNote, tone: emailFailed ? Tone.Danger : Tone.Success); }
+        Button("Change email", onPress: ChangeEmail);
+      }
+    }
+  }
+}
+
+/// The customer's orders, newest first — each with what it holds, where it stands, and what they can do about it:
+/// call off one that is not paid, send things back from one that has arrived.
+[Composable]
+public component ShopOrderHistory() {
+  live var shop = ShopSettings.FirstOrDefault();
+  live var orders = Order.Where(o => o.Account == Session.CurrentUser).Include(o => o.Lines).OrderByDescending(o => o.PlacedAt).ToList();
+  live var returns = ReturnRequest.Where(r => r.Order.Account == Session.CurrentUser).Include(r => r.Lines).OrderByDescending(r => r.RequestedAt).ToList();
+  OrderLine returning = null;
+  int quantity = 1;
+  string reason = "";
+  string problem = "";
+
+  action AskReturn(OrderLine line) { returning = line; quantity = 1; reason = ""; problem = ""; }
+  action Close() { returning = null; }
+  action ConfirmReturn() {
+    try { ReturnItem(returning, quantity, reason); returning = null; }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action Cancel(Order order) { CancelMyOrder(order); }
+  string receiptFor = "";
+  string receiptUrl = "";
+  action Receipt(Order order) { receiptUrl = ReceiptLink(order); receiptFor = order.Reference; }
+  action Undo(ReturnLine line) { UndoReturnLine(line); }
+
+  render {
+    Stack(gap: 6) {
+      if (orders.Count == 0) { EmptyState("No orders yet", body: "What you buy while signed in is kept here."); }
+      foreach (var order in orders) {
+        Card(order.Reference, subtitle: $"{order.PlacedAt.ToString("d MMM yyyy")} · {order.Status.Label}") {
+          Stack(gap: 3) {
+            foreach (var line in order.Lines) {
+              Row(justify: Justify.Between, align: Align.Center, gap: 3, wrap: Wrapping.Wrap) {
+                Text($"{line.Quantity} × {line.ProductName}{(line.VariantLabel == null ? "" : " (" + line.VariantLabel + ")")}");
+                Row(gap: 3, align: Align.Center) {
+                  Text(Money(line.Price * line.Quantity, shop), color: Colors.TextMuted);
+                  if (order.Status == OrderStatus.Fulfilled) { Button("Return…", onPress: () => AskReturn(line), size: Size.Sm); }
+                }
+              }
+            }
+            Divider();
+            Row(justify: Justify.Between, align: Align.Center, gap: 3, wrap: Wrapping.Wrap) {
+              Text(order.Tracking == null ? order.Fulfilment.Label : $"{order.Fulfilment.Label} · tracking {order.Tracking}", color: Colors.TextMuted);
+              Strong(Money(order.Total, shop));
+            }
+            Row(justify: Justify.End, gap: 3, align: Align.Center, wrap: Wrapping.Wrap) {
+              if (receiptFor == order.Reference) { TextLink("Open the receipt (PDF)", to: receiptUrl); }
+              else { Button("Receipt", onPress: () => Receipt(order), size: Size.Sm); }
+              if (order.Status == OrderStatus.Reserved) { Button("Cancel this order", onPress: () => Cancel(order), tone: Tone.Danger, size: Size.Sm); }
+            }
+          }
+        }
+      }
+      if (returns.Count > 0) {
+        SectionLabel("Returns");
+        foreach (var ret in returns) {
+          Card(ret.Order.Reference, subtitle: $"{ret.RequestedAt.ToString("d MMM yyyy")} · {ret.Status.Label}") {
+            Stack(gap: 2) {
+              foreach (var rl in ret.Lines) {
+                Row(justify: Justify.Between, align: Align.Center, gap: 3) {
+                  Text($"{rl.Quantity} × {rl.Line.ProductName}{(rl.Reason == null ? "" : " — " + rl.Reason)}");
+                  if (ret.Status == ReturnStatus.Requested) { Button("Keep it", onPress: () => Undo(rl), size: Size.Sm); }
+                }
+              }
+              if (ret.Status == ReturnStatus.Refunded) { Text($"Refunded {Money(ret.Amount, shop)}", color: Colors.TextMuted); }
+              if (ret.Problem != null) { Text(ret.Problem, color: Colors.TextMuted); }
+            }
+          }
+        }
+      }
+    }
+    if (returning != null) {
+      Dialog($"Return {returning.ProductName}", onDismiss: Close,
+             subtitle: "Pack it with the order number inside. We refund what comes back once it arrives.") {
+        Stack(gap: 4) {
+          NumberField("How many", value: quantity, min: 1, max: returning.Quantity);
+          Field("Why? (optional)", value: reason, placeholder: "Too small");
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+          Row(gap: 3, justify: Justify.End) {
+            Button("Not now", onPress: Close);
+            Button("Send it back", onPress: ConfirmReturn, tone: Tone.Primary);
+          }
+        }
+      }
+    }
+  }
+}
+
+/// A sold-out size: leave an address to be told when it is back.
+[Composable]
+public component ShopNotifyMe(Variant variant) {
+  var me = Session.CurrentUser;
+  string email = me == null ? "" : me.Email;
+  string said = "";
+
+  action Ask() { said = NotifyMe(variant, email); }
+
+  render {
+    Stack(gap: 2) {
+      if (said == "") {
+        Row(gap: 2, align: Align.End, wrap: Wrapping.Wrap) {
+          Box(grow: 1, minW: "200px") { Field("Tell me when it is back", value: email, type: "email", placeholder: "you@example.com", onEnter: Ask); }
+          Button("Notify me", onPress: Ask);
+        }
+      }
+      if (said != "") { Text(said, color: Colors.TextMuted); }
+    }
+  }
+}
+
+/// Put once in a store's frame. For a signed-in customer it points their account's bag at this visit when the page
+/// opens — so a frame that finds the bag by `Visitor.Id` finds THEIR bag, on any device, and whatever this visit held
+/// before they signed in joins it. Renders nothing.
+[Composable]
+[AllowAnonymous]
+public component ShopVisitSync() {
+  string visitId = Visitor.Id;
+  var me = Session.CurrentUser;
+
+  on mount {
+    if (me != null) { BagFor(visitId, false); }
+  }
+
+  render { }
+}
+
+/// A sold-out product: leave an address to be told when any of it is back.
+[Composable]
+[AllowAnonymous]
+public component ShopNotifyWhenBack(Product product) {
+  var me = Session.CurrentUser;
+  string email = me == null ? "" : me.Email;
+  string said = "";
+
+  action Ask() { said = NotifyWhenBack(product, email); }
+
+  render {
+    Stack(gap: 2) {
+      if (said == "") {
+        Row(gap: 2, align: Align.End, wrap: Wrapping.Wrap) {
+          Box(grow: 1, minW: "200px") { Field("Tell me when it is back", value: email, type: "email", placeholder: "you@example.com", onEnter: Ask); }
+          Button("Notify me", onPress: Ask);
+        }
+      }
+      if (said != "") { Text(said, color: Colors.TextMuted); }
+    }
+  }
+}
+
+/// Put once on a product page: counts the page's opening for the desk's figures. Renders nothing.
+[Composable]
+[AllowAnonymous]
+public component ShopProductView(Product product) {
+  on mount { ViewedProduct(product); }
+  render { }
+}
+
+/// Under a bag line: what changed since it went in — sold out, fewer left, a new price — or nothing.
+[Composable]
+[AllowAnonymous]
+public component ShopLineNote(BagLine line) {
+  string note = "";
+  // Read when the bag is opened — the checkout checks again, so a change while it is open is still caught there.
+  on mount { note = LineProblem(line); }
+  render {
+    if (note != "") { Text(note, fontSize: FontSize.Label, color: Colors.Danger, role: UiRole.Status); }
+  }
+}
+
+/// The account's way in, for a store's header beside the bag (`slot actions { ShopAccountButton(); }`): a person
+/// glyph that opens the account — or the sign-in, when nobody is signed in.
+[Composable]
+[AllowAnonymous]
+public component ShopAccountButton() {
+  var me = Session.CurrentUser;
+  action Open() { Navigation.Go("/account"); }
+  render {
+    IconButton(me == null ? "Sign in" : "Your account", onPress: Open) { Icon(Icons.User); }
+  }
+}

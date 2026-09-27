@@ -1,0 +1,98 @@
+// The kit's desk, driven through the screen as a member of staff.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+void SignInAsStaff() {
+  Ui.Visit("/account/sign-in");
+  Ui.Fill("Email", "anna@shop.test");
+  Ui.Fill("Password", "desk-pass-1");
+  Ui.Click("Sign in");
+  Ui.Visit("/desk");
+}
+
+[Test(Floor)]
+void the_desk_opens_on_the_figures() {
+  var reference = Buy("v-desk-fig", "Loafer", "38", 1);
+  runas (Desk) { MarkPaid(Order.Single(o => o.Reference == reference), ""); }
+  SignInAsStaff();
+  Assert.Visible("Best sellers");
+  Assert.Visible("Loafer");
+  Assert.Visible("On sale now");
+}
+
+[Test(Floor)]
+void stock_is_adjusted_with_a_reason() {
+  SignInAsStaff();
+  Ui.Click("Stock");
+  Ui.Click("Adjust…", within: "Chelsea");
+  Ui.Fill("Change by", "4");
+  Ui.Fill("Note (optional)", "Delivery 7");
+  Ui.Click("Save");
+  Assert.Visible("5 on the shelf");
+  runas (Desk) { Assert.Equal(1, StockMove.Count(m => m.Note == "Delivery 7")); }
+}
+
+[Test(Floor)]
+void a_return_is_received_from_the_desk() {
+  var reference = "";
+  runas (Maja) { reference = Buy("v-desk-ret", "Loafer", "39", 1); }
+  runas (Desk) { PayAndSend(reference); }
+  runas (Maja) { ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, "Too big"); }
+  SignInAsStaff();
+  Ui.Click("Returns");
+  Assert.Visible("Too big");
+  Ui.Click("Received — back in stock");
+  runas (Desk) {
+    var r = ReturnRequest.Single();
+    Workflow.Settle(r);
+    Assert.Equal(ReturnStatus.Refunded, r.Status);
+  }
+}
+
+[Test(Floor)]
+void the_customers_and_the_mail_are_on_the_desk() {
+  ShopRequestPasswordReset("olle@example.test");
+  SignInAsStaff();
+  Ui.Click("Customers");
+  Assert.Visible("Maja Berg");
+  Assert.Visible("olle@example.test");
+  Ui.Click("Mail");
+  Assert.Visible("Mail is not being sent");
+  Assert.Visible("Reset your password at Kit Test Shop");
+}
+
+[Test(Floor)]
+void the_shops_settings_are_saved_from_the_desk() {
+  SignInAsStaff();
+  Ui.Click("Settings");
+  Ui.Fill("Shop name", "Kit Shop Renamed");
+  Ui.Fill("Contact email", "hello@kit.test");
+  Ui.Fill("Klarna country", "SE");
+  Ui.Fill("Klarna language", "sv-SE");
+  Ui.Click("Use Klarna's playground (test payments)");
+  Ui.Click("Save settings");
+  Assert.Visible("Saved.");
+  runas (Desk) {
+    Assert.Equal("Kit Shop Renamed", TheShop().Name);
+    Assert.Equal("hello@kit.test", TheShop().ContactEmail);
+    Assert.Equal("SE", TheShop().KlarnaCountry);
+    Assert.Equal("sv-SE", TheShop().KlarnaLocale);
+    Assert.True(TheShop().KlarnaPlayground);
+  }
+}
+
+[Test(Floor)]
+void a_product_is_created_from_the_desk() {
+  SignInAsStaff();
+  Ui.Click("Products");
+  Ui.Click("New product…");
+  Ui.Fill("Name", "Linen Shirt");
+  Ui.Fill("Price", "95");
+  Ui.Click("Create");
+  Assert.Visible("Sizes and stock");
+  Ui.Fill("Size", "M");
+  Ui.Click("Add size");
+  Assert.Visible("1 in stock");
+  runas (Desk) { Assert.Equal(1, Variant.Count(v => v.Product.Name == "Linen Shirt")); }
+}

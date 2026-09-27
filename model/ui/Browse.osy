@@ -1,0 +1,118 @@
+// Finding things: a search with a sort and a size filter, and the sale shelf. Written once, dressed by each store's
+// theme; a store only says where its product pages live.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Ui;
+using Osysharp.Storage;
+
+/// Search the listed products by name, brand or summary; narrow by size; order them. `productPrefix` is where a
+/// store's product pages live ("/p/"), followed by the product's slug — or its id, when `linkById` says so.
+/// `onlySale` makes it the sale shelf: only what is marked down.
+[Composable]
+[AllowAnonymous]
+public component ShopSearchPage(string productPrefix = "/p/", bool linkById = false, bool onlySale = false) {
+  live var shop = ShopSettings.FirstOrDefault();
+  live var products = Product.Where(p => p.Status == ProductStatus.Listed).OrderByDescending(p => p.CreatedAt).ToList();
+  live var variants = Variant.Where(v => v.Product.Status == ProductStatus.Listed).ToList();
+  live var covers = ProductImage.Where(i => i.Rank == 0).ToList();
+  live var sales = Sale.Where(s => s.State == SaleState.Live).ToList();
+  string query = "";
+  string size = "";
+  ProductSort sort = ProductSort.Newest;
+
+  // The sizes there is something in — none at all (a shop of one-offs) and the filter is not shown.
+  live var sizes = variants.Where(v => v.Size != null && v.Stock > 0).Select(v => v.Size!).Distinct().OrderBy(x => x).ToList();
+
+  action Clear() { query = ""; size = ""; sort = ProductSort.Newest; }
+  action PickSize(string s) { size = size == s ? "" : s; }
+
+  render {
+    Stack(gap: 6, w: "100%") {
+      if (!onlySale) {
+        Field("Search", value: query, placeholder: "A name, a brand, a colour", type: "search");
+      }
+      if (!onlySale || sales.Count > 0) {
+      Row(gap: 4, align: Align.End, wrap: Wrapping.Wrap) {
+        Box(minW: "200px") { Dropdown("Sort by", value: sort); }
+        if (sizes.Count > 0) {
+          Stack(gap: 2) {
+            Text("Size", fontSize: FontSize.Label, color: Colors.TextMuted);
+            Row(gap: 2, wrap: Wrapping.Wrap, role: UiRole.Group, label: "Size") {
+              foreach (var s in sizes) {
+                Button(s, onPress: () => PickSize(s), size: Size.Sm, tone: size == s ? Tone.Primary : Tone.Default);
+              }
+            }
+          }
+        }
+        if (query != "" || size != "" || sort != ProductSort.Newest) { Button("Clear", onPress: Clear, size: Size.Sm); }
+      }
+      }
+      if (onlySale && sales.Count == 0) {
+        EmptyState("Nothing is on sale right now", body: "Marked-down pieces appear here while their sale runs.");
+      }
+      Box(display: Display.Grid, cols: "repeat(auto-fill, minmax(200px, 1fr))", gap: 5) {
+        foreach (var p in products
+            .Where(p => !onlySale || sales.Any(x => x.Product == p))
+            .Where(p => query == "" || p.Name.ToLower().Contains(query.ToLower())
+                        || (p.Brand ?? "").ToLower().Contains(query.ToLower())
+                        || (p.Summary ?? "").ToLower().Contains(query.ToLower()))
+            .Where(p => size == "" || variants.Any(v => v.Product == p && v.Size == size && v.Stock > 0))
+            .OrderBy(p => sort == ProductSort.PriceLow ? p.Price : sort == ProductSort.PriceHigh ? -p.Price : 0)
+            .ThenBy(p => sort == ProductSort.Name ? p.Name : "")
+            .ToList()) {
+          Link(href: linkById ? productPrefix + p.Id.ToString() : productPrefix + p.Slug, label: p.Name) {
+            Stack(gap: 2) {
+              if (covers.Any(c => c.Product == p)) {
+                Image(src: File.Url(covers.First(c => c.Product == p).Path), alt: p.Name, aspectRatio: "3 / 4", objectFit: ObjectFit.Cover);
+              }
+              Text(p.Name);
+              Row(gap: 2) {
+                Text(Money(p.Price, shop), color: p.WasPrice == null ? Colors.TextMuted : Colors.Danger);
+                if (p.WasPrice != null) { Text(Money(p.WasPrice.Value, shop), color: Colors.TextMuted, textDecoration: TextDecoration.LineThrough); }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// One of the shop's policies — "terms", "privacy" or "returns" — in the shop's own words, from its settings.
+[Composable]
+[AllowAnonymous]
+public component ShopPolicy(string which) {
+  live var shop = ShopSettings.FirstOrDefault();
+
+  render {
+    Stack(gap: 4, maxW: "720px") {
+      PageTitle(which == "terms" ? "Terms of sale" : which == "privacy" ? "Privacy" : "Returns");
+      if (shop != null) {
+        foreach (var para in ((which == "terms" ? shop.Terms : which == "privacy" ? shop.Privacy : shop.ReturnsPolicy) ?? "")
+            .Split("\n\n").Where(x => x.Trim() != "").ToList()) {
+          Text(para.Trim(), whiteSpace: WhiteSpace.PreWrap, lineHeight: "1.6");
+        }
+        if (((which == "terms" ? shop.Terms : which == "privacy" ? shop.Privacy : shop.ReturnsPolicy) ?? "").Trim() == "") {
+          Text(which == "returns"
+            ? $"You may send back anything you bought within {shop.ReturnDays} days of it being sent. Sign in and return it from your orders."
+            : "This shop has not written this page yet.", color: Colors.TextMuted);
+        }
+      }
+    }
+  }
+}
+
+/// The small print a store puts in its footer or under its checkout: links to its three policies.
+[Composable]
+[AllowAnonymous]
+public component ShopPolicyLinks() {
+  render {
+    Row(gap: 5, wrap: Wrapping.Wrap) {
+      TextLink("Search", to: "/search");
+      TextLink("Terms", to: "/terms");
+      TextLink("Privacy", to: "/privacy");
+      TextLink("Returns", to: "/returns-policy");
+    }
+  }
+}

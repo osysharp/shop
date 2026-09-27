@@ -1,0 +1,29 @@
+// A receipt is a PDF of the order as it stands, for the account that placed it and for staff — nobody else.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Floor)]
+void a_receipt_is_a_pdf_with_the_order_on_it() {
+  runas (Desk) { var shop = TheShop(); shop.VatPercent = 25m; UnitOfWork.Commit(); }
+  var reference = "";
+  runas (Maja) { reference = Buy("v-rcpt", "Loafer", "38", 1); }
+  runas (Desk) { PayAndSend(reference); }
+  runas (Maja) {
+    var order = Order.Single(o => o.Reference == reference);
+    var hex = Crypto.ToHex(ReceiptPdf(order)).ToUpper();
+    Assert.StartsWith("255044462D312E34", hex);                         // %PDF-1.4
+    Assert.Contains(Crypto.ToHex(Text.ToBytes(reference)).ToUpper(), hex);
+    Assert.Contains(Crypto.ToHex(Text.ToBytes("of which VAT")).ToUpper(), hex);
+    Assert.NotEqual("", ReceiptLink(order));
+  }
+}
+
+[Test(Floor)]
+void nobody_else_fetches_a_customers_receipt() {
+  var reference = "";
+  runas (Maja) { reference = Buy("v-rcpt2", "Loafer", "39", 1); }
+  runas (Olle) { Assert.Throws<Exception>(() => ReceiptLink(Order.Single(o => o.Reference == reference))); }
+  Assert.Throws<Exception>(() => ReceiptLink(Order.Single(o => o.Reference == reference)));
+  runas (Desk) { Assert.NotEqual("", ReceiptLink(Order.Single(o => o.Reference == reference))); }
+}

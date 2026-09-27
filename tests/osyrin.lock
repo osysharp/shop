@@ -1,0 +1,93 @@
+{
+  "platform": {
+    "version": "0.9.0"
+  },
+  "entries": [
+    {
+      "name": "Osysharp.Http",
+      "kind": "package",
+      "version": "1.0.0",
+      "hash": "sha256:a1b4eb791f7b753385fb4131deeb372d5315df8befa56cbeefaaf34849b49852",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "prewarmed:osysharp/http"
+    },
+    {
+      "name": "Osysharp.Klarna",
+      "kind": "package",
+      "version": "0.1.0",
+      "hash": "sha256:3dd8422bdfc31224195655440efd0a641974c208b9788decba245a2a0cdafe0f",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "github:osysharp/klarna@v0.1.0",
+      "constraint": "0"
+    },
+    {
+      "name": "Osysharp.PdfWriter",
+      "kind": "package",
+      "version": "0.1.0",
+      "hash": "sha256:f1779051eb1bc07dbef8065778361473de5162d865a55299dce76d02ec2be865",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "github:osysharp/pdfwriter@v0.1.0",
+      "constraint": "0"
+    },
+    {
+      "name": "Osysharp.Resend",
+      "kind": "package",
+      "version": "0.1.0",
+      "hash": "sha256:4731416733b1371439ed26d3e203190d05a035ca181a8bacfd356a91bbebe67b",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "github:osysharp/resend@v0.1.0",
+      "constraint": "0"
+    },
+    {
+      "name": "Osysharp.Shop",
+      "kind": "package",
+      "version": "0.1.0",
+      "hash": "sha256:cfa5859de8d650344abc542788a9693fce0bc74113c066f5824dc903fad2829b",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:.",
+      "constraint": "0"
+    },
+    {
+      "name": "Osysharp.Workflow",
+      "kind": "package",
+      "version": "1.0.0",
+      "hash": "sha256:776b81ff02b8debc970e0f60a7b2b94290d2ff39481cf89f3becc86996b8af15",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "prewarmed:osysharp/workflow"
+    },
+    {
+      "name": "Osysharp.Ui",
+      "kind": "package",
+      "version": "2.6.1",
+      "hash": "sha256:22856a15954ad3b8ea25072c940ddbe78d3c6e8f8554ce1c374c0afb879408e3",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "prewarmed:osysharp/ui"
+    },
+    {
+      "name": "Osysharp.Storage",
+      "kind": "package",
+      "version": "1.1.0",
+      "hash": "sha256:44eb82966fd02c1722de92f597662d450d6a886d6aebb6236f8fd20f44b3d67e",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "prewarmed:osysharp/storage"
+    },
+    {
+      "name": "Osysharp.Stripe",
+      "kind": "package",
+      "version": "0.1.0",
+      "hash": "sha256:79471f422e0d0d83e730ab09e22bba40c42e28308dbf08144cc010221cb4eaf2",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "github:osysharp/stripe@v0.1.0",
+      "constraint": "0"
+    }
+  ]
+}

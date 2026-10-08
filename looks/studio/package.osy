@@ -1,0 +1,22 @@
+// Osysharp.Shop.Looks.Studio — a LOOK for a shop (D-SITEFRAME1 part 2): "the showroom". A white ground with deep aubergine
+// type, an ITALIC serif for display set large, one photograph pinned to half the screen and changing with the page, and
+// one accent — hot pink — for what to press.
+//
+// It draws the general site contract (`Osysharp.Site.Looks`) and the shop's (`Osysharp.Shop.Looks`). It carries NO data
+// and NO logic of its own — a store installs it beside others and staff pick it per version of the site.
+package Osysharp.Shop.Looks.Studio {
+  version     "0.1.1";
+  minPlatform "0.9.0";
+  summary     "a shop look — the showroom: aubergine on white, an italic serif, a pinned photograph that follows the page, hot pink.";
+  model "model/**/*.osy";
+  use Osysharp.Ui;
+  use Osysharp.Blocks;
+  use Osysharp.Storage;
+  use Osysharp.Shop@0;
+  use Osysharp.Site.Looks@0;
+  use Osysharp.Pages@0;
+  // The frame sends a customer to the bag, which is the store's own page.
+  appPage "/bag";
+  // The producer's test project: a store that wears the look, and the page the look asks it to serve.
+  tests "tests";
+}

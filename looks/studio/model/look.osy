@@ -1,0 +1,68 @@
+// THE DIRECTION — "the showroom".
+//
+// Brief: the same shop, the same pieces, dressed for a customer who wants fashion to feel like an occasion — the
+// Saturday showroom rather than the quiet gallery.
+//
+// Looked at in the category: beauty and fashion showrooms (saturated pink, italic serif display, a single hero
+// photograph held on screen), luxury e-commerce (black, gold, spaced capitals — the "premium" costume), and editorial
+// lookbooks (full-bleed spreads, tiny captions). Three directions written for this shop:
+//   1. Black and gold. REJECTED: the premium costume every luxury template wears.
+//   2. Lookbook spread. REJECTED: that is Atelier's territory, a second gallery wall.
+//   3. The showroom — CHOSEN: a white ground with deep aubergine type, an ITALIC serif for display set large, one
+//      photograph pinned to half the screen and changing with the page, and ONE accent — hot pink — for what to press.
+namespace Osysharp.Shop.Looks.Studio;
+
+/// The Saturday showroom — aubergine on white, an italic serif set large, one photograph pinned to half the screen, hot pink.
+look Studio {
+  Label = "Studio";
+  Theme = ShowroomTheme;
+}
+
+theme ShowroomTheme {
+  Colors {
+    Bg            = "#FFFFFF";
+    OnBg          = "#2B1230";   // aubergine
+    Surface       = "#FCEFF4";   // a blush panel — the bag, the summary
+    OnSurface     = "#2B1230";
+    Muted         = "#F8E1EA";
+    TextMuted     = "#8A6F8C";
+    TextSecondary = "#5A3D5E";
+    Border        = "#F0D6E1";
+    Primary       = Palette.From("#E0287A");   // hot pink — the ONE accent
+    OnPrimary     = "#FFFFFF";
+    OnImage       = "#FFFFFF";
+    Scrim         = "rgb(43 18 48 / 0.45)";
+    // Raised panels and wells in this look's own paper — a menu or a dialog, a field's well — and statuses that read
+    // on its light ground. Left at the floor they follow the visitor's system instead: dark menus and pale statuses
+    // inside a look that stays as it is.
+    Elevated = Colors.Bg;
+    Sunken   = Colors.Muted;
+    Danger   = "#B42318";   // errors and refusals, set for this look's light ground
+    Success  = "#1E6B45";   // done, paid, in stock, set for this look's light ground
+    Warning  = "#8A5300";   // a caution that is not yet a refusal, set for this look's light ground
+    Waiting  = "#55587F";   // pending — held, not yet paid, set for this look's light ground
+  }
+  Font {
+    Display = "\"Instrument Serif\", Georgia, serif";
+    Sans    = "\"Hanken Grotesk\", system-ui, sans-serif";
+  }
+  FontSize {
+    Mega    = "clamp(64px, 9vw, 150px)";
+    Hero    = "clamp(44px, 5.5vw, 88px)";
+    Title   = "34px";
+    Lead    = "18px";
+    Body    = "15px";
+    Label   = "12px";
+    Caption = "12px";
+  }
+  // `Headline` — the weight a store's own page headings are set in (Checkout, Your bag, Paid.).
+  FontWeight { Light = 400; Headline = 400; }
+  Radius { Card = "0"; Md = "999px"; Lg = "0"; Pill = "999px"; }
+  Shadow { Raised = "none"; Floating = "0 18px 40px -24px rgb(43 18 48 / 0.3)"; }
+  Motion {
+    Lift = "transform 320ms cubic-bezier(.2,.7,.2,1), opacity 320ms ease";
+    Fade = "opacity 240ms ease";
+  }
+}
+
+animation StudioRiseIn  { Duration = "620ms"; Easing = EaseOut; from { Opacity = 0; TranslateY = "18px"; } to { Opacity = 1; TranslateY = "0"; } }

@@ -1,0 +1,10 @@
+// What the Studio look asks of a store, shown: its frame's Bag button opens the store's own bag page (`appPage "/bag"`).
+
+[Test]
+void the_looks_bag_button_opens_the_stores_bag_page() {
+  Ui.Visit("/");
+  Assert.Visible("Bowls, thrown to order");
+  Ui.Click("Bag");
+  Assert.OnPage("/bag");
+  Assert.Visible("Your bag — bowls, thrown to order");
+}

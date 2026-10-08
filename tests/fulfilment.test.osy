@@ -1,0 +1,117 @@
+// The steps a paid order goes through — picked, packed, sent, delivered — each stamped, and optional.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// Places one Loafer to go `delivery`; the test marks it paid as staff.
+string Placed(string visit, string delivery) {
+  runas (new Visitor { Id = visit }) {
+    Bag(visit, "Loafer", "39", 1);
+    var reference = PlaceOrder("Maja Berg", "maja@example.test", "", delivery, "banktransfer",
+                               delivery == "collect" ? "" : "Storgatan 1", delivery == "collect" ? "" : "11122",
+                               delivery == "collect" ? "" : "Stockholm", delivery == "collect" ? "" : "SE").Reference;
+    return reference;
+  }
+}
+
+/// As staff: the order, marked paid.
+Order PaidNow(string reference) {
+  var order = Order.Single(o => o.Reference == reference);
+  MarkPaid(order, "");
+  Workflow.Settle(order);
+  return order;
+}
+
+[Test(Floor)]
+void a_parcel_is_picked_packed_sent_and_delivered() {
+  var reference = Placed("v-steps", "courier");
+  runas (Desk) {
+    var order = PaidNow(reference);
+    StartPicking(order);   Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Picking, order.Status);
+    MarkPacked(order);     Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Packed, order.Status);
+    MarkSent(order, "");   Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Fulfilled, order.Status);
+    Assert.NotNull(order.PickingAt);
+    Assert.NotNull(order.PackedAt);
+    Assert.Null(order.DeliveredAt);
+    MarkDelivered(order);  Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Delivered, order.Status);
+    Assert.NotNull(order.DeliveredAt);
+    Assert.True(AddOnHeard.Any(h => h.What == "delivered " + order.Reference));
+  }
+}
+
+[Test(Floor)]
+void a_sent_parcel_is_delivered_when_the_carrier_says_so() {
+  var reference = Placed("v-track", "courier");
+  runas (Desk) {
+    var order = PaidNow(reference);
+    MarkSent(order, "");   Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Fulfilled, order.Status);
+    Assert.NotNull(order.Tracking);
+    TestClock.Advance(TimeSpan.FromHours(6));
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Delivered, order.Status);
+    Assert.NotNull(order.DeliveredAt);
+  }
+}
+
+[Test(Floor)]
+void the_steps_are_optional_a_paid_order_goes_straight_out() {
+  var reference = Placed("v-straight", "flat");
+  runas (Desk) {
+    var order = PaidNow(reference);
+    MarkSent(order, "PostNord 1");   Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Fulfilled, order.Status);
+    MarkDelivered(order);            Workflow.Settle(order);    // a flat rate has no carrier to ask
+    Assert.Equal(OrderStatus.Delivered, order.Status);
+  }
+}
+
+[Test(Floor)]
+void a_collection_is_ready_then_collected_which_is_its_delivery() {
+  var reference = Placed("v-collect", "collect");
+  runas (Desk) {
+    var order = PaidNow(reference);
+    MarkPacked(order);   Workflow.Settle(order);
+    Assert.Equal("Ready to collect", StatusText(order));
+    Assert.True(ShopMail.Any(m => m.Subject.StartsWith("Ready to collect — order " + order.Reference)));
+    MarkSent(order, ""); Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Delivered, order.Status);
+    Assert.Equal("Collected", StatusText(order));
+  }
+}
+
+[Test(Floor)]
+void a_delivered_order_can_still_be_returned() {
+  var reference = "";
+  runas (Maja) {
+    Bag("v-deliv-ret", "Loafer", "38", 1);
+    reference = Checkout("v-deliv-ret").Reference;   // a collection: collected is delivered
+  }
+  runas (Desk) { PayAndSend(reference); }
+  runas (Maja) {
+    Assert.Equal(OrderStatus.Delivered, Order.Single(o => o.Reference == reference).Status);
+    ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, "");
+  }
+  runas (Desk) { Assert.Equal(1, ReturnRequest.Count()); }
+}
+
+[Test(Floor)]
+void staff_book_the_carrier_to_come_for_the_days_parcels() {
+  var reference = Placed("v-pickup", "courier");
+  runas (Desk) {
+    var order = PaidNow(reference);
+    MarkSent(order, ""); Workflow.Settle(order);
+    Assert.Equal(new List<string> { "Courier" }, PickupCarriers().Select(c => c.Name).ToList());   // a flat rate has no carrier
+    Assert.Equal(1, ParcelsFor("courier").Count);                           // sent today, not yet fetched
+    var day = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(1);
+    var pickup = BookPickup("courier", day, 1);
+    Assert.Equal($"PU-{day.ToString("yyyyMMdd")}-1", pickup.Reference);
+    Assert.Equal(1, ShopPickup.Count());
+    Assert.Contains("does not come for parcels", Assert.Throws<Exception>(() => BookPickup("flat", day, 1)).Message);
+    Assert.Contains("today or a later day", Assert.Throws<Exception>(() => BookPickup("courier", day.AddDays(-3), 1)).Message);
+  }
+}

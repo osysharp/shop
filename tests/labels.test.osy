@@ -1,0 +1,55 @@
+// The day's labels, printed together: every packed parcel a carrier labels is sent in one press, and the labels made
+// today are listed with their orders.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// Places one Loafer to go `delivery` to Maja; answers the reference.
+string ToMaja(string visit, string delivery) {
+  runas (new Visitor { Id = visit }) {
+    Bag(visit, "Loafer", "39", 1);
+    return PlaceOrder("Maja Berg", "maja@example.test", "", delivery, "banktransfer",
+                      "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+  }
+}
+
+[Test(Floor)]
+void the_packed_parcels_are_sent_in_one_press_and_todays_labels_listed_together() {
+  runas (Desk) { Pick("Loafer", "39").Stock = 10; UnitOfWork.Commit(); }
+  var first = ToMaja("v-labels-1", "courier");
+  var second = ToMaja("v-labels-2", "courier");
+  var byHand = ToMaja("v-labels-3", "flat");                                    // posted by staff: no label
+  var unpacked = ToMaja("v-labels-4", "courier");
+  runas (Desk) {
+    foreach (var reference in new List<string> { first, second, byHand, unpacked }) {
+      var order = Order.Single(o => o.Reference == reference);
+      MarkPaid(order, ""); Workflow.Settle(order);
+      if (reference != unpacked) { MarkPacked(order); Workflow.Settle(order); }
+    }
+  }
+  runas (Packer) {
+    Assert.Equal([first, second], ParcelsToLabel().Select(o => o.Reference).ToList());
+    Assert.Empty(TodaysLabels());
+    Assert.Empty(SendParcels());
+    foreach (var reference in new List<string> { first, second }) { Workflow.Settle(Order.Single(o => o.Reference == reference)); }
+    var labels = TodaysLabels();
+    Assert.Equal([first, second], labels.Select(l => l.Reference).ToList());
+    Assert.Equal("Maja Berg", labels[0].Name);
+    Assert.StartsWith("TRK-" + first + "-", labels[0].Tracking);
+    Assert.NotEqual("", labels[1].Link);
+    Assert.Empty(ParcelsToLabel());
+  }
+  runas (Desk) {
+    Assert.Equal(OrderStatus.Fulfilled, Order.Single(o => o.Reference == first).Status);
+    Assert.Equal(OrderStatus.Packed, Order.Single(o => o.Reference == byHand).Status);   // left for staff to post
+    Assert.Equal(OrderStatus.Paid, Order.Single(o => o.Reference == unpacked).Status);   // not packed yet
+  }
+}
+
+[Test(Floor)]
+void a_customer_cannot_list_or_send_the_days_labels() {
+  runas (Maja) {
+    Assert.Throws<Exception>(() => TodaysLabels());
+    Assert.Throws<Exception>(() => SendParcels());
+  }
+}

@@ -1,0 +1,284 @@
+// Digital products — a variant that is a FILE: a PDF, an audio file, a zip. Staff upload it privately; a customer who
+// paid gets a download, from a link in the mail and from their account, that works a set number of times for a set
+// number of days.
+//
+// ⚑ THE FILE IS NEVER PUBLIC. It is uploaded with `Upload(privately: true)`, which stores it outside public/ at a path
+//   the platform chooses, and it is reached only through `File.SignedUrl` — a link that opens that one file for fifteen
+//   minutes — made for somebody who holds a download of it. The variant's path is the desk's to read.
+//
+// ⚑ A DOWNLOAD IS A ROW PER ORDER LINE, opened by the order's workflow when it is paid. Whoever holds its link (a
+//   `DownloadLink` grant, in the mail) or placed the order from their account (the account page) may fetch it; each
+//   fetch is counted by the download's own workflow, as the shop, and past its limit or its last day it opens nothing.
+//   A refund or a void closes it.
+//
+// ⚑ NOTHING SHIPS. A bag of nothing but files and gift cards is delivered by mail (`Fulfilment.Digital`): no delivery
+//   is charged, no carrier is booked, and the order goes from paid to delivered on its own. In a bag with goods the
+//   goods ship as always and the files are ready the moment it is paid.
+//
+// ⚑ THE RIGHT OF WITHDRAWAL: a consumer loses the 14 days for digital content that is not on a tangible medium once
+//   its supply has begun with their express consent and their acknowledgement that they lose the right (Directive
+//   2011/83/EU, art. 16(m); in Sweden 2 kap. 11 § lagen (2005:59) om distansavtal och avtal utanför affärslokaler).
+//   So the checkout asks for exactly that when the bag holds a file (`AgreeToDigitalDelivery`), the order keeps when
+//   it was given, and the confirmation says so (art. 8(7)(b)).
+
+namespace Osysharp.Shop;
+
+using Osysharp.Storage;
+using Osysharp.Workflow;
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum DownloadStatus {
+  [Label("Open")] Open,
+  [Label("Used up")] UsedUp,
+  [Label("Closed")] Closed,
+}
+
+// SECURITY-INVARIANT(a-download-opens-only-for-its-buyer): a bought file is reached only through a download made for
+//   its order line — by the account that placed the order, or by whoever holds that download's `DownloadLink` (mailed
+//   to the buyer). The file itself is private (never under public/), and the address a fetch answers is a signed link
+//   to that one file for fifteen minutes. Each fetch is counted by the download's workflow, as the shop; past its
+//   limit or its last day, after a refund or a void, it opens nothing. Nobody writes a download's count or state but
+//   that workflow. Guarded by downloads.test.osy a_download_opens_for_its_buyer_only_and_only_so_many_times.
+public entity Download {
+  [Required] Order Order;
+  [Required] OrderLine Line;
+  /// The file's name as the customer sees it, and where it is — copied when the download is opened.
+  [Required, MaxLength(160)] string Name;
+  /// What was bought and the order it was bought on, copied when the download is opened: the download's own link
+  /// opens this row and nothing of the order (an order is read through its own link, D-ORDERLINK1).
+  [MaxLength(120)] string Product = "";
+  [MaxLength(24)] string OrderReference = "";
+  [Required, MaxLength(300)] string Path;
+  [ConcurrencyCheck] int Count = 0;
+  int Limit = 5;
+  /// The first moment it no longer opens.
+  DateTime ExpiresAt;
+  DownloadStatus Status;                             // no default — DownloadAccess owns it
+  DateTime? LastAt;
+  security {
+    // Like the bag's: the owner or the holder of this download's own link — and staff, by a rule of their own.
+    allow read when IsAnonymous || IsAuthenticated where Order.Account == user || Id == DownloadLink.Row;
+    allow read when IsShopStaff;
+  }
+}
+
+/// The link a paid order's mail carries to one download — it opens that download and nothing else.
+public grant DownloadLink for Download { Expires = TimeSpan.FromDays(30); }
+
+public workflow DownloadAccess {
+  Tracks    = Download.Status;
+  Autostart = true;
+  Initial   = Open;
+
+  /// A fetch — counted here, as the shop, so no caller can write the count.
+  event Fetched();
+  /// Staff allow it again: more times, for more days.
+  event Reopen(int more, int days);
+  /// Refunded or voided: it opens nothing any more.
+  event Close();
+
+  state Open {
+    subscribe Fetched() as Fetch;
+    subscribe Close() as Closing;
+    subscribe Reopen() as Extend;
+    on Fetch() {
+      this.Item.Count = this.Item.Count + 1;
+      this.Item.LastAt = DateTime.UtcNow;
+      if (this.Item.Count >= this.Item.Limit) { goto UsedUp; }
+    }
+    on Extend(int more, int days) { ExtendDownload(this.Item, more, days); }
+    on Closing() { DownloadLink.RevokeAll(this.Item); goto Closed; }
+  }
+  state UsedUp {
+    subscribe Reopen() as Reopening;
+    subscribe Close() as ClosingUsed;
+    on Reopening(int more, int days) { ExtendDownload(this.Item, more, days); goto Open; }
+    on ClosingUsed() { DownloadLink.RevokeAll(this.Item); goto Closed; }
+  }
+  terminal cancel Closed { }
+}
+
+void ExtendDownload(Download d, int more, int days) {
+  d.Limit = d.Count + Math.Max(more, 1);
+  var until = DateTime.UtcNow.AddDays(Math.Max(days, 1));
+  if (until > d.ExpiresAt) { d.ExpiresAt = until; }
+}
+
+/// Opens a download for each file an order bought — called by the order's workflow when it is paid — and mails the
+/// buyer their links.
+void OpenDownloads(Order order) {
+  var shop = TheShop();
+  List<Download> opened = [];
+  foreach (var line in order.Lines.Where(l => l.Kind == LineKind.Download).ToList()) {
+    var v = line.Variant;
+    if (v.DownloadPath == null) { Log.Warning($"Order {order.Reference}: {line.ProductName} is sold as a download but has no file."); continue; }
+    if (Download.Any(d => d.Line == line)) { continue; }
+    opened.Add(new Download { Order = order, Line = line, Name = v.DownloadName ?? line.ProductName, Path = v.DownloadPath!,
+                              Product = line.ProductName, OrderReference = order.Reference,
+                              Limit = shop.DownloadLimit * line.Quantity, ExpiresAt = DateTime.UtcNow.AddDays(shop.DownloadDays) });
+  }
+  if (opened.Count == 0) { return; }
+  List<DownloadMailLine> links = [];
+  foreach (var d in opened) {
+    links.Add(new DownloadMailLine { Name = d.Line.ProductName, File = d.Name, Link = ShopLink($"{App.Setting<ShopSetup>().DownloadPath}/{DownloadLink.For(d)}") });
+  }
+  MailCustomer(order, App.Setting<ShopSetup>().Mails.Downloads(order, links));
+}
+
+/// One file in the downloads mail.
+public class DownloadMailLine {
+  /// What was bought — "The Brewing Guide".
+  public string Name = "";
+  /// The file — "brewing-guide.pdf".
+  public string File = "";
+  public string Link = "";
+}
+
+/// Closes every download of an order — refunded or voided. Called by the order's workflow.
+void CloseDownloads(Order order) {
+  foreach (var d in Download.Where(x => x.Order == order && x.Status != DownloadStatus.Closed).ToList()) {
+    DownloadAccess.RaiseClose(d);
+  }
+}
+
+/// A download as its page and the account show it.
+public class DownloadView {
+  public Download? Download = null;
+  /// What was bought, and the file.
+  public string Product = "";
+  public string File = "";
+  public string OrderReference = "";
+  public int Left = 0;
+  /// The last day it opens — "3 November 2026".
+  public string Until = "";
+  /// "" when it opens now; otherwise why not, in the customer's words.
+  public string Problem = "";
+}
+
+DownloadView DownloadViewOf(Download d) {
+  var view = new DownloadView { Download = d, Product = d.Product, File = d.Name, OrderReference = d.OrderReference,
+                                Left = Math.Max(d.Limit - d.Count, 0), Until = LocalDay(d.ExpiresAt.AddSeconds(-1)) };
+  view.Problem = DownloadProblem(d);
+  return view;
+}
+
+/// Why a download will not open now — "" when it will.
+string DownloadProblem(Download d) {
+  if (d.Status == DownloadStatus.Closed) { return "This download has been closed: the order was refunded or called off."; }
+  if (d.Status == DownloadStatus.UsedUp || d.Count >= d.Limit) { return "It has been downloaded as many times as it may be. Write to us and we will open it again."; }
+  if (d.ExpiresAt <= DateTime.UtcNow) { return "The time to download it has passed. Write to us and we will open it again."; }
+  return "";
+}
+
+/// Fetches a download: counts it, and answers a link to the file that works for fifteen minutes. Throws the sentence
+/// to show when it will not open.
+string FetchDownload(Download d) {
+  var problem = DownloadProblem(d);
+  if (problem != "") { throw new Exception(problem); }
+  DownloadAccess.RaiseFetched(d);
+  return File.SignedUrl(d.Path);
+}
+
+/// What a download link's page shows.
+[AllowAnonymous]
+public DownloadView DownloadFor(DownloadLink link) {
+  return DownloadViewOf(link.Row);
+}
+
+/// The download link's page's button: counts the fetch and answers where the file is, for fifteen minutes.
+[AllowAnonymous]
+public string StartDownload(DownloadLink link) {
+  return FetchDownload(link.Row);
+}
+
+/// The signed-in customer's downloads, newest first.
+public List<DownloadView> MyDownloads() {
+  var me = Session.CurrentUser;
+  if (me == null) { return []; }
+  return Download.Include(d => d.Order).Include(d => d.Line).Where(d => d.Order.Account == me)
+    .OrderByDescending(d => d.Order.PlacedAt).ToList().Select(d => DownloadViewOf(d)).ToList();
+}
+
+/// The signed-in customer fetches one of their own downloads from their account.
+public string DownloadMine(Download d) {
+  var me = Session.CurrentUser;
+  if (me == null || d.Order.Account != me) { throw new Exception("Sign in with the account that bought it."); }
+  return FetchDownload(d);
+}
+
+/// Staff allow a download again — `more` times, for `days` days from now (the customer's link is still the one they
+/// have; a used-up or run-out download opens again).
+[Authorize(IsShopStaff)]
+public void ReopenDownload(Download d, int more, int days) {
+  if (d.Status == DownloadStatus.Closed) { throw new Exception("That download was closed with a refund. It does not open again."); }
+  DownloadAccess.RaiseReopen(d, more, days);
+}
+
+/// An order's downloads, for the desk.
+[Authorize(IsShopStaff)]
+public List<DownloadView> DownloadsOf(Order order) {
+  return Download.Include(d => d.Line).Where(d => d.Order == order).ToList().Select(d => DownloadViewOf(d)).ToList();
+}
+
+// ── the desk: a file for sale ───────────────────────────────────────────────────────────────────────────────────
+
+/// Staff make a variant a download of the file they just uploaded privately — it is never out of stock, weighs
+/// nothing and is sent nowhere. `name` is what the customer sees ("" keeps the uploaded file's name).
+[Authorize(IsShopStaff)]
+public void SetDownloadFile(Variant variant, UploadedFile file, string name) {
+  // Only a file the platform stored privately — a public one is anybody's already, and a path of the shop's own
+  // (a receipt, a label) is not a product.
+  if (!file.Path.StartsWith("uploads/") && !file.Path.StartsWith("private/")) { throw new Exception("Upload the file privately. A file for sale is never public."); }
+  if (variant.Product.IsGiftCard) { throw new Exception("A gift card is not a file."); }
+  variant.IsDownload = true;
+  variant.Unlimited = true;
+  variant.WeightGrams = 0;
+  variant.DownloadPath = file.Path;
+  var shown = name.Trim() == "" ? file.FileName.Trim() : name.Trim();
+  variant.DownloadName = shown == "" ? "download" : shown;
+  UnitOfWork.Commit();
+}
+
+/// A link staff open to check the file a variant sells — for fifteen minutes.
+[Authorize(IsShopStaff)]
+public string DownloadFileLink(Variant variant) {
+  if (variant.DownloadPath == null) { throw new Exception("That variant has no file."); }
+  return File.SignedUrl(variant.DownloadPath!);
+}
+
+// ── the checkout: what the customer agrees to ─────────────────────────────────────────────────────────────────
+
+/// Whether the bag holds a file — so the checkout asks for the customer's consent to have it at once.
+[AllowAnonymous]
+public bool BagHoldsDownloads() {
+  var bag = BagFor(false);
+  return bag != null && bag.Lines.ToList().Any(l => l.Variant.IsDownload);
+}
+
+/// The customer agrees (or no longer agrees) to have the files in their bag at once, knowing they then lose the right
+/// to withdraw from buying them. Kept on the order it becomes.
+[AllowAnonymous]
+public void AgreeToDigitalDelivery(bool agreed) {
+  var bag = BagFor(true)!;
+  bag.DigitalConsentAt = agreed ? DateTime.UtcNow : null;
+  UnitOfWork.Commit();
+}
+
+/// What the customer agrees to, word for word — the checkbox and the confirmation mail say the same.
+public string DigitalConsentWords() {
+  return "Give me the download as soon as it is paid. I understand that I then lose my right to withdraw from buying it.";
+}
+
+/// The checkbox a checkout places above its order button when the bag holds a file.
+[Composable]
+[AllowAnonymous]
+public component CheckoutDigitalConsent() {
+  bool holds = false;
+  bool agreed = false;
+  on mount { holds = BagHoldsDownloads(); }
+  // The box has written `agreed` already (a two-way binding) — this only tells the shop.
+  action Toggle() { AgreeToDigitalDelivery(agreed); }
+  render {
+    if (holds) { Checkbox(DigitalConsentWords(), value: agreed, onToggle: Toggle); }
+  }
+}

@@ -1,0 +1,679 @@
+// What staff keep about one order and do for it beyond moving it along: their NOTES, the order's TIMELINE, a new
+// delivery ADDRESS before it goes out, an order taken BY PHONE, and a LINK to pay it.
+//
+// ⚑ THE TIMELINE IS READ, NOT KEPT. Almost everything that happens to an order is already recorded somewhere — its
+//   workflow's own history (every status it moved to, and when), the mails in the outbox, the returns, the notes. The
+//   timeline reads those; the one thing nothing else records — an address that changed, an order taken on the desk, a
+//   payment link sent — is an `OrderEvent`.
+//
+// ⚑ A PAYMENT LINK IS A GRANT (`Pay`, below). Whoever holds it can pay that one order and see what it holds and costs —
+//   nothing else: not who it is for, not where it goes. The platform signs it and checks it before any of the code
+//   below runs; it works for seven days, and only while the order is waiting for payment — paid, cancelled or lapsed,
+//   the order's workflow takes every link back (`Pay.RevokeAll`).
+
+namespace Osysharp.Shop;
+
+using Osysharp.Delivery;
+using Osysharp.Payments;
+using Osysharp.Workflow;
+
+// ── notes ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A note about an order: staff's own (a customer asked for gift wrap, the parcel came back damaged) — or a message to
+/// the customer, which is mailed to them and shown with the order in their account.
+// SECURITY-INVARIANT(staff-notes-are-the-shops): a note is read by the shop's people only — a customer reads, on their
+//   own order, the messages that were SENT to them (`ToCustomer`) and never a note staff kept for themselves, nor who
+//   wrote it. Guarded by order-desk.test.osy a_customer_reads_the_message_sent_to_them_and_never_the_staffs_notes.
+public entity OrderNote {
+  [Required] Order Order;
+  [Required, MaxLength(2000)] string Text;
+  /// Sent to the customer (and mailed) — false: the shop's own note, which the customer never sees.
+  bool ToCustomer = false;
+  ShopAccount? By;
+  DateTime At;
+  security {
+    allow read when IsAuthenticated where ToCustomer && Order.Account == user;
+    allow read when IsShopStaff;
+    allow read when IsShopPacker;
+    // A packer notes what they found; only staff write to the customer.
+    allow create when IsShopPacker where !ToCustomer;
+    allow create when IsShopPacker && IsShopStaff;
+    deny read By when !IsShopPacker;
+  }
+}
+
+/// Keeps a note on an order — the shop's own, never shown to the customer. Answers it.
+[Authorize(IsShopPacker)]
+public OrderNote NoteOnOrder(Order order, string text) {
+  var t = text.Trim();
+  if (t == "") { throw new Exception("Write the note first."); }
+  if (t.Length > 2000) { throw new Exception("A note is at most 2,000 characters."); }
+  var note = new OrderNote { Order = order, Text = t, By = Session.CurrentUser, At = DateTime.UtcNow };
+  UnitOfWork.Commit();
+  return note;
+}
+
+/// Writes to the customer about their order: mailed in the shop's frame, and kept on the order where the customer reads
+/// it from their account. Answers it.
+[Authorize(IsShopStaff)]
+public OrderNote MessageCustomer(Order order, string text) {
+  var t = text.Trim();
+  if (t == "") { throw new Exception("Write the message first."); }
+  if (t.Length > 2000) { throw new Exception("A message is at most 2,000 characters."); }
+  var contact = order.Contact.FirstOrDefault();
+  if (contact == null || !contact.Email.Contains("@")) { throw new Exception("This order has no address to write to."); }
+  var note = new OrderNote { Order = order, Text = t, ToCustomer = true, By = Session.CurrentUser, At = DateTime.UtcNow };
+  Mail(contact.Email, App.Setting<ShopSetup>().Mails.OrderMessage(order, t), order: order);
+  UnitOfWork.Commit();
+  return note;
+}
+
+/// The messages the shop sent the signed-in customer about one of their orders, oldest first.
+public List<OrderNote> MessagesAbout(Order order) {
+  var me = Session.CurrentUser;
+  if (me == null) { return []; }
+  return OrderNote.Where(n => n.Order == order && n.ToCustomer && n.Order.Account == me).OrderBy(n => n.At).ToList();
+}
+
+// ── what nothing else records ─────────────────────────────────────────────────────────────────────────────────────
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum OrderEventKind {
+  [Label("Address changed")] AddressChanged,
+  [Label("Taken on the desk")] TakenOnTheDesk,
+  /// `Text` says where it was mailed, or that it was made to hand over — the shop's to read, never the customer's.
+  [Label("Payment link sent")] PayLinkSent,
+}
+
+/// Something that happened to an order that no other row records.
+public entity OrderEvent {
+  [Required] Order Order;
+  [Required] OrderEventKind Kind;
+  [MaxLength(600)] string? Text;
+  /// Who did it, in words — "Anna (staff)", "the customer".
+  [MaxLength(200)] string? Who;
+  DateTime At;
+  security {
+    allow read when IsShopPacker;
+    allow create when IsShopStaff;
+  }
+}
+
+// ── the timeline ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// One thing that happened to an order, as the desk lists it.
+public class TimelineEntry {
+  public DateTime At;
+  /// "Paid", "Mailed the customer", "Note" — the line's heading.
+  public string What = "";
+  /// The rest of the line — the reason, the tracking number, the note itself.
+  public string Detail = "";
+  /// Who did it, when anybody did — "anna@shop.example", "the customer".
+  public string Who = "";
+  /// Which kind of line: "status", "mail", "note", "message", "return", "event", "link".
+  public string Kind = "";
+}
+
+/// Everything that happened to an order, oldest first: placed, each status it moved to, what the customer was mailed,
+/// notes and messages, returns, a new address, a payment link.
+[Authorize(IsShopPacker)]
+public List<TimelineEntry> OrderTimeline(Order order) {
+  List<TimelineEntry> all = [];
+  var staff = IsStaffMember();
+  var taken = OrderEvent.Where(e => e.Order == order && e.Kind == OrderEventKind.TakenOnTheDesk).FirstOrDefault();
+  all.Add(new TimelineEntry { At = order.PlacedAt, Kind = "status",
+    What = taken == null ? "Placed" : "Placed on the desk",
+    Detail = $"{order.DeliveryLabel ?? order.Fulfilment.Label} · {order.PaymentLabel ?? order.PaymentMethod}"
+           + (staff ? $" · {OrderMoney(order.Total, order)}" : ""),
+    Who = taken == null ? "" : taken.Who ?? "" });
+
+  // Every status the order moved to — its workflow's own history.
+  var moves = StatusMoves(order);
+  foreach (var m in moves) {
+    if (m.To == null || m.To == m.From || m.To == "Reserved" || m.To == "Placed") { continue; }
+    all.Add(new TimelineEntry { At = m.At, Kind = "status", What = StatusWords(order, m.To!), Detail = StatusDetail(order, m.To!, staff),
+                                Who = WhoIs(m.Actor) });
+  }
+  // A history already gone (kept only so long, `app.Workflow`): what the order's own dates still say.
+  if (moves.Count == 0) {
+    if (order.PaidAt != null) { all.Add(new TimelineEntry { At = order.PaidAt.Value, Kind = "status", What = "Paid", Detail = StatusDetail(order, "Paid", staff) }); }
+    if (order.PickingAt != null) { all.Add(new TimelineEntry { At = order.PickingAt.Value, Kind = "status", What = "Picking started" }); }
+    if (order.PackedAt != null) { all.Add(new TimelineEntry { At = order.PackedAt.Value, Kind = "status", What = StatusWords(order, "Packed") }); }
+    if (order.FulfilledAt != null && order.Fulfilment == Fulfilment.Deliver) {
+      all.Add(new TimelineEntry { At = order.FulfilledAt.Value, Kind = "status", What = "Sent", Detail = StatusDetail(order, "Fulfilled", staff) });
+    }
+    if (order.DeliveredAt != null) { all.Add(new TimelineEntry { At = order.DeliveredAt.Value, Kind = "status", What = StatusWords(order, "Delivered") }); }
+  }
+  if (order.CapturedAt != null && staff) {
+    all.Add(new TimelineEntry { At = order.CapturedAt.Value, Kind = "status", What = "Payment captured",
+                                Detail = $"The money was taken through {order.PaymentLabel ?? order.PaymentMethod} as it went out." });
+  }
+
+  foreach (var mail in ShopMail.Where(m => m.Order == order).ToList()) {
+    all.Add(new TimelineEntry { At = mail.CreatedAt, Kind = "mail", What = "Mailed the customer",
+                                Detail = $"{mail.Subject} — {mail.Status.Label}" });
+  }
+  foreach (var n in OrderNote.Where(x => x.Order == order).ToList()) {
+    all.Add(new TimelineEntry { At = n.At, Kind = n.ToCustomer ? "message" : "note", What = n.ToCustomer ? "Message to the customer" : "Note",
+                                Detail = n.Text, Who = n.By == null ? "" : AccountName(n.By!) });
+  }
+  foreach (var e in OrderEvent.Where(x => x.Order == order && x.Kind != OrderEventKind.TakenOnTheDesk).ToList()) {
+    // Where a payment link was mailed, and who sent it, are the shop's — a packer reads the rest of the history.
+    if (e.Kind == OrderEventKind.PayLinkSent && !staff) { continue; }
+    all.Add(new TimelineEntry { At = e.At, Kind = e.Kind == OrderEventKind.PayLinkSent ? "link" : "event", What = e.Kind.Label,
+                                Detail = e.Text ?? "", Who = e.Who ?? "" });
+  }
+  if (order.CreditUsed > 0 && staff) {
+    all.Add(new TimelineEntry { At = order.PlacedAt, Kind = "status", What = "Paid in part with store credit",
+                                Detail = $"{OrderMoney(order.CreditUsed, order)} of {OrderMoney(order.Total, order)}" });
+  }
+  // An exchange's replacement says what it replaces; the original says it on its return (below).
+  if (order.ExchangeFor != null) {
+    all.Add(new TimelineEntry { At = order.PlacedAt, Kind = "return", What = $"Exchange for order {order.ExchangeFor!.Reference}",
+                                Detail = "Held until what is sent back arrives" });
+    if (order.ExchangeCredit > 0 && staff) {
+      all.Add(new TimelineEntry { At = order.PaidAt ?? order.PlacedAt, Kind = "return", What = "The goods sent back arrived",
+                                  Detail = $"{OrderMoney(order.ExchangeCredit, order)} set against this order"
+                                         + (AmountDue(order) > 0 ? $" · {OrderMoney(AmountDue(order), order)} to pay" : "") });
+    }
+  }
+  foreach (var r in ReturnRequest.Include(x => x.Lines).Where(x => x.Order == order).ToList()) {
+    var what = string.Join(", ", r.Lines.ToList().Select(l => $"{l.Quantity} × {l.Line.ProductName}{(l.Line.VariantLabel == null ? "" : " (" + l.Line.VariantLabel + ")")}"));
+    var exchange = r.Replacement != null;
+    var instead = exchange
+      ? " for " + string.Join(", ", r.Replacement!.Lines.ToList().Select(l => $"{l.ProductName}{(l.VariantLabel == null ? "" : " (" + l.VariantLabel + ")")}"))
+        + $" — order {r.Replacement!.Reference}"
+      : "";
+    all.Add(new TimelineEntry { At = r.RequestedAt, Kind = "return",
+                                What = r.NotSent ? "Part refunded — not in stock after all" : exchange ? "Exchange asked for" : "Return asked for",
+                                Detail = what + instead + (r.AsCredit && !exchange ? " · as store credit" : "") });
+    if (r.AcceptedAt != null) {
+      all.Add(new TimelineEntry { At = r.AcceptedAt.Value, Kind = "return",
+                                  What = r.ParcelNumber != null || r.DropOffCode != null ? "Return label booked" : "Return accepted",
+                                  Detail = r.ParcelNumber != null ? $"Tracking {r.ParcelNumber}" : r.NoLabel ?? "" });
+    }
+    if (r.ReceivedAt != null) {
+      all.Add(new TimelineEntry { At = r.ReceivedAt.Value, Kind = "return", What = r.NotSent ? "Refund made" : "Return received",
+                                  Detail = r.Restock && !r.NotSent ? "Back in stock" : "" });
+    }
+    if (r.RefundedAt != null) {
+      var credit = r.CreditAmount > 0 ? $"{OrderMoney(r.CreditAmount, r.Order)} to store credit" : "";
+      all.Add(new TimelineEntry { At = r.RefundedAt.Value, Kind = "return",
+                                  What = exchange ? "Exchange settled" : r.CreditAmount >= r.Amount && r.Amount > 0 ? "Return given as store credit" : "Return refunded",
+                                  Detail = staff ? (exchange || r.CreditAmount >= r.Amount ? credit : OrderMoney(r.Amount - r.CreditAmount, r.Order) + (credit == "" ? "" : " · " + credit)) : "" });
+    }
+    if (r.Status == ReturnStatus.Declined) {
+      all.Add(new TimelineEntry { At = r.ReceivedAt ?? r.RequestedAt, Kind = "return", What = "Return declined", Detail = r.Problem ?? "" });
+    }
+  }
+  return all.OrderBy(e => e.At).ToList();
+}
+
+/// The order's moves through its workflow, oldest first — empty when its history has been reaped.
+List<WorkflowAuditEntry> StatusMoves(Order order) {
+  try {
+    return OrderLifecycle.For(order).Audit.Where(a => a.Kind == AuditKind.Transitioned).ToList();
+  }
+  catch (Exception ex) {
+    Log.Information($"No workflow history for {order.Reference}: {ex.Message}");
+    return [];
+  }
+}
+
+/// A status the order moved to, as the timeline heads it.
+string StatusWords(Order order, string state) {
+  var collect = order.Fulfilment == Fulfilment.Collect;
+  if (state == "Paid") { return "Paid"; }
+  if (state == "Picking") { return "Picking started"; }
+  if (state == "Packed") { return collect ? "Ready to collect" : "Packed"; }
+  if (state == "Fulfilled") { return collect ? "Collected" : "Sent"; }
+  if (state == "Delivered") { return collect ? "Collected" : "Delivered"; }
+  if (state == "Cancelled") { return "Cancelled"; }
+  if (state == "Lapsed") { return "Lapsed — not paid in time"; }
+  if (state == "Unavailable") { return "Could not be had"; }
+  if (state == "RefundRequested") { return "Refund asked for"; }
+  if (state == "RefundProcessing") { return "Refund processing"; }
+  if (state == "Refunded") { return "Refunded"; }
+  if (state == "Voided") { return "Voided"; }
+  return state;
+}
+
+/// What goes with a status on the timeline — how it was paid, the tracking, why it was called off.
+string StatusDetail(Order order, string state, bool staff) {
+  if (state == "Paid") { return order.PaidWith ?? ""; }
+  if (state == "Fulfilled" && order.Fulfilment == Fulfilment.Deliver) {
+    return order.Tracking == null ? "" : $"Tracking {order.Tracking}";
+  }
+  if (state == "Cancelled" || state == "Voided") { return order.CancelReason ?? ""; }
+  if (state == "Unavailable") { return order.Problem ?? ""; }
+  if (state == "RefundRequested") { return order.RefundReason ?? ""; }
+  if (state == "Refunded") { return staff ? OrderMoney(order.Total, order) : ""; }
+  return "";
+}
+
+/// Who a principal id is, for the timeline — the account's name or address; "" for the shop itself (a workflow, a
+/// reminder, a provider's webhook).
+string WhoIs(Guid? actor) {
+  if (actor == null) { return ""; }
+  var a = ShopAccount.FirstOrDefault(x => x.Id == actor.Value);
+  return a == null ? "" : AccountName(a);
+}
+
+string AccountName(ShopAccount a) {
+  return a.Name ?? a.Email;
+}
+
+// ── a new address ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Whether an order may still go to another address — delivered, not yet out of the door, with no label made.
+public bool AddressCanChange(Order order) {
+  return order.Fulfilment == Fulfilment.Deliver
+      && (order.Status == OrderStatus.Reserved || IsBeingPrepared(order))
+      && order.Tracking == null && order.LabelPath == null;
+}
+
+/// Why an order's address cannot change now — "" when it can.
+public string AddressLocked(Order order) {
+  if (order.Fulfilment != Fulfilment.Deliver) { return $"Order {order.Reference} is not delivered — there is no address to change."; }
+  if (order.Tracking != null || order.LabelPath != null || IsSent(order)) {
+    return $"Order {order.Reference} has gone out already — the carrier has the address on its label.";
+  }
+  if (order.Status != OrderStatus.Reserved && !IsBeingPrepared(order)) { return $"Order {order.Reference} is {order.Status.Label}."; }
+  return "";
+}
+
+/// Staff send an order to another address before it goes out. See `MoveOrder` for what may change.
+[Authorize(IsShopStaff)]
+public void ChangeOrderAddress(Order order, string street, string postCode, string city, string country) {
+  var me = Session.CurrentUser;
+  AskToMove(order, street, postCode, city, country, me == null ? "the shop" : $"{AccountName(me!)} (staff)");
+}
+
+/// The customer sends their own order to another address, from their account, before it goes out.
+public void ChangeMyOrderAddress(Order order, string street, string postCode, string city, string country) {
+  var me = Session.CurrentUser;
+  if (me == null || order.Account != me) { throw new Exception("Sign in with the account that placed the order."); }
+  AskToMove(order, street, postCode, city, country, "the customer");
+}
+
+/// Where the signed-in customer's own order goes — null for an order that is not theirs.
+public OrderContact? MyOrderContact(Order order) {
+  var me = Session.CurrentUser;
+  if (me == null || order.Account != me) { return null; }
+  return OrderContact.FirstOrDefault(c => c.Order == order);
+}
+
+/// Checks a new address and hands it to the order's workflow, which writes it.
+///
+/// ⚑ THE COUNTRY STAYS. A delivery was priced — and its VAT charged — for the country it was ordered to, and a paid
+///   order's money is already taken; a new country could cost more to send and carry another country's VAT. So a new
+///   street, post code or town is fine (no carrier here prices by them), and a new country is refused with what to do.
+void AskToMove(Order order, string street, string postCode, string city, string country, string who) {
+  var locked = AddressLocked(order);
+  if (locked != "") { throw new Exception(locked); }
+  if (street.Trim() == "" || postCode.Trim() == "" || city.Trim() == "") { throw new Exception("Give the whole address — street, post code and town."); }
+  var contact = order.Contact.FirstOrDefault();
+  if (contact == null) { throw new Exception($"Order {order.Reference} has nobody to deliver to."); }
+  var was = CountryCode(contact.Country ?? "");
+  var now = country.Trim() == "" ? was : CountryCode(country);
+  if (was != "" && now != was) {
+    throw new Exception($"Order {order.Reference} was priced for delivery to {contact.Country} — its delivery and its VAT depend "
+      + "on the country. To send it to another country, cancel it (or refund it) and place it again.");
+  }
+  OrderLifecycle.RaiseChangeAddress(order, street.Trim(), postCode.Trim(), city.Trim(), contact.Country ?? country.Trim(), who);
+}
+
+/// Writes the new address on the order's contact and records the change — called by the order's workflow, as the shop.
+void MoveOrder(Order order, string street, string postCode, string city, string country, string who) {
+  var contact = order.Contact.FirstOrDefault();
+  if (contact == null) { return; }
+  var before = AddressLine(contact.Street, contact.PostCode, contact.City);
+  contact.Street = street;
+  contact.PostCode = postCode;
+  contact.City = city;
+  if (country != "") { contact.Country = country; }
+  new OrderEvent { Order = order, Kind = OrderEventKind.AddressChanged, At = DateTime.UtcNow, Who = who,
+                   Text = $"From {before} to {AddressLine(street, postCode, city)}" };
+}
+
+/// An address as one line — "Hornsgatan 64, 11821 Stockholm".
+public string AddressLine(string? street, string? postCode, string? city) {
+  var town = $"{postCode ?? ""} {city ?? ""}".Trim();
+  return string.Join(", ", new List<string> { street ?? "", town }.Where(s => s != ""));
+}
+
+// ── an order taken on the desk ────────────────────────────────────────────────────────────────────────────────────
+//
+// ⚑ THE SAME ORDER AS THE WEB'S. Staff fill a bag of the desk's own and place it through the checkout's own path
+//   (`PlaceBag`): priced again from the catalogue, delivery and VAT from the address, the stock taken by the order's
+//   workflow, the confirmation mailed. Only the payment differs — nobody is at a payment page, so it is paid by a link
+//   mailed to the customer, or by hand.
+
+/// A new, empty bag for an order staff take on the desk — its own, which no visitor can name.
+[Authorize(IsShopStaff)]
+public Bag StartDeskOrder() {
+  var bag = new Bag { VisitId = "desk-" + Security.RandomHex(16) };
+  UnitOfWork.Commit();
+  return bag;
+}
+
+/// Puts `quantity` of a variant in a desk order's bag — more of it when it is there already. Refuses what is not for
+/// sale, or not in stock.
+[Authorize(IsShopStaff)]
+public void AddToDeskOrder(Bag bag, Variant variant, int quantity) {
+  if (bag.VisitId == null || !bag.VisitId.StartsWith("desk-")) { throw new Exception("That is not an order being taken on the desk."); }
+  if (quantity < 1) { throw new Exception("Add one or more."); }
+  if (variant.Product.Status != ProductStatus.Listed) { throw new Exception($"{variant.Product.Name} is not for sale."); }
+  var line = bag.Lines.FirstOrDefault(l => l.Variant == variant);
+  var want = (line == null ? 0 : line.Quantity) + quantity;
+  var have = Buyable(variant);
+  if (!variant.Unlimited && want > have) {
+    throw new Exception(have == 0 ? $"{VariantName(variant)} has sold out." : $"There are only {have} of {VariantName(variant)}.");
+  }
+  if (line == null) { new BagLine { Bag = bag, Variant = variant, Quantity = quantity, PriceWhenAdded = PriceOf(variant) }; }
+  else { line.Quantity = want; }
+  UnitOfWork.Commit();
+}
+
+/// A size of a product as the desk's order form lists it.
+public class DeskPick {
+  public Variant? Variant;
+  public string Name = "";
+  public decimal Price = 0;
+  public int Stock = 0;
+  public bool Unlimited = false;
+}
+
+/// Listed sizes whose product's name holds `search`, or whose SKU is it — at most eight.
+[Authorize(IsShopStaff)]
+public List<DeskPick> DeskFindVariants(string search) {
+  var s = search.Trim().ToLower();
+  if (s == "") { return []; }
+  return Variant.Include(v => v.Product).Where(v => v.Product.Status == ProductStatus.Listed).ToList()
+    .Where(v => v.Product.Name.ToLower().Contains(s) || (v.Sku ?? "").ToLower() == s).Take(8)
+    .Select(v => new DeskPick { Variant = v, Name = VariantName(v), Price = PriceOf(v), Stock = v.Stock, Unlimited = v.Unlimited }).ToList();
+}
+
+/// One line of a desk order, as its form shows it.
+public class DeskLine {
+  public BagLine? Line;
+  public string Name = "";
+  public int Quantity = 1;
+  public decimal Amount = 0;
+  /// The age the goods need — the form asks for a date of birth when any line has one.
+  public int MinimumAge = 0;
+}
+
+/// What a desk order holds so far.
+[Authorize(IsShopStaff)]
+public List<DeskLine> DeskOrderLines(Bag bag) {
+  return bag.Lines.ToList().Select(l => new DeskLine { Line = l, Name = VariantName(l.Variant), Quantity = l.Quantity,
+                                                       Amount = LinePrice(l) * l.Quantity, MinimumAge = l.Variant.Product.MinimumAge }).ToList();
+}
+
+/// Takes a line out of a desk order.
+[Authorize(IsShopStaff)]
+public void RemoveFromDeskOrder(BagLine line) {
+  line.Delete();
+  UnitOfWork.Commit();
+}
+
+/// What a desk order costs, delivered `delivery` way to `country` — the checkout's own totals for this bag.
+[Authorize(IsShopStaff)]
+public CheckoutTotals DeskOrderQuote(Bag bag, string delivery, string country) {
+  var shop = TheShop();
+  var totals = new CheckoutTotals { Goods = BagSubtotal(bag) };
+  totals.Adjustments = AdjustmentsFor(BasketOf(bag, country));
+  totals.Discount = totals.Adjustments.Sum(a => a.Amount);
+  var way = DeliveryChoicesFor(bag, country).FirstOrDefault(d => d.Id == delivery);
+  totals.Delivery = way == null ? 0m : way.Price;
+  totals.DeliveryLabel = way == null ? "" : way.Label;
+  totals.Total = totals.Goods - totals.Discount + totals.Delivery;
+  var vatCountry = way != null && way.NeedsAddress ? CountryCode(country) : "";
+  // A desk order carries no gift cards to pay with; one it sells as a single-purpose voucher carries its VAT.
+  totals.Vat = VatDue(bag, totals.Delivery, totals.Discount, shop, vatCountry, 0m).Sum(r => r.Vat);
+  totals.Net = totals.Total - totals.Vat;
+  totals.ToPay = totals.Total;
+  return totals;
+}
+
+/// The ways a desk order can reach `country`, priced for its bag.
+[Authorize(IsShopStaff)]
+public List<DeliveryChoice> DeskDeliveryChoices(Bag bag, string country) {
+  // A carrier's pickup point is chosen by the customer at a checkout — a phone sale goes by the others.
+  return DeliveryChoicesFor(bag, country).Where(d => !d.ChoosePoint).ToList();
+}
+
+/// Who a desk order is for, and how it reaches them and is paid.
+public class DeskCustomer {
+  public string Name = "";
+  public string Email = "";
+  public string Phone = "";
+  public string Street = "";
+  public string PostCode = "";
+  public string City = "";
+  public string Country = "";
+  /// For goods with an age: the date of birth staff checked.
+  public DateOnly? BornOn = null;
+}
+
+/// Places a desk order — through the checkout's own path, so it is priced, taxed, reserved and confirmed exactly as a
+/// web order is — for the customer staff took it from. An account with the same address gets it in its order history.
+/// `sendPayLink` mails the customer a link to pay it through the shop's provider (`SendPayLink`). Answers the receipt.
+[Authorize(IsShopStaff)]
+public Receipt PlaceDeskOrder(Bag bag, DeskCustomer customer, string delivery, string payment, bool sendPayLink) {
+  if (bag.VisitId == null || !bag.VisitId.StartsWith("desk-")) { throw new Exception("That is not an order being taken on the desk."); }
+  if (bag.Lines.Count() == 0) { throw new Exception("Add what they are buying first."); }
+  if (customer.Name.Trim() == "") { throw new Exception("Who is it for? Give their name."); }
+  if (!customer.Email.Contains("@")) { throw new Exception("We need their email address — the confirmation goes there."); }
+  var shop = TheShop();
+  var country = customer.Country.Trim() == "" ? shop.HomeCountry : customer.Country.Trim();
+  var way = DeskDeliveryChoices(bag, country).FirstOrDefault(d => d.Id == delivery);
+  if (way == null) { throw new Exception("Choose how it reaches them."); }
+  if (way.NeedsAddress && (customer.Street.Trim() == "" || customer.PostCode.Trim() == "" || customer.City.Trim() == "")) {
+    throw new Exception("For delivery we need the whole address.");
+  }
+  var pay = PaymentChoices(!way.NeedsAddress).FirstOrDefault(p => p.Key == payment);
+  if (pay == null) { throw new Exception("That way to pay is not on offer for this order — choose another."); }
+  if (AgeNeeded(bag) > 0) {
+    if (customer.BornOn == null) { throw new Exception($"Something in it is sold only to people {AgeNeeded(bag)} or older — give the date of birth you checked."); }
+    bag.BuyerBornOn = customer.BornOn;
+  }
+  var email = customer.Email.Trim().ToLower();
+  var account = ShopAccount.FirstOrDefault(a => a.Email == email);
+  var placement = new Placement {
+    Name = customer.Name, Email = email, Phone = customer.Phone, Street = customer.Street, PostCode = customer.PostCode,
+    City = customer.City, Country = way.NeedsAddress ? country : "", Way = way, Pay = pay,
+    Fulfilment = way.NeedsAddress ? Fulfilment.Deliver : Fulfilment.Collect,
+    VatCountry = way.NeedsAddress ? CountryCode(country) : "",
+    // Nobody is at a payment page: it is paid through a link, or by hand.
+    StartPayment = false,
+    ByShop = true,
+  };
+  var receipt = PlaceBag(bag, placement, account);
+  var order = Order.Single(o => o.Reference == receipt.Reference);
+  var me = Session.CurrentUser;
+  new OrderEvent { Order = order, Kind = OrderEventKind.TakenOnTheDesk, At = DateTime.UtcNow,
+                   Who = me == null ? "the shop" : $"{AccountName(me!)} (staff)" };
+  bag.Delete();
+  UnitOfWork.Commit();
+  if (sendPayLink && order.Status == OrderStatus.Reserved) { receipt.PayUrl = SendPayLink(order, true); }
+  return receipt;
+}
+
+// ── a payment link ────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A link that pays one order — signed by the platform, checked before any function taking it runs. Made by staff
+/// (`SendPayLink`), or by the return's workflow for an exchange's difference.
+// SECURITY-INVARIANT(a-pay-link-pays-only-its-order): a `Pay` link is the whole capability — the platform opens it to
+//   exactly the order it was made for (a forged, altered, expired or taken-back link reaches no function below), the
+//   page shows only what that order holds and costs (never who it is for or where it goes: `OrderContact` names no
+//   grant), and it starts a payment only while the order is waiting for one. The order's workflow takes every link to
+//   it back the moment it is paid, cancelled, voided or lapses (`EndPayLinks`), and `PayByLink` still refuses an order
+//   that is not `Reserved`. Where a link was mailed, and who made it, are the shop's (`OrderEvent`, staff and packers;
+//   the timeline shows it to staff). Guarded by order-desk.test.osy a_payment_link_pays_its_own_order_once_and_nothing_else
+//   and a_payment_link_stops_working_when_the_order_is_called_off.
+public grant Pay for Order { Expires = TimeSpan.FromDays(7); }
+
+/// Makes a link that pays `order`, and mails it to the customer when `mail` says so. Answers the link. Only for an
+/// order waiting for payment.
+[Authorize(IsShopStaff)]
+public string SendPayLink(Order order, bool mail) {
+  if (order.Status != OrderStatus.Reserved) { throw new Exception($"{order.Reference} is {order.Status.Label}, not waiting for payment."); }
+  var contact = order.Contact.FirstOrDefault();
+  if (mail && (contact == null || !contact.Email.Contains("@"))) { throw new Exception("This order has no address to mail the link to."); }
+  var link = ShopLink($"{App.Setting<ShopSetup>().PayLinkPath}/{Pay.For(order)}");
+  var me = Session.CurrentUser;
+  new OrderEvent { Order = order, Kind = OrderEventKind.PayLinkSent, At = DateTime.UtcNow,
+                   Text = mail ? $"Mailed to {contact!.Email}" : "Made to hand over",
+                   Who = me == null ? "the shop" : $"{AccountName(me!)} (staff)" };
+  if (mail) { Mail(contact!.Email, App.Setting<ShopSetup>().Mails.PayLink(order, link), order: order); }
+  UnitOfWork.Commit();
+  return link;
+}
+
+/// Takes back every payment link made for `order` — it was paid, called off or lapsed. Called by the order's workflow.
+void EndPayLinks(Order order) {
+  if (OrderEvent.Any(e => e.Order == order && e.Kind == OrderEventKind.PayLinkSent)) { Pay.RevokeAll(order); }
+}
+
+/// What a payment link's page shows: the order and what it costs, and whether it can still be paid.
+public class PayLinkView {
+  public string Reference = "";
+  /// The currency every amount below is in — the order's (ISO 4217).
+  public string Currency = "";
+  /// "open" — pay it now; "paid"; "closed" — cancelled or lapsed. (A link to an order that is paid or called off is
+  /// taken back, so a page sees the last two only when the order moved on while it was open.)
+  public string State = "open";
+  public string StatusText = "";
+  public decimal Total = 0;
+  public decimal Delivery = 0;
+  public decimal Discount = 0;
+  public decimal Vat = 0;
+  /// Already paid another way — store credit, or goods sent back in exchange — and what is left to pay.
+  public decimal PaidAlready = 0;
+  public decimal ToPay = 0;
+  /// For an exchange's difference: the order whose goods came back for these — "" otherwise.
+  public string ExchangeFor = "";
+  public string DeliveryLabel = "";
+  public string PaymentLabel = "";
+  /// True when paying goes to the provider's page; false for a payment by hand, whose `Instructions` say how.
+  public bool LeavesTheShop = false;
+  public string Instructions = "";
+  public List<PayLinkLine> Lines = [];
+}
+
+public class PayLinkLine {
+  /// "Kiambu AA — 250 g"; the two halves are `Product` and `Variant` for a page that writes them its own way.
+  public string Name = "";
+  public string Product = "";
+  public string Variant = "";
+  public int Quantity = 1;
+  public decimal Amount = 0;
+}
+
+/// The order a payment link pays, as its page shows it.
+[AllowAnonymous]
+public PayLinkView PayLinkFor(Pay pay) {
+  var view = new PayLinkView();
+  var order = pay.Row;
+  var provider = App.Setting<ShopSetup>().Payments.FirstOrDefault(p => p.Key == order.PaymentMethod);
+  view.Reference = order.Reference;
+  view.Currency = OrderCurrency(order);
+  view.State = order.Status == OrderStatus.Reserved ? "open" : order.PaidAt != null ? "paid" : "closed";
+  view.StatusText = StatusText(order);
+  view.Total = order.Total;
+  view.Delivery = order.Delivery;
+  view.Discount = order.Discount;
+  view.Vat = order.Vat;
+  view.PaidAlready = order.CreditUsed + order.ExchangeCredit;
+  view.ToPay = AmountDue(order);
+  view.ExchangeFor = order.ExchangeFor == null ? "" : order.ExchangeFor!.Reference;
+  view.DeliveryLabel = order.DeliveryLabel ?? order.Fulfilment.Label;
+  view.PaymentLabel = order.PaymentLabel ?? order.PaymentMethod;
+  view.LeavesTheShop = provider != null && !provider.IsManual;
+  view.Instructions = order.PayInstructions ?? "";
+  foreach (var l in order.Lines) {
+    view.Lines.Add(new PayLinkLine { Name = l.VariantLabel == null ? l.ProductName : $"{l.ProductName} — {l.VariantLabel}",
+                                     Product = l.ProductName, Variant = l.VariantLabel ?? "",
+                                     Quantity = l.Quantity, Amount = l.Price * l.Quantity });
+  }
+  return view;
+}
+
+/// Starts paying the order a link pays, through the provider it is paid with. Answers where to send the customer —
+/// the provider's page, which returns them to the store's `/paid/{link}/…` page like any web payment.
+[AllowAnonymous]
+public string PayByLink(Pay pay) {
+  var order = pay.Row;
+  if (order.Status != OrderStatus.Reserved) {
+    throw new Exception(order.PaidAt != null ? $"Order {order.Reference} is paid already — thank you." : $"Order {order.Reference} is {StatusText(order)} and can no longer be paid.");
+  }
+  var provider = App.Setting<ShopSetup>().Payments.FirstOrDefault(p => p.Key == order.PaymentMethod);
+  if (provider == null) { throw new Exception("This shop no longer takes that payment — ask the shop."); }
+  if (provider.IsManual) { throw new Exception(order.PayInstructions ?? "Pay as the shop told you."); }
+  var request = PaymentRequestFor(order);
+  // A fresh key per press: each is one attempt, and a provider's page opened days after the last has expired.
+  request.IdempotencyKey = $"{order.Id}-link-{Security.RandomHex(8)}";
+  try {
+    return provider.Start(request).RedirectUrl;
+  }
+  catch (Exception ex) {
+    Log.Warning($"{provider.Label} payment for {order.Reference} (a link) could not be started: {ex.Message}");
+    throw new Exception($"{provider.Label} could not be reached just now — try again in a moment.");
+  }
+}
+
+/// The payment request for a placed order, from what the order recorded — its lines at the prices and VAT they were
+/// sold at, delivery and any discount shared over the VAT rates as the order's VAT was (`Share`, the same parts
+/// `PlaceBag` made). The lines add up to the total.
+public PaymentRequest PaymentRequestFor(Order order) {
+  var shop = TheShop();
+  var contact = order.Contact.FirstOrDefault();
+  List<PaymentLine> lines = [];
+  List<decimal> rates = [];
+  List<decimal> goods = [];
+  foreach (var l in order.Lines) {
+    lines.Add(new PaymentLine { Name = l.VariantLabel == null ? l.ProductName : $"{l.ProductName} — {l.VariantLabel}",
+                                Quantity = l.Quantity, UnitPrice = Minor(l.Price), TaxRate = (long)Math.Round(l.VatPercent * 100m) });
+    var at = rates.IndexOf(l.VatPercent);
+    if (at < 0) { rates.Add(l.VatPercent); goods.Add(l.Price * l.Quantity); }
+    else { goods[at] = goods[at] + l.Price * l.Quantity; }
+  }
+  var offLabel = string.Join(", ", order.Adjustments.ToList().Where(a => a.Amount > 0).Select(a => a.Label));
+  if (order.ReverseCharge || order.Exported) {
+    if (order.Delivery > 0) { lines.Add(new PaymentLine { Name = order.DeliveryLabel ?? "Delivery", UnitPrice = Minor(order.Delivery) }); }
+    if (order.Discount > 0) { lines.Add(new PaymentLine { Name = offLabel, UnitPrice = -Minor(order.Discount) }); }
+  } else {
+    var deliveryShares = Share(order.Delivery, goods);
+    var discountShares = Share(order.Discount, goods);
+    var many = rates.Count > 1;
+    for (var i = 0; i < rates.Count; i = i + 1) {
+      var tax = (long)Math.Round(rates[i] * 100m);
+      if (deliveryShares[i] > 0) {
+        var name = order.DeliveryLabel ?? "Delivery";
+        lines.Add(new PaymentLine { Name = many ? $"{name} ({rates[i]:0.##} %)" : name, UnitPrice = Minor(deliveryShares[i]), TaxRate = tax });
+      }
+      if (discountShares[i] > 0) {
+        lines.Add(new PaymentLine { Name = many ? $"{offLabel} ({rates[i]:0.##} %)" : offLabel, UnitPrice = -Minor(discountShares[i]), TaxRate = tax });
+      }
+    }
+  }
+  // What is already paid another way — store credit, goods sent back in exchange — goes as one line without VAT of its
+  // own, so the lines add up to what is asked.
+  if (order.CreditUsed > 0) { lines.Add(new PaymentLine { Name = "Store credit", UnitPrice = -Minor(order.CreditUsed) }); }
+  if (order.ExchangeCredit > 0) { lines.Add(new PaymentLine { Name = "Goods sent back in exchange", UnitPrice = -Minor(order.ExchangeCredit) }); }
+  // Whose country the payment is for: where it is delivered (or, with nothing to ship, the buyer's) — none for a collection.
+  var vatCountry = order.Fulfilment == Fulfilment.Collect || contact == null || contact.Country == null ? null : CountryCode(contact.Country!);
+  // The customer's link to the order: the provider's page sends them back to it, never to a bare reference.
+  var link = $"{OrderLink.For(order)}";
+  return new PaymentRequest {
+    Reference = order.Reference, Currency = OrderCurrency(order), Amount = Minor(AmountDue(order)), Lines = lines,
+    CustomerEmail = contact == null ? null : contact.Email, Description = $"{shop.Name} — order {order.Reference}",
+    Country = vatCountry,
+    ReturnUrl = $"{App.BaseUrl}/paid/{link}/{order.PaymentMethod}-{{token}}",
+    CancelUrl = $"{App.BaseUrl}/paid/{link}/cancelled",
+    EventsUrl = $"{App.BaseUrl}/payments/{order.PaymentMethod}/events",
+    IdempotencyKey = order.Id.ToString(),
+  };
+}

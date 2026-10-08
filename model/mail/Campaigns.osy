@@ -1,0 +1,115 @@
+// A newsletter — a CAMPAIGN — written by staff on the desk (D-EMAILTEMPLATES1 f). Staff write the WHOLE body in the
+// Markdown editor; it goes out inside the shop's own frame (its name, its address, its look) through the same `[Email]`
+// renderer as every other shop mail, with the same closed list of `{placeholders}`.
+//
+// ⚑ WHAT IS HERE, AND WHAT IS NOT. Writing, previewing and sending ONE test are here. The subscriber list, consent,
+//   unsubscribing and sending to everyone are NOT — they are a mailing list, with its own law, and they are built on
+//   the seam this file leaves: `CampaignFor(campaign, name, unsubscribe)` renders the campaign for ONE recipient and
+//   answers subject + HTML + text, and it refuses a campaign whose words name a placeholder it does not fill.
+
+namespace Osysharp.Shop;
+
+using Osysharp.EmailTemplates;
+using Osysharp.Storage;
+using Osysharp.Blocks;
+
+public enum ShopCampaignState { Draft, Sent }
+
+/// A newsletter: its subject, the line an inbox shows beside it, and its body — Markdown staff write on the desk.
+public entity ShopCampaign {
+  [Required, MaxLength(200)] string Subject;
+  /// The line an inbox shows beside the subject. Empty: the subject is used.
+  [MaxLength(200)] string? Preview;
+  Markdown Body;
+  /// Set by whatever sends it to its list — nothing in the kit does yet.
+  DateTime? SentAt;
+  [Required] ShopCampaignState State;
+  security {
+    allow read, create, update, delete when IsShopStaff;
+  }
+}
+
+/// A campaign, as one reader gets it: the body staff wrote, their `{placeholders}` filled for this reader (and escaped —
+/// a name is text, never markup), inside the shop's own frame, with the link that stops it when there is one.
+[Email]
+public component ShopCampaignMail(ShopCampaign campaign, string recipientName, string? unsubscribe = null) {
+  subject => campaign.Subject;
+  placeholders {
+    subscriber.name => recipientName;
+    subscriber.firstname => FirstName(recipientName);
+    shop.name => TheShop().Name;
+  }
+  render {
+    ShopMailLayout(campaign.Preview ?? campaign.Subject, unsubscribe) {
+      Markdown($"{campaign.Body}", placeholders: true, fontSize: FontSize.Subhead, color: Colors.OnBg, lineHeight: 1.6);
+    }
+  }
+}
+
+/// ⭐ THE SEAM a mailing list builds on: the campaign rendered for ONE recipient — subject, HTML and text — through the
+/// store's own `ShopMails`, so an overridden campaign template renders as itself. Nothing is sent.
+///
+/// SECURITY-INVARIANT(email-words-cannot-inject), the campaign's half: staff wrote the whole body, so it renders through
+/// the Markdown renderer that shows raw HTML as text and refuses a `javascript:` link, each placeholder value is escaped,
+/// and a campaign naming a placeholder it does not fill is REFUSED here — no caller can send a reader `{subscriber.nmae}`.
+/// Guarded by campaign.test.osy a_campaign_cannot_carry_markup_or_an_unknown_placeholder_to_a_reader.
+public RenderedEmail CampaignFor(ShopCampaign campaign, string recipientName, string? unsubscribe = null, string? language = null) {
+  var refusal = ShopCampaignRefusal(campaign);
+  if (refusal != "") { throw new Exception(refusal); }
+  return App.Setting<ShopSetup>().Mails.Campaign(campaign, recipientName, unsubscribe, language);
+}
+
+/// Why a campaign may not go out as it stands — the sentence the desk shows — or "" when it may.
+public string ShopCampaignRefusal(ShopCampaign campaign) {
+  if (PlaceholdersIn(campaign.Subject).Count > 0) {
+    return "The subject goes out exactly as written, so it cannot use {placeholders} — put them in the body.";
+  }
+  // The closed list is the TEMPLATE's own — an overridden campaign template may offer others.
+  var mail = App.Setting<ShopSetup>().Mails.Campaign(campaign, "");
+  // SECURITY-INVARIANT(mail-carries-only-pictures-the-sender-may-open), the newsletter's half: a picture pasted into
+  // the words is an uploaded file, and only one the writer may open can go out — otherwise a file id pasted from
+  // elsewhere would mail somebody's private file to the list. Refused here, where staff see why, before any send.
+  foreach (var image in mail.Inline.Where(i => i.Asset != null)) {
+    if (!FileAsset.Any(a => a.Id == image.Asset)) {
+      return "A picture in the newsletter is not one you can open — remove it, or upload it again yourself.";
+    }
+  }
+  return PlaceholderRefusal($"{campaign.Body}", mail.Placeholders);
+}
+
+/// Starts a campaign with a first line staff will write over.
+[Authorize(IsShopStaff)]
+public Guid NewShopCampaign(string subject) {
+  var campaign = new ShopCampaign { Subject = subject.Trim() == "" ? "News from the shop" : subject.Trim(),
+                                    State = ShopCampaignState.Draft };
+  // The row first: its document's right to exist is the right to that row.
+  UnitOfWork.Commit();
+  campaign.Body = "Hello {subscriber.firstname},\n\nHere is what is new at {shop.name}.";
+  UnitOfWork.Commit();
+  return campaign.Id;
+}
+
+/// The campaign as a reader would get it, for the desk's live preview — rendered even while it names a placeholder it
+/// does not fill (shown as written), so staff see what they are typing. Nothing is sent.
+[Authorize(IsShopStaff)]
+public RenderedEmail ShopCampaignPreview(Guid campaignId, string recipientName) {
+  var campaign = ShopCampaign.Single(c => c.Id == campaignId);
+  return App.Setting<ShopSetup>().Mails.Campaign(campaign, recipientName);
+}
+
+/// Sends the campaign to ONE address, through the shop's outbox like every other mail — a test before it goes to a
+/// list. Answers why it was refused, or "" once it is in the outbox.
+[Authorize(IsShopStaff)]
+public string SendShopCampaignTest(Guid campaignId, string to) {
+  var address = to.Trim();
+  if (!address.Contains("@")) { return "Give the address to send the test to."; }
+  var campaign = ShopCampaign.Single(c => c.Id == campaignId);
+  var refusal = ShopCampaignRefusal(campaign);
+  if (refusal != "") { return refusal; }
+  var account = ShopAccount.Where(a => a.Email == address).FirstOrDefault();
+  var name = account?.Name ?? address.Substring(0, address.IndexOf("@"));
+  var mail = CampaignFor(campaign, name);
+  Mail(address, new RenderedEmail($"[Test] {mail.Subject}", mail.Text) { Html = mail.Html, Inline = mail.Inline });
+  UnitOfWork.Commit();
+  return "";
+}

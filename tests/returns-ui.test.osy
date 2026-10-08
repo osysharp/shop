@@ -1,0 +1,103 @@
+// Exchanges, store credit and return labels, driven through the kit's own account and desk components.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Floor)]
+void a_customer_exchanges_a_size_from_their_order_history() {
+  var reference = "";
+  runas (Maja) { reference = Buy("v-ui-ex", "Loafer", "38", 1); }
+  runas (Desk) { PayAndSend(reference); }
+  SignInThroughTheUi("maja@example.test", "maja-pass-1");
+  Ui.Click("Exchange…");
+  Ui.Click("Loafer (39)");
+  Assert.Visible("The same price. Nothing more to pay.");
+  Ui.Click("Exchange it");
+  Assert.Visible("Returns");
+  Assert.Visible("In exchange for Loafer (39)");
+  runas (Desk) {
+    var ret = ReturnRequest.Single();
+    Assert.NotNull(ret.Replacement);
+    Assert.Equal(OrderStatus.Reserved, ret.Replacement!.Status);
+  }
+}
+
+[Test(Floor)]
+void a_customer_asks_for_store_credit_and_reads_it_on_their_account() {
+  var reference = "";
+  runas (Maja) { reference = Buy("v-ui-sc", "Loafer", "38", 1); }
+  runas (Desk) { PayAndSend(reference); }
+  SignInThroughTheUi("maja@example.test", "maja-pass-1");
+  Ui.Click("Return…");
+  Ui.Click("Store credit instead of the money back");
+  Ui.Click("Send it back");
+  Assert.Visible("You asked for store credit instead of the money back.");
+  runas (Desk) {
+    var ret = ReturnRequest.Single();
+    ReceiveReturn(ret, true);
+    Workflow.Settle(ret);
+  }
+  Ui.Visit("/account");
+  Ui.Click("Store credit");
+  Assert.Visible("€120");
+  Assert.Visible("Return");
+}
+
+[Test(Floor)]
+void the_desk_accepts_a_return_with_a_label_and_gives_a_customer_credit() {
+  runas (new Visitor { Id = "v-ui-lbl" }) {
+    var reference = "";
+    runas (Maja) {
+      Bag("v-ui-lbl", "Loafer", "39", 1);
+      reference = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                             "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+    }
+    runas (Desk) { PayAndSend(reference); }
+    runas (Maja) { ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, "Too big"); }
+    SignInAsStaff();
+    Ui.Click("Returns");
+    Assert.Visible("Not accepted yet. Accepting books the return label.");
+    Ui.Click("Accept and send a label");
+    Assert.Visible("Label sent");
+    Ui.Click("Where is it?");
+    Assert.Visible("On its way");
+    Ui.Click("Received — as store credit");
+    runas (Desk) {
+      var ret = ReturnRequest.Single();
+      Workflow.Settle(ret);
+      Assert.Equal(ReturnStatus.Refunded, ret.Status);
+      Assert.Equal(120m, ret.CreditAmount);
+    }
+    Ui.Click("Customers");
+    Ui.Click("Orders", within: "maja@example.test");
+    Assert.Visible("Store credit: €120");
+    Ui.Click("Give store credit…");
+    Ui.Fill("Amount", "15");
+    Ui.Fill("Reason — they are mailed it", "The label was late.");
+    Ui.Click("Give it");
+    Assert.Visible("Store credit: €135");
+  }
+}
+
+// A ticked box stays ticked. The checkout's boxes flipped their value a second time in their handler — the box writes
+// its own value (a two-way binding) — so ticking the terms left them NOT accepted, and the same in five more boxes.
+[Test(Floor)]
+void the_checkouts_boxes_stay_ticked() {
+  runas (new Visitor { Id = "v-parts" }) {
+    Bag("v-parts", "Loafer", "38", 1);
+    Ui.Visit("/checkout-parts");
+    Ui.Check("I have read and accept the terms of purchase");
+    Assert.Checked("I have read and accept the terms of purchase");
+    Assert.NotNull(BagFor(false)!.TermsAcceptedAt);
+
+    runas (Desk) {
+      GrantCredit(ShopAccount.Single(a => a.Email == "maja@example.test"), 50m, "For the test.");
+      Workflow.Settle(StoreCreditGrant.Single());
+    }
+    SignInThroughTheUi("maja@example.test", "maja-pass-1");
+    Ui.Visit("/checkout-parts");
+    Ui.Check("Pay with my store credit — €50");
+    Assert.Checked("Pay with my store credit — €50");
+    runas (Maja) { Assert.True(UsingStoreCredit()); }
+  }
+}

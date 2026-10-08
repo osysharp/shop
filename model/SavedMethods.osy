@@ -1,0 +1,80 @@
+// Ways to pay a customer asked the shop to keep — so a subscription renews without them.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Payments;
+using Osysharp.Workflow;
+
+/// A way to pay the provider kept for an account (`PaymentRequest.SaveMethod`) — a card, by its brand and last four.
+public entity SavedPaymentMethod {
+  [Required] ShopAccount Account;
+  /// The provider's `Key` — which one kept it, and which one charges it.
+  [Required, MaxLength(40)] string Provider;
+  /// The provider's own reference — what `ChargeSaved` takes.
+  [Required, MaxLength(200)] string Ref;
+  /// "Visa •••• 4242".
+  [MaxLength(80)] string Label;
+  DateTime SavedAt;
+  security {
+    // SECURITY-INVARIANT(saved-method-only-from-the-provider): no `create` or `update` grant, on purpose — the only
+    // writer is the order's own workflow, from what the provider answered, for the order's account. A customer who could
+    // create a row could put a way to pay (or a broken one) on another account and turn its renewals. The compiler
+    // refuses a write in any app code (a package's grants are a floor an app cannot widen); the handle itself is masked
+    // from customers. Guarded by ACapabilityRuleIsAFloorTests.AnAppPartial_CannotGrantAVerbTheCapabilityWithheld and the
+    // subscriptions kit's test a_card_kept_at_checkout_pays_each_renewal_with_nobody_there.
+    allow read when IsAuthenticated where Account == user;
+    allow read when IsShopStaff;
+    allow delete when IsShopStaff;
+    deny read Ref when !IsShopStaff;
+  }
+}
+
+/// Keeps what the provider answered — once per reference.
+void KeepPaymentMethod(ShopAccount account, string provider, string reference, string label) {
+  if (SavedPaymentMethod.Any(m => m.Account == account && m.Ref == reference)) { return; }
+  new SavedPaymentMethod { Account = account, Provider = provider, Ref = reference,
+                           Label = label == "" ? "Saved payment method" : label, SavedAt = DateTime.UtcNow };
+}
+
+void ForgetMethodAtProvider(SavedPaymentMethod m) {
+  var provider = App.Setting<ShopSetup>().Payments.FirstOrDefault(p => p.Key == m.Provider);
+  if (provider == null) { return; }
+  try { provider.ForgetMethod(m.Ref); }
+  catch (Exception ex) { Log.Warning($"{provider.Label} could not forget a saved way to pay: {ex.Message}"); }
+}
+
+/// Stops keeping a way to pay — at the provider too.
+[Authorize(IsShopStaff)]
+public void ForgetPaymentMethod(SavedPaymentMethod m) {
+  ForgetMethodAtProvider(m);
+  m.Delete();
+  UnitOfWork.Commit();
+}
+
+/// What charging a kept way to pay came to.
+public class SavedCharge {
+  public PaymentState State = PaymentState.NotPaid;
+  /// The provider's sentence when it did not go through.
+  public string Message = "";
+}
+
+/// Pays a reserved `order` from a way to pay the customer kept — a renewal, with nobody there. Paid moves the order as
+/// any payment does; a refusal leaves it reserved and answers why.
+[Authorize(IsShopStaff)]
+public SavedCharge ChargeSavedMethod(Order order, SavedPaymentMethod method) {
+  if (order.Status != OrderStatus.Reserved) { throw new Exception($"{order.Reference} is {order.Status.Label}, not waiting for payment."); }
+  if (order.Account != method.Account) { throw new Exception("That way to pay is not this customer's."); }
+  var provider = App.Setting<ShopSetup>().Payments.FirstOrDefault(p => p.Key == method.Provider);
+  if (provider == null || !provider.SavesMethods) { throw new Exception("This shop no longer takes that way to pay."); }
+  var shop = TheShop();
+  var contact = order.Contact.FirstOrDefault();
+  var check = provider.ChargeSaved(method.Ref, new PaymentRequest {
+    Reference = order.Reference, Currency = OrderCurrency(order), Amount = Minor(AmountDue(order)),
+    Description = $"{shop.Name} — order {order.Reference}", CustomerEmail = contact == null ? null : contact.Email,
+    IdempotencyKey = order.Id.ToString(),
+  });
+  if (check.State == PaymentState.Paid || check.State == PaymentState.Authorized) {
+    OrderLifecycle.CorrelatePaymentReceived(order.Reference, method.Label, check.ProviderRef, "", "");
+  }
+  return new SavedCharge { State = check.State, Message = check.Message };
+}

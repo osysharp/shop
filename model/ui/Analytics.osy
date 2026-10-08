@@ -1,0 +1,123 @@
+// The store's analytics, from the shop's own rows — put `ShopAnalytics()` in the store's frame once, beside
+// `ShopVisitSync()`, and every page reports what it is:
+//
+//   · a page view, on every route (Osysharp.Analytics does that on its own);
+//   · `view_item` on a product's page (`ShopSetup.ProductPath`), for the size a visitor sees first;
+//   · `add_to_cart` for whatever grows in the visitor's bag — wherever it was added from;
+//   · `begin_checkout` on the checkout (`ShopSetup.CheckoutPath`), with the bag;
+//   · `purchase` once per order, from the order (see ../Analytics.osy for why not from a thank-you page).
+//
+// Which provider, and whether any, is the app's `app.Analytics` (Osysharp.Analytics). With none, this reads nothing.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Analytics;
+
+[Composable]
+[AllowAnonymous]
+public component ShopAnalytics() {
+  string visitId = Visitor.Id;
+  ShopAnalyticsSetup paths = null;
+  on mount { paths = ShopAnalyticsPaths(); }
+
+  live var path = Navigation.CurrentPath ?? "";
+  // The product a product page is for. Looked up by the address's LAST segment — known the moment the page is — so the
+  // read goes out with the page's own reads rather than a round trip later, once the setup has arrived; whether the
+  // address really is `ShopSetup.ProductPath` (by slug or by id) is then a check over values already in hand.
+  live var tail = path.Substring(path.LastIndexOf("/") + 1);
+  live var candidate = Product.Include(p => p.Variants).Include(p => p.Category)
+    .Where(p => tail != "" && (p.Slug == tail || p.Id.ToString() == tail)).FirstOrDefault();
+  live var isProductPage = paths != null && candidate != null
+    && (PathKey(path, paths.ProductPath, "{slug}") == candidate.Slug || PathKey(path, paths.ProductPath, "{id}") == candidate.Id.ToString());
+  live var bag = Bag.Include(b => b.Lines.Variant.Product).Include(b => b.Lines.Agreed).SingleOrDefault(b => b.VisitId == visitId);
+  live var sales = ShopPurchaseReport.Include(r => r.Order).Where(r => r.VisitId == visitId).ToList();
+
+  // ⚑ EVERY COLLECTION IS WALKED HERE, in the `live var`s, and handed to the helpers as a list. A helper that walked a
+  //   row's collection itself (`order.Lines`) would be a data READ, which a tracked computed cannot make.
+  live var viewedVariants = candidate != null ? candidate.Variants.OrderBy(v => v.Rank).ToList() : new List<Variant>();
+  live var cart = bag == null ? new List<AnalyticsItem>() : CartItems(bag.Lines.ToList());
+  live var soldIds = sales.Select(r => r.Order.Id).ToList();
+  live var soldLines = OrderLine.Include(l => l.Variant).Where(l => soldIds.Contains(l.Order.Id)).ToList();
+  live var events = PageEvents(path, isProductPage ? candidate : null, viewedVariants, cart, sales, soldLines);
+
+  /// A sale was reported: the shop stops offering it.
+  action Heard(string key) {
+    if (key.StartsWith("purchase:")) { ShopPurchaseReported(key.Substring(9)); }
+  }
+
+  /// The piece of `path` that stands where `pattern` has `hole` — "kiambu-aa" for "/p/kiambu-aa" and "/p/{slug}" —
+  /// or "" when the path is not that page.
+  string PathKey(string path, string pattern, string hole) {
+    var at = pattern.IndexOf(hole);
+    if (at < 0) { return ""; }
+    var before = pattern.Substring(0, at);
+    var after = pattern.Substring(at + hole.Length);
+    if (!path.StartsWith(before) || !path.EndsWith(after) || path.Length <= before.Length + after.Length) { return ""; }
+    var key = path.Substring(before.Length, path.Length - before.Length - after.Length);
+    return key.Contains("/") ? "" : key;
+  }
+
+  /// A variant's id as analytics names it — the same id the product feeds give it.
+  string ItemId(Variant v) { return v.Sku != null && v.Sku != "" ? v.Sku : v.Id.ToString().Replace("-", ""); }
+
+  /// "Navy, M", "1 kg" — a variant's options, or null for a product with none.
+  string? ItemVariant(Variant v) {
+    if (v.Colour != null && v.Colour != "") { return v.Size != null && v.Size != "" ? v.Colour + ", " + v.Size : v.Colour; }
+    return v.Size;
+  }
+
+  List<AnalyticsItem> CartItems(List<BagLine> lines) {
+    List<AnalyticsItem> items = [];
+    foreach (var l in lines) {
+      var p = l.Variant.Product;
+      items.Add(new AnalyticsItem {
+        Id = ItemId(l.Variant), Name = p.Name, Brand = p.Brand, Variant = ItemVariant(l.Variant),
+        // What one cost when it went in — the price the visitor added it at, a plan's agreed price included.
+        Price = l.PriceWhenAdded > 0 ? l.PriceWhenAdded : (l.Variant.Price ?? p.Price), Quantity = l.Quantity,
+      });
+    }
+    return items;
+  }
+
+  AnalyticsEvent ViewItem(Product viewed, List<Variant> variants, string currency) {
+    var shown = variants.FirstOrDefault(v => v.Unlimited || v.Stock > 0) ?? variants.First();
+    var price = shown.Price ?? viewed.Price;
+    return new AnalyticsEvent { Name = "view_item", Key = "view_item:" + viewed.Slug, Currency = currency, Value = price,
+      Items = [new AnalyticsItem { Id = ItemId(shown), Name = viewed.Name, Brand = viewed.Brand,
+                                   Category = viewed.Category == null ? null : viewed.Category.Name,
+                                   Variant = ItemVariant(shown), Price = price, Quantity = 1 }] };
+  }
+
+  AnalyticsEvent Purchase(Order order, List<OrderLine> lines, string currency) {
+    List<AnalyticsItem> bought = [];
+    foreach (var l in lines) {
+      bought.Add(new AnalyticsItem { Id = ItemId(l.Variant), Name = l.ProductName, Variant = l.VariantLabel, Price = l.Price, Quantity = l.Quantity });
+    }
+    return new AnalyticsEvent { Name = "purchase", Key = "purchase:" + order.Reference, TransactionId = order.Reference,
+                                Currency = order.Currency ?? currency, Value = order.Total, Tax = order.Vat, Shipping = order.Delivery, Items = bought };
+  }
+
+  List<AnalyticsEvent> PageEvents(string at, Product? viewed, List<Variant> variants, List<AnalyticsItem> inBag,
+                                  List<ShopPurchaseReport> reports, List<OrderLine> sold) {
+    List<AnalyticsEvent> list = [];
+    var currency = paths == null ? "" : paths.Currency;
+    if (viewed != null && viewed.Status == ProductStatus.Listed && variants.Count > 0) {
+      list.Add(ViewItem(viewed, variants, currency));
+    }
+    if (paths != null && at == paths.CheckoutPath && inBag.Count > 0) {
+      list.Add(new AnalyticsEvent { Name = "begin_checkout", Key = "begin_checkout", Currency = currency,
+                                    Value = inBag.Sum(i => i.Price * i.Quantity), Items = inBag });
+    }
+    foreach (var r in reports) {
+      if (r.WaitForPayment && r.Order.PaidAt == null) { continue; }
+      list.Add(Purchase(r.Order, sold.Where(l => l.Order.Id == r.Order.Id).ToList(), currency));
+    }
+    return list;
+  }
+
+  render {
+    if (paths != null) {
+      Analytics(events: events, cart: cart, currency: paths.Currency, onSent: Heard);
+    }
+  }
+}

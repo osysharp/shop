@@ -1,0 +1,133 @@
+// The page an order's link opens (OrderLinks.osy) — what every mail about the order links to.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Ui;
+
+/// One order, for whoever holds its link: where it stands, what it holds and costs, how to pay it when it is still
+/// waiting, the parcel once it is sent, its receipt as a PDF, and — while the return window is open — sending things
+/// back, for a guest as for an account (`ReturnWithLink`). A store puts it on its page at `ShopSetup.OrderPath` + `/{link}`:
+/// `[Page("/order/{link}")] component P(OrderLink link) { … ShopOrderByLink(link) … }` — a link that does not check out
+/// never reaches it (the app's `InvalidLinkSurface` is shown instead).
+[Composable]
+[AllowAnonymous]
+public component ShopOrderByLink(OrderLink link) {
+  live var shop = ShopSettings.FirstOrDefault();
+  OrderPageView? view = null;
+  on mount { view = OrderByLink(link); }
+  // The receipt — written when asked for, behind a link that expires.
+  string receiptUrl = "";
+  action Receipt() { receiptUrl = ReceiptLinkWith(link); }
+  // Sending something back: which line, how many, and why.
+  ReturnableLine? returning = null;
+  int quantity = 1;
+  string reason = "";
+  string problem = "";
+  string said = "";
+  action AskReturn(ReturnableLine line) { returning = line; quantity = 1; reason = ""; problem = ""; }
+  action CloseReturn() { returning = null; }
+  action ConfirmReturn() {
+    problem = ReturnWithLink(link, returning!.LineId, quantity, reason);
+    if (problem != "") { return; }
+    returning = null;
+    said = "Your return is started. We mail you how to send it back — put a note with the order number in the parcel.";
+    view = OrderByLink(link);
+  }
+  render {
+    if (view != null) {
+      Stack(gap: 5, w: "100%", label: "Your order") {
+        Stack(gap: 1) {
+          Text($"Order {view!.Reference} · placed {view!.PlacedOn}", color: Colors.TextMuted, fontSize: FontSize.Label);
+          Text(view!.StatusText, fontSize: FontSize.Title, fontWeight: FontWeight.Semibold);
+          if (view!.Problem != "") { Text(view!.Problem, color: Colors.TextMuted); }
+        }
+        Row(gap: 2, wrap: Wrapping.Wrap, label: "Progress") {
+          if (view!.PaidOn != "") { Badge($"Paid · {view!.PaidOn}", tone: Tone.Success); }
+          if (view!.SentOn != "") { Badge($"Sent · {view!.SentOn}", tone: Tone.Success); }
+          if (view!.DeliveredOn != "") {
+            Badge($"{(view!.Fulfilment == Fulfilment.Collect ? "Collected" : "Delivered")} · {view!.DeliveredOn}", tone: Tone.Success);
+          }
+        }
+        Stack(gap: 0, role: UiRole.List, label: "What it holds") {
+          foreach (var l in view!.Lines) {
+            Row(justify: Justify.Between, gap: 3, py: 2, borderBW: 1, border: Colors.Border, role: UiRole.ListItem) {
+              Text($"{l.Quantity} × {l.Name}");
+              Text(MoneyIn(l.Amount, view!.Currency, shop));
+            }
+          }
+          if (view!.Discount > 0) {
+            Row(justify: Justify.Between, gap: 3, py: 2, borderBW: 1, border: Colors.Border, role: UiRole.ListItem) {
+              Text("Off"); Text($"−{MoneyIn(view!.Discount, view!.Currency, shop)}");
+            }
+          }
+          Row(justify: Justify.Between, gap: 3, py: 2, borderBW: 1, border: Colors.Border, role: UiRole.ListItem) {
+            Text(view!.DeliveryLabel); Text(view!.Delivery == 0 ? "—" : MoneyIn(view!.Delivery, view!.Currency, shop));
+          }
+          Row(justify: Justify.Between, gap: 3, py: 3, role: UiRole.ListItem) {
+            Strong("Total"); Strong(MoneyIn(view!.Total, view!.Currency, shop));
+          }
+          if (view!.PaidAlready > 0 && view!.AwaitingPayment) {
+            Row(justify: Justify.Between, gap: 3, py: 2, role: UiRole.ListItem) {
+              Text("Left to pay"); Text(MoneyIn(view!.ToPay, view!.Currency, shop));
+            }
+          }
+          if (view!.Vat > 0) { Text($"Of which VAT {MoneyIn(view!.Vat, view!.Currency, shop)}", color: Colors.TextMuted, fontSize: FontSize.Label); }
+        }
+        if (view!.AwaitingPayment) {
+          Alert(view!.PayInstructions == "" ? $"Waiting for your payment by {view!.PaymentLabel}. We mail you once it is through."
+                                            : view!.PayInstructions, tone: Tone.Default);
+        }
+        if (view!.Tracking != "" || view!.TrackingUrl != "") {
+          Row(gap: 3, align: Align.Center, wrap: Wrapping.Wrap) {
+            if (view!.Tracking != "") { Text($"Tracking {view!.Tracking}", color: Colors.TextMuted); }
+            if (view!.TrackingUrl != "") { TextLink("Follow your parcel", to: view!.TrackingUrl); }
+          }
+        }
+        Row(gap: 3, align: Align.Center, wrap: Wrapping.Wrap) {
+          if (receiptUrl != "") { TextLink("Open the receipt (PDF)", to: receiptUrl); }
+          else { Button("Receipt (PDF)", onPress: Receipt, size: Size.Sm); }
+        }
+        if (said != "") { Alert(said, tone: Tone.Success); }
+        if (view!.Returns.Count > 0) {
+          Stack(gap: 2, label: "Returns") {
+            Strong("Returns");
+            foreach (var r in view!.Returns) {
+              Stack(gap: 1, py: 2, borderTW: 1, border: Colors.Border) {
+                Text($"{r.StatusText} · started {r.Started}", fontWeight: FontWeight.Semibold);
+                foreach (var l in r.Lines) { Text(l, color: Colors.TextSecondary); }
+                if (r.Outcome != "") { Text(r.Outcome, color: Colors.TextMuted, fontSize: FontSize.Label); }
+              }
+            }
+          }
+        }
+        if (view!.CanReturn) {
+          Stack(gap: 2, label: "Send something back") {
+            Strong("Send something back");
+            Text($"You may return what you bought until {view!.ReturnsUntil}. We refund what comes back the way you paid.",
+                 color: Colors.TextMuted, fontSize: FontSize.Label);
+            foreach (var l in view!.Returnable) {
+              Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 1, wrap: Wrapping.Wrap) {
+                Text(l.Name);
+                Button("Return…", onPress: () => AskReturn(l), size: Size.Sm);
+              }
+            }
+          }
+        }
+      }
+    }
+    if (returning != null) {
+      Dialog($"Return {returning!.Name}", onDismiss: CloseReturn,
+             subtitle: "Pack it with the order number inside. We refund what comes back once it arrives.") {
+        Stack(gap: 4) {
+          if (returning!.Left > 1) { NumberField("How many", value: quantity, min: 1, max: returning!.Left); }
+          Field("Why? (optional)", value: reason, placeholder: "Too small");
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+          Row(gap: 3, justify: Justify.End, wrap: Wrapping.Wrap) {
+            Button("Not now", onPress: CloseReturn);
+            Button("Send it back", onPress: ConfirmReturn, tone: Tone.Primary);
+          }
+        }
+      }
+    }
+  }
+}

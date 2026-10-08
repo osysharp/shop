@@ -1,0 +1,111 @@
+// A delivery the customer collects from a point they choose: the points near their address, the choice required,
+// kept on the bag and the order, in the confirmation, and handed to the carrier when the parcel is booked.
+
+using Osysharp.Delivery;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// Places a visit's bag to go by the courier's parcel locker, to Maja at Storgatan 1.
+Receipt PlaceToLocker(string visit) {
+  runas (new Visitor { Id = visit }) {
+    return PlaceOrder("Maja Berg", "maja@example.test", "", "courier/locker", "banktransfer",
+                      "Storgatan 1", "11122", "Stockholm", "SE");
+  }
+}
+
+[Test(Floor)]
+void the_customer_chooses_a_point_near_their_address_and_the_carrier_is_booked_to_it() {
+  runas (new Visitor { Id = "v-point" }) {
+    Bag("v-point", "Loafer", "39", 1);
+    var way = DeliveryChoices("SE").Single(w => w.Id == "courier/locker");
+    Assert.True(way.ChoosePoint);
+    Assert.False(DeliveryChoices("SE").Single(w => w.Id == "courier").ChoosePoint);
+    // Nothing to list before a post code, and nothing for a delivery to the door.
+    Assert.Empty(PickupPointsFor("courier/locker", "", "", "", "SE"));
+    Assert.Empty(PickupPointsFor("courier", "Storgatan 1", "11122", "Stockholm", "SE"));
+    var points = PickupPointsFor("courier/locker", "Storgatan 1", "11122", "Stockholm", "SE");
+    Assert.Equal(["LK-11122-1", "LK-11122-2"], points.Select(p => p.Id).ToList());
+    Assert.Equal("Mon–Sun 06:00–23:00", points[0].OpeningHours);
+    Assert.Equal("1.2 km", DistanceText(points[1].DistanceMetres));
+
+    // Not placed until a point is chosen — with a sentence that says so.
+    var refused = Assert.Throws<Exception>(() => PlaceToLocker("v-point"));
+    Assert.Contains("Choose the point you want to collect your parcel from", refused.Message);
+
+    var chosen = ChoosePickupPoint("courier/locker", "LK-11122-2", "Storgatan 1", "11122", "Stockholm", "SE");
+    Assert.Equal("Locker at the library", chosen.Name);
+    Assert.Equal("LK-11122-2", ChosenPickupPoint("courier/locker")!.Id);
+    Assert.Null(ChosenPickupPoint("courier"));
+
+    var receipt = PlaceToLocker("v-point");
+    Assert.Equal("Locker at the library, Library Lane 4, 11122 Stockholm", receipt.PickupPoint);
+    // The next order chooses again.
+    Assert.Null(ChosenPickupPoint("courier/locker"));
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == receipt.Reference);
+      Assert.Equal(30m, order.Delivery);                                         // priced as the option is
+      var contact = order.Contact.Single();
+      Assert.Equal("LK-11122-2", contact.PickupPointId);
+      Assert.Equal("Library Lane 4", contact.PickupPointStreet);
+      Assert.Contains("we will send it to Locker at the library, Library Lane 4, 11122 Stockholm, where you collect it",
+                      ShopMail.Single(m => m.To == "maja@example.test" && m.Subject.Contains(order.Reference)).Text);
+      MarkPaid(order, ""); Workflow.Settle(order);
+      MarkSent(order, ""); Workflow.Settle(order);
+      Assert.EndsWith("@LK-11122-2", order.Tracking);                            // the carrier was handed the point
+    }
+  }
+}
+
+[Test(Floor)]
+void a_point_is_priced_as_its_option_and_one_not_near_the_address_is_refused() {
+  runas (new Visitor { Id = "v-point-price" }) {
+    Bag("v-point-price", "Loafer", "39", 1);
+    Assert.Equal(30m, DeliveryChoices("SE").Single(w => w.Id == "courier/locker").Price);
+    Assert.Equal(30m, CheckoutQuote("courier/locker", "SE").Delivery);
+    // An id the carrier did not list for this address is never kept — the page cannot name its own point.
+    var e = Assert.Throws<Exception>(() => ChoosePickupPoint("courier/locker", "LK-99999-1", "Storgatan 1", "11122", "Stockholm", "SE"));
+    Assert.Contains("not among those near the address", e.Message);
+    Assert.Null(ChosenPickupPoint("courier/locker"));
+    ChoosePickupPoint("courier/locker", "LK-11122-1", "Storgatan 1", "11122", "Stockholm", "SE");
+    var receipt = PlaceToLocker("v-point-price");
+    runas (Desk) { Assert.Equal(30m, Order.Single(o => o.Reference == receipt.Reference).Delivery); }
+  }
+}
+
+[Test(Floor)]
+void a_point_chosen_for_one_delivery_does_not_follow_the_customer_to_another() {
+  runas (new Visitor { Id = "v-point-switch" }) {
+    Bag("v-point-switch", "Loafer", "39", 1);
+    ChoosePickupPoint("courier/locker", "LK-11122-1", "Storgatan 1", "11122", "Stockholm", "SE");
+    var receipt = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                             "Storgatan 1", "11122", "Stockholm", "SE");
+    Assert.Equal("", receipt.PickupPoint);
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == receipt.Reference);
+      Assert.Null(order.Contact.Single().PickupPointId);
+      MarkPaid(order, ""); Workflow.Settle(order);
+      MarkSent(order, ""); Workflow.Settle(order);
+      Assert.DoesNotContain("@", order.Tracking);                                // booked to the door
+    }
+  }
+}
+
+[Test(Floor)]
+void a_customer_sets_the_point_only_on_their_own_bag() {
+  runas (new Visitor { Id = "v-point-maja" }) {
+    runas (Maja) {
+      Bag("v-point-maja", "Loafer", "39", 1);
+      ChoosePickupPoint("courier/locker", "LK-11122-1", "Storgatan 1", "11122", "Stockholm", "SE");
+    }
+    runas (Olle) {
+      Assert.Equal(0, Bag.Count(b => b.Owner != null && b.Owner.Email == "maja@example.test"));   // not even seen
+      // Choosing with Maja's visit id sets a point on Olle's OWN bag — the visit id names a visit, it authorises nothing.
+      ChoosePickupPoint("courier/locker", "LK-11122-2", "Storgatan 1", "11122", "Stockholm", "SE");
+      Assert.Equal("LK-11122-2", ChosenPickupPoint("courier/locker")!.Id);
+    }
+    // Nor a visitor holding the same visit id.
+    ChoosePickupPoint("courier/locker", "LK-11122-2", "Storgatan 1", "11122", "Stockholm", "SE");
+    runas (Desk) { Assert.Equal("LK-11122-1", Bag.Single(b => b.Owner != null && b.Owner.Email == "maja@example.test").PickupPointId); }
+    runas (Maja) { Assert.Equal("LK-11122-1", ChosenPickupPoint("courier/locker")!.Id); }
+  }
+}

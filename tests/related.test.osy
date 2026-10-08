@@ -1,0 +1,172 @@
+// "You may also like": what was paid for together with a product, then the rest of its shelf — never the product,
+// never what cannot be bought now, in an order that does not move. And the two things an add-on answers beside
+// pricing: a product's rating, and a customer's erasure.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// More on the shoe shelf and a few things that sit on no shelf, as staff would add them.
+void MoreGoods() {
+  runas (Desk) {
+    var shoes = Category.Single(c => c.Slug == "womens-shoes");
+    var mule = new Product { Name = "Mule", Slug = "mule", Category = shoes, Price = 90m, Rank = 1 };
+    new Variant { Product = mule, Stock = 0 };                                   // sold out: never offered
+    var sandal = new Product { Name = "Sandal", Slug = "sandal", Category = shoes, Price = 70m, Rank = 2 };
+    new Variant { Product = sandal, Stock = 3 };
+    var clog = new Product { Name = "Clog", Slug = "clog", Category = shoes, Price = 60m, Rank = 3 };
+    new Variant { Product = clog, Unlimited = true };                            // made to order: never runs out
+    var socks = new Product { Name = "Socks", Slug = "socks", Price = 10m };
+    new Variant { Product = socks, Stock = 10 };
+    var polish = new Product { Name = "Polish", Slug = "polish", Price = 8m };
+    new Variant { Product = polish, Stock = 5 };
+    var laces = new Product { Name = "Laces", Slug = "laces", Price = 3m };
+    new Variant { Product = laces, Stock = 1 };                                  // the one pair goes in an order below
+    UnitOfWork.Commit();
+  }
+}
+
+/// Places a visit's bag and has the desk mark it paid.
+string PaidOrder(string visit) {
+  var reference = Checkout(visit).Reference;
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    MarkPaid(order, "");
+    Workflow.Settle(order);
+  }
+  return reference;
+}
+
+[Test(Floor)]
+void what_was_paid_for_with_a_product_comes_first_then_its_shelf() {
+  MoreGoods();
+  Bag("v-a", "Loafer", "38", 1); Bag("v-a", "Socks", "", 1); Bag("v-a", "Polish", "", 1);
+  PaidOrder("v-a");
+  Bag("v-b", "Loafer", "38", 1); Bag("v-b", "Socks", "", 1); Bag("v-b", "Laces", "", 1);
+  PaidOrder("v-b");
+  Bag("v-c", "Loafer", "39", 1); Bag("v-c", "Chelsea", "38", 1);
+  Checkout("v-c");                                                             // reserved, never paid: says nothing
+
+  var loafer = Product.Single(p => p.Name == "Loafer");
+  var names = RelatedProducts(loafer, 6).Select(p => p.Name).ToList();
+  // Socks were in two of its orders, Polish in one; Laces sold out with that order; Chelsea was never paid for.
+  // Then the shoe shelf by the shop's rank: the Mule is sold out, the Clog never runs out.
+  Assert.Equal("Socks, Polish, Sandal, Clog", string.Join(", ", names));
+  Assert.Equal("Socks, Polish", string.Join(", ", RelatedProducts(loafer, 2).Select(p => p.Name).ToList()));
+  Assert.Equal(0, RelatedProducts(loafer, 0).Count);
+}
+
+[Test(Floor)]
+void a_product_nobody_has_bought_offers_its_shelf_and_never_itself_or_a_draft() {
+  MoreGoods();
+  runas (Desk) {
+    var shoes = Category.Single(c => c.Slug == "womens-shoes");
+    var hidden = new Product { Name = "Prototype", Slug = "prototype", Category = shoes, Price = 1m, Status = ProductStatus.Draft };
+    new Variant { Product = hidden, Stock = 4 };
+    UnitOfWork.Commit();
+  }
+  // A visitor, signed out, gets listed things only — and so do staff, who could read the draft.
+  Assert.Equal("Loafer, Clog", string.Join(", ", RelatedProducts(Product.Single(p => p.Name == "Sandal"), 4).Select(p => p.Name).ToList()));
+  runas (Desk) {
+    Assert.Equal("Loafer, Clog", string.Join(", ", RelatedProducts(Product.Single(p => p.Name == "Sandal"), 4).Select(p => p.Name).ToList()));
+  }
+  // A product on no shelf that nobody has bought: nothing to offer.
+  Assert.Equal(0, RelatedProducts(Product.Single(p => p.Name == "Socks"), 4).Count);
+}
+
+[Test(Floor)]
+void an_add_ons_rating_goes_into_the_structured_data_and_only_where_it_gives_one() {
+  var bike = ProductStructuredData(Product.Single(p => p.Name == "Super")).ToJson();
+  Assert.Contains("\"aggregateRating\"", bike);
+  Assert.Contains("\"ratingValue\":4.5", bike);
+  Assert.Contains("\"reviewCount\":2", bike);
+  var loafer = ProductStructuredData(Product.Single(p => p.Name == "Loafer")).ToJson();
+  Assert.DoesNotContain("AggregateRating", loafer);
+}
+
+[Test(Floor)]
+void an_add_on_hears_that_a_customer_was_erased() {
+  var olle = "";
+  runas (Desk) { olle = ShopAccount.Single(a => a.Email == "olle@example.test").Id.ToString(); }
+  runas (Olle) { EraseMyAccount(); }
+  runas (Desk) {
+    Workflow.Settle(ShopErasure.Single());
+    Assert.Equal(1, AddOnHeard.Count(h => h.What == "erased " + olle));
+  }
+}
+
+// ── the orders paid before the tally existed (D-ORDERLINK1's owed backfill) ─────────────────────────────────────────
+
+/// The floor, with two orders paid for before the tally existed — as a shop upgraded to the tally has them: paid, and
+/// never counted. They are paid the shop's own way (which counts them), and then the tally is put back to what it was
+/// before it existed — nothing on it, no order counted — as only a fixture may.
+[TestFixture]
+void PaidBeforeTheTally() {
+  Floor();
+  var socks = new Product { Name = "Socks", Slug = "socks", Price = 10m };
+  var sock = new Variant { Product = socks, Stock = 10 };
+  var polish = new Product { Name = "Polish", Slug = "polish", Price = 8m };
+  var tin = new Variant { Product = polish, Stock = 5 };
+  UnitOfWork.Commit();
+  var loafer = Variant.Single(v => v.Product.Name == "Loafer" && v.Size == "38");
+  PaidLongAgo([loafer, sock, tin]);
+  PaidLongAgo([loafer, sock]);
+  foreach (var row in BoughtTogether.ToList()) { row.Delete(); }
+  foreach (var order in Order.ToList()) { order.CountedTogether = false; }
+  UnitOfWork.Commit();
+}
+
+/// One of each of `variants`, ordered for collection and paid by transfer.
+void PaidLongAgo(List<Variant> variants) {
+  foreach (var v in variants) { AddToBag(v, 1); }
+  var reference = PlaceOrder("Maja Berg", "maja@example.test", "", "collect", "banktransfer", "", "", "", "").Reference;
+  // Paid as the desk marks a transfer paid — the order's own event, raised here where no member of staff is signed in.
+  OrderLifecycle.CorrelatePaymentReceived(reference, "Bank transfer", "", "", "");
+  Workflow.Settle(Order.Single(o => o.Reference == reference));
+}
+
+/// How many paid orders held both, as the tally says.
+int Together(string product, string with) {
+  var row = BoughtTogether.FirstOrDefault(b => b.Product.Name == product && b.With.Name == with);
+  return row == null ? 0 : row.Orders;
+}
+
+[Test(PaidBeforeTheTally)]
+void a_recount_counts_the_orders_paid_before_the_tally_and_a_second_changes_nothing() {
+  var loafer = Product.Single(p => p.Name == "Loafer");
+  Assert.Equal(0, BoughtTogether.Count());
+  Assert.Equal(0, RelatedProducts(loafer, 6).Count);                           // nothing, and nobody else on its shelf
+  runas (Desk) {
+    Assert.Equal(2, RecountBoughtTogether());
+    Workflow.Settle(BoughtTogetherRecount.Single());
+  }
+  Assert.Equal(2, Together("Loafer", "Socks"));
+  Assert.Equal(2, Together("Socks", "Loafer"));
+  Assert.Equal(1, Together("Loafer", "Polish"));
+  Assert.Equal("Socks, Polish", string.Join(", ", RelatedProducts(loafer, 6).Select(p => p.Name).ToList()));
+  // Again — from the desk, or a store's data listing the one-off once more: the same tally, never double.
+  runas (Desk) { Assert.Equal(2, RecountBoughtTogether()); }
+  Assert.Equal(2, Together("Loafer", "Socks"));
+  Assert.Equal(1, Together("Loafer", "Polish"));
+  // An order paid after it counts once, and comes off once when it is refunded.
+  Bag("v-new", "Loafer", "39", 1); Bag("v-new", "Polish", "", 1);
+  var fresh = PaidOrder("v-new");
+  Assert.Equal(2, Together("Loafer", "Polish"));
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == fresh);
+    RefundOrder(order, "Changed her mind", true);
+    Workflow.Settle(order);
+    Assert.Equal(1, Together("Loafer", "Polish"));
+    // …and a recount after it agrees: a refunded order is not bought.
+    RecountBoughtTogether();
+  }
+  Assert.Equal(1, Together("Loafer", "Polish"));
+  Assert.Equal(2, Together("Loafer", "Socks"));
+}
+
+// Nobody but the shop recounts: a customer cannot move what a product page offers.
+[Test(PaidBeforeTheTally)]
+void only_staff_ask_for_a_recount() {
+  runas (Maja) { Assert.Throws<NotAuthorized>(() => RecountBoughtTogether()); }
+  Assert.Throws<NotAuthorized>(() => RecountBoughtTogether());
+  Assert.Equal(0, BoughtTogether.Count());
+}

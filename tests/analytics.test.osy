@@ -1,0 +1,47 @@
+// What the shop leaves for the store's analytics: a sale for the visit that placed it, reported once. (What a page
+// then SENDS is the store's UI test — Grounds & Grapes' — and the analytics kit's own.)
+
+using Osysharp.Http;
+using Osysharp.Shop;
+
+[Test(Floor)]
+void an_order_leaves_its_sale_for_the_visit_that_placed_it() {
+  var reference = Buy("v-sale", "Loafer", "38", 1);
+  runas (new Visitor { Id = "v-sale" }) {
+    var noted = ShopPurchaseReport.Single(r => r.VisitId == "v-sale");
+    Assert.Equal(reference, noted.Order.Reference);
+    Assert.False(noted.WaitForPayment);                       // a bank transfer has no payment page: report it now
+  }
+  // Another visit reads none of it — not even by naming the visit (SECURITY-INVARIANT(a-guest-row-is-its-visits)).
+  runas (new Visitor { Id = "v-other" }) { Assert.Empty(ShopPurchaseReport.Where(r => r.VisitId == "v-sale").ToList()); }
+}
+
+[Test(Floor)]
+void a_card_sale_waits_for_the_payment() {
+  Http.Post.Stub((url, body) => new HttpResponse { StatusCode = 200, Body = "{\"id\":\"cs_7\",\"url\":\"https://checkout.stripe.com/c/pay/cs_7\"}" });
+  Bag("v-card-sale", "Chelsea", "38", 1);
+  CheckoutWith("v-card-sale", "stripe");
+  runas (new Visitor { Id = "v-card-sale" }) { Assert.True(ShopPurchaseReport.Single(r => r.VisitId == "v-card-sale").WaitForPayment); }
+}
+
+[Test(Floor)]
+void a_reported_sale_is_not_offered_again_and_only_its_own_visit_can_say_so() {
+  var reference = Buy("v-told", "Loafer", "38", 1);
+  runas (new Visitor { Id = "v-someone-else" }) {
+    ShopPurchaseReported(reference);          // another visit naming the order changes nothing…
+    Assert.Empty(ShopPurchaseReport.Where(r => r.VisitId == "v-told").ToList());   // …and it cannot even see the report
+  }
+  runas (new Visitor { Id = "v-told" }) {
+    Assert.Equal(1, ShopPurchaseReport.Where(r => r.VisitId == "v-told").Count());
+    ShopPurchaseReported(reference);
+    Assert.Empty(ShopPurchaseReport.Where(r => r.VisitId == "v-told").ToList());
+  }
+}
+
+[Test(Floor)]
+void the_store_frame_learns_where_its_product_pages_and_checkout_are() {
+  var paths = ShopAnalyticsPaths();
+  Assert.Equal("/p/{slug}", paths.ProductPath);
+  Assert.Equal("/checkout", paths.CheckoutPath);
+  Assert.Equal("EUR", paths.Currency);
+}

@@ -1,0 +1,501 @@
+// Selling in another currency (D-SELLCURRENCY1). A shop in kronor that SELLS in euros — real prices from its price
+// list or its own converted and rounded, an order placed, invoiced and charged in euros with the day's rate on it —
+// while US dollars stay SHOWN (an estimate, charged in kronor). The rates come from `FakeRates` (model/rates.osy): one
+// euro is 11.3205 kronor, so a krona is 0.08833532 euro.
+
+using Osysharp.Http;
+using Osysharp.Payments;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// The floor shop in kronor — 25 % VAT, 79 kr delivery, free from 1,000 kr — with the rates running and euros SOLD.
+void KronorShopSellingEuros() {
+  runas (Desk) {
+    var shop = TheShop();
+    shop.Currency = "SEK"; shop.CurrencySymbol = "kr"; shop.SymbolAfter = true;
+    shop.DeliveryFee = 79m; shop.FreeDeliveryFrom = 1000m; shop.VatPercent = 25m;
+    UnitOfWork.Commit();
+    StartExchangeRates();
+    Workflow.Settle(RateWatch.Single());
+    SellInCurrency("EUR", true);
+  }
+}
+
+/// A visit that chose euros, with `size` of the loafer in its bag.
+void EuroBag(string visitId, string product, string size) {
+  runas (new Visitor { Id = visitId }) {
+    ShowPricesIn("EUR");
+    Assert.Equal("", AddToBag(Pick(product, size), 1));
+  }
+}
+
+/// Stripe's answer to a checkout session — what a test's `Http.Post` stub hands back.
+HttpResponse CardSession() {
+  return new HttpResponse { StatusCode = 200, Body = "{\"id\":\"cs_9\",\"url\":\"https://checkout.stripe.com/c/pay/cs_9\"}" };
+}
+
+/// Places a visit's euro bag as a collection paid by card on Stripe (which the test stubs), as Maja. Answers the receipt.
+Receipt EuroOrderByCard(string visitId) {
+  runas (new Visitor { Id = visitId }) {
+    runas (Maja) {
+      return PlaceOrder("Maja Berg", "maja@example.test", "", "collect", "stripe", "", "", "", "");
+    }
+  }
+}
+
+[Test(Floor)]
+void a_converted_price_is_rounded_to_the_nearest_price_the_currency_rule_allows() {
+  Assert.Equal(14.95m, NicePrice(15.20m, PriceRounding.To95));   // 14.95 is 0.25 away, 15.95 is 0.75
+  Assert.Equal(15.95m, NicePrice(15.60m, PriceRounding.To95));
+  Assert.Equal(15.90m, NicePrice(15.44m, PriceRounding.To90));
+  Assert.Equal(16m, NicePrice(15.5m, PriceRounding.Whole));
+  Assert.Equal(15m, NicePrice(17.4m, PriceRounding.ToFive));
+  Assert.Equal(10m, NicePrice(14.9m, PriceRounding.ToTen));
+  Assert.Equal(15.21m, NicePrice(15.205m, PriceRounding.Cents));
+  Assert.Equal(0.95m, NicePrice(0.30m, PriceRounding.To95));      // never rounded away to nothing
+  Assert.Equal(5m, NicePrice(1m, PriceRounding.ToFive));
+}
+
+[Test(Floor)]
+void a_sold_currency_prices_from_the_price_list_else_converts_and_rounds() {
+  KronorShopSellingEuros();
+  runas (Desk) { SetVariantPrice(Pick("Loafer", "39"), "EUR", "12"); }
+  runas (new Visitor { Id = "v-sell-list" }) {
+    ShowPricesIn("EUR");
+    Assert.Equal("", AddToBag(Pick("Loafer", "38"), 1));
+    Assert.Equal("", AddToBag(Pick("Loafer", "39"), 1));
+    var lines = BagFor(false)!.Lines.ToList();
+    // 120 kr is €10.60 — made €10.95, the nearest price ending .95; the 39 has its own €12.
+    Assert.Equal(10.95m, LinePrice(lines.Single(l => l.Variant.Size == "38")));
+    Assert.Equal(12m, LinePrice(lines.Single(l => l.Variant.Size == "39")));
+    var quote = CheckoutQuote("collect", "");
+    Assert.Equal("EUR", quote.Currency);
+    Assert.Equal(22.95m, quote.Total);
+    Assert.Equal(4.59m, quote.Vat);                                 // 22.95 × 25/125, in euros
+    Assert.Equal("", LineProblem(lines.First()));                   // the switch is not a price that moved
+  }
+  // A page reads the same price off the rows it loaded with the variant.
+  var rate = ExchangeRate.Single(r => r.Currency == "EUR");
+  Assert.Equal(12m, SoldPriceFrom(Pick("Loafer", "39").Prices.ToArray(), 120m, rate));
+  Assert.Equal(10.95m, SoldPriceFrom(Pick("Loafer", "38").Prices.ToArray(), 120m, rate));
+}
+
+[Test(Floor)]
+void an_order_in_a_sold_currency_is_placed_invoiced_and_charged_in_it_with_the_days_rate() {
+  KronorShopSellingEuros();
+  EuroBag("v-sell-order", "Loafer", "38");
+  List<string> posted = [];
+  Http.Post.Stub((url, body) => { posted.Add(body); return CardSession(); });
+  var receipt = EuroOrderByCard("v-sell-order");
+  Assert.Equal("EUR", receipt.Currency);
+  Assert.Equal(10.95m, receipt.Total);
+  // Stripe is asked for euros — €10.95 in cents — never kronor.
+  Assert.Contains("eur", posted[0]);
+  Assert.Contains("1095", posted[0]);
+  Assert.DoesNotContain("sek", posted[0]);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == receipt.Reference);
+    Assert.Equal(OrderStatus.Reserved, order.Status);
+    Assert.Equal("EUR", order.Currency);
+    Assert.Equal(0.08833532m, order.Rate);
+    Assert.Equal("Test Bank", order.RateSource);
+    Assert.Equal(2.19m, order.Vat);                                 // 10.95 × 25/125
+    MarkPaid(order, "");
+    Workflow.Settle(order);
+    var invoice = Invoice.Single(i => i.Order == order);
+    Assert.Equal(10.95m, invoice.Total);
+    Assert.Equal(0.08833532m, invoice.Rate);
+    // The VAT stated in kronor too, at the invoice's rate (art. 230): 2.19 / 0.08833532 = 24.79.
+    var lines = VatInShopCurrency(invoice, [25m], [2.19m]);
+    Assert.Contains("1 EUR = 11.3205 SEK", lines[0]);
+    Assert.Contains("article 230", lines[0]);
+    Assert.Equal("VAT 25 % in SEK: 24.79 kr", lines[1]);
+    Assert.Equal("€10.95", OrderMoney(order.Total, order));
+    Assert.Equal(123.96m, InShopMoney(order.Total, order));         // the figures count it in kronor
+    Assert.True(ReceiptPdf(order).Length > 0);
+  }
+}
+
+[Test(Floor)]
+void a_shown_currency_beside_it_is_still_an_estimate_charged_in_the_shops_own() {
+  KronorShopSellingEuros();
+  runas (new Visitor { Id = "v-sell-usd" }) {
+    ShowPricesIn("USD");
+    Assert.Equal("", AddToBag(Pick("Loafer", "38"), 1));
+    Assert.Null(BagFor(false)!.Currency);
+    var receipt = PlaceOrder("Maja Berg", "maja@example.test", "", "collect", "banktransfer", "", "", "", "");
+    Assert.Equal("SEK", receipt.Currency);
+    Assert.Equal(120m, receipt.Total);
+    Assert.Equal("≈ $12.06 · charged as 120 kr", ChargedAs(120m, ExchangeRate.Single(r => r.Currency == "USD"), TheShop()));
+  }
+}
+
+[Test(Floor)]
+void delivery_in_a_sold_currency_has_its_own_price_and_its_own_free_threshold() {
+  KronorShopSellingEuros();
+  EuroBag("v-sell-ship", "Loafer", "38");
+  runas (new Visitor { Id = "v-sell-ship" }) {
+    // 79 kr is €6.98 — €6.95; the shop's 1,000 kr threshold is €88.34 — €87.95, not reached by €10.95.
+    Assert.Equal(6.95m, DeliveryChoices("SE").Single(d => d.Id == "flat").Price);
+  }
+  runas (Desk) {
+    SetSoldDeliveryPrice("EUR", "flat", "5");
+    SetCurrencySale("EUR", PriceRounding.To95, 20m);
+    Assert.Equal(87.95m, SoldCurrenciesOnTheDesk().Single().FreeDeliveryConverted);
+  }
+  runas (new Visitor { Id = "v-sell-ship" }) {
+    Assert.Equal(5m, DeliveryChoices("SE").Single(d => d.Id == "flat").Price);   // its own euro price
+    Assert.Equal("", AddToBag(Pick("Chelsea", "38"), 1));                         // €16.95 more: €27.90 ≥ €20
+    Assert.Equal(0m, DeliveryChoices("SE").Single(d => d.Id == "flat").Price);
+  }
+  runas (Desk) { SetSoldDeliveryPrice("EUR", "flat", ""); }                        // off the table: converted again
+  runas (Desk) { Assert.Equal("", SoldCurrenciesOnTheDesk().Single().Delivery.Single(d => d.Id == "flat").Set); }
+}
+
+[Test(Floor)]
+void a_way_to_pay_that_cannot_take_the_currency_is_not_offered_and_the_desk_says_why() {
+  KronorShopSellingEuros();
+  EuroBag("v-sell-pay", "Loafer", "38");
+  runas (new Visitor { Id = "v-sell-pay" }) {
+    var keys = PaymentChoices(true).Select(p => p.Key).ToList();
+    Assert.Contains("stripe", keys);
+    Assert.DoesNotContain("banktransfer", keys);   // paid into the shop's kronor account
+    Assert.DoesNotContain("oncollection", keys);
+    Assert.DoesNotContain("kronor", keys);         // kronor only, as Swish
+    Assert.Contains("klarna", keys);               // the shop's Klarna market is Germany, which pairs with euros
+    Assert.Throws<Exception>(() => PlaceOrder("Maja Berg", "maja@example.test", "", "collect", "banktransfer", "", "", "", ""));
+  }
+  // Klarna takes euros from a buyer in a euro country, and kronor from one in Sweden — each country's own currency.
+  Assert.Contains("klarna", PaymentChoicesIn(false, "EUR", "DE").Select(p => p.Key).ToList());
+  Assert.DoesNotContain("klarna", PaymentChoicesIn(false, "EUR", "SE").Select(p => p.Key).ToList());
+  Assert.Contains("klarna", PaymentChoicesIn(false, "SEK", "SE").Select(p => p.Key).ToList());
+  Assert.DoesNotContain("klarna", PaymentChoicesIn(true, "SEK", "").Select(p => p.Key).ToList());   // its market: Germany
+  Assert.Contains("banktransfer", PaymentChoicesIn(true, "SEK", "").Select(p => p.Key).ToList());
+  runas (Desk) {
+    var notOffered = string.Join("\n", SoldCurrenciesOnTheDesk().Single(s => s.Currency == "EUR").NotOffered);
+    Assert.Contains("Bank transfer is paid into the shop's own account, in SEK", notOffered);
+    Assert.Contains("Kronor: This moves Swedish kronor only", notOffered);
+    Assert.DoesNotContain("Klarna", notOffered);
+    // …and in the shop's own kronor, the desk says why Klarna (a German market) is not offered.
+    Assert.Equal("Klarna takes EUR from a buyer in DE, not SEK.", Providers().Single(r => r.Key == "klarna").NotReady);
+  }
+}
+
+[Test(Floor)]
+void a_gift_card_is_in_the_currency_it_was_bought_in_and_pays_only_for_an_order_in_it() {
+  KronorShopSellingEuros();
+  GiftShelf();
+  var reference = "";
+  Http.Post.Stub((url, body) => CardSession());
+  runas (new Visitor { Id = "v-sell-card" }) {
+    ShowPricesIn("EUR");
+    // The shop's bounds, 10 kr to 500 kr, are €0.88 to €44.17 in euros.
+    Assert.Contains("€0.88 to €44.17", AddGiftCardToBag(CardOf("Your amount"), 50m, "Maja", "Anna", "anna@example.test", "", null));
+    Assert.Equal("", AddGiftCardToBag(CardOf("Your amount"), 40m, "Maja", "Anna", "anna@example.test", "", null));
+    runas (Maja) {
+      reference = PlaceOrder("Maja Berg", "maja@example.test", "", NothingToShipId(), "stripe", "", "", "", "SE").Reference;
+    }
+  }
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    MarkPaid(order, "");
+    Workflow.Settle(order);
+    var card = GiftCard.Single(c => c.SoldWith == order);
+    Workflow.Settle(card);
+    Assert.Equal("EUR", card.Currency);
+    Assert.Equal(40m, card.Amount);
+    Assert.Equal(0.08833532m, card.Rate);
+  }
+  var code = CodeMailedTo("anna@example.test");
+  Assert.Equal("EUR", GiftCardBalance(code).Currency);
+  // In kronor it is refused, and says how to spend it; in euros it pays.
+  Bag("v-sell-card-sek", "Loafer", "38", 1);
+  runas (new Visitor { Id = "v-sell-card-sek" }) {
+    Assert.Throws<Exception>(() => ApplyGiftCard(code));
+  }
+  EuroBag("v-sell-card-eur", "Loafer", "38");
+  runas (new Visitor { Id = "v-sell-card-eur" }) {
+    Assert.Equal($"Gift card ending {code.Substring(15, 4)}, €40 to spend", ApplyGiftCard(code));
+    Assert.Equal(10.95m, CheckoutQuote("collect", "").GiftCards);
+    // Switched to kronor, the card stays on the bag and pays nothing.
+    ShowPricesIn("SEK");
+    Assert.Equal(0m, CheckoutQuote("collect", "").GiftCards);
+  }
+}
+
+[Test(Floor)]
+void store_credit_is_the_shops_own_money_and_an_order_in_euros_is_refunded_the_way_it_was_paid() {
+  KronorShopSellingEuros();
+  runas (Desk) {
+    GrantCredit(Maja, 50m, "A late parcel");
+    Workflow.Settle(StoreCreditGrant.Single());
+  }
+  EuroBag("v-sell-credit", "Loafer", "38");
+  Http.Post.Stub((url, body) => CardSession());
+  var reference = "";
+  runas (new Visitor { Id = "v-sell-credit" }) {
+    runas (Maja) {
+      UseStoreCredit(true);
+      Assert.Equal(0m, CheckoutQuote("collect", "").Credit);     // kronor credit does not pay a euro order
+    }
+  }
+  reference = EuroOrderByCard("v-sell-credit").Reference;
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Assert.Equal(0m, order.CreditUsed);
+    MarkPaid(order, "");
+    Workflow.Settle(order);
+    MarkSent(order, "PostNord 1");
+    Workflow.Settle(order);
+  }
+  runas (Maja) {
+    var line = OrderLine.Single(l => l.Order.Reference == reference);
+    Assert.Throws<Exception>(() => ReturnItem(line, 1, "Too small", true));
+  }
+  // Refunded in part by the desk: the credit note is in euros, its VAT the euro VAT.
+  runas (Desk) {
+    var line = OrderLine.Single(l => l.Order.Reference == reference);
+    var ret = RefundPart(line, 1, "Too small", true);
+    Workflow.Settle(ret);
+    var note = CreditNote.Single(c => c.Invoice.Order.Reference == reference);
+    Assert.Equal(10.95m, note.Total);
+    Assert.Equal(2.19m, note.Vat);
+    Assert.Equal(0m, note.ToStoreCredit);
+    Assert.Equal(50m, CreditBalanceOf(Maja));
+  }
+}
+
+// An agreed price (a subscription's) is in ONE currency: placed in a bag bought in it, and never in another — the add-on
+// that agreed it agrees it again when the bag moves (the subscriptions kit's currencies.test.osy).
+[Test(Floor)]
+void an_agreed_price_is_placed_in_its_own_currency_and_never_in_another() {
+  KronorShopSellingEuros();
+  EuroBag("v-sell-plan", "Loafer", "38");
+  runas (Desk) {
+    var line = BagLine.Single(l => l.Bag.VisitId == "v-sell-plan");
+    new AgreedLinePrice { Line = line, Price = 99m, Label = "Every month" };               // in kronor
+    UnitOfWork.Commit();
+  }
+  runas (new Visitor { Id = "v-sell-plan" }) {
+    var refused = Assert.Throws<Exception>(() => PlaceOrder("Maja Berg", "maja@example.test", "", "collect", "stripe", "", "", "", ""));
+    Assert.Contains("Every month was agreed in SEK, and your bag is in EUR now", refused.Message);
+  }
+  runas (Desk) {
+    var agreed = AgreedLinePrice.Single(a => a.Line.Bag.VisitId == "v-sell-plan");
+    agreed.Price = 8.95m;
+    agreed.Currency = "EUR";
+    agreed.Line.PriceWhenAdded = 8.95m;                                                    // as the shop agrees it
+    UnitOfWork.Commit();
+  }
+  runas (new Visitor { Id = "v-sell-plan" }) {
+    Http.Post.Stub((url, body) => CardSession());
+    var receipt = PlaceOrder("Maja Berg", "maja@example.test", "", "collect", "stripe", "", "", "", "");
+    Assert.Equal("EUR", receipt.Currency);
+    Assert.Equal(8.95m, receipt.Total);
+  }
+}
+
+[Test(Floor)]
+void a_stale_rate_sells_nothing_and_the_bag_is_priced_in_kronor_again() {
+  KronorShopSellingEuros();
+  EuroBag("v-sell-stale", "Loafer", "38");
+  RatesInTests.Stub(() => throw new ExternalServiceException("The bank is closed."));
+  TestClock.Advance(TimeSpan.FromDays(7));
+  runas (new Visitor { Id = "v-sell-stale" }) {
+    var line = BagFor(false)!.Lines.Single();
+    Assert.Equal(120m, LinePrice(line));
+    Assert.Equal("SEK", CheckoutQuote("collect", "").Currency);
+    Assert.Contains("out of date", LineProblem(line));
+  }
+}
+
+[Test(Floor)]
+void the_price_list_goes_out_to_a_spreadsheet_and_back() {
+  KronorShopSellingEuros();
+  runas (Desk) {
+    SetVariantPrice(Pick("Loafer", "39"), "EUR", "12");
+    var csv = ProductsCsv();
+    Assert.Contains("Category,Price EUR", csv);
+    Assert.Contains(",12.00", csv);
+    var slug = Pick("Chelsea", "38").Product.Slug;
+    var report = ImportProductsCsv($"Slug,Size,Price EUR\n{slug},38,15.50\nloafer,39,-\n", true);
+    Assert.Empty(report.Problems);
+    Assert.Equal(2, report.Changed);
+    Assert.Equal(15.50m, VariantPrice.Single(p => p.Variant == Pick("Chelsea", "38")).Price);
+    Assert.False(VariantPrice.Any(p => p.Variant == Pick("Loafer", "39")));
+    var refused = ImportProductsCsv($"Slug,Size,Price EUR\n{slug},38,cheap\n", true);
+    Assert.Contains("Price EUR", refused.Problems.Single().Message);
+  }
+}
+
+/// Maja writes the order for her euro bag (one Loafer 38, €10.95, collected, by card) straight to the tables, with
+/// every row right but the currency and the rate it names. Answers its status once the order's workflow has priced it.
+OrderStatus ForgedEuroOrder(string visitId, string reference, string? currency, decimal rate) {
+  EuroBag(visitId, "Loafer", "38");
+  var sale = ExchangeRate.Single(r => r.Currency == "EUR");
+  var status = OrderStatus.Placed;
+  runas (new Visitor { Id = visitId }) {
+    var collect = DeliveryChoices("").Single(d => d.Id == "collect");
+    // …placed from her own visit, as the checkout records it (D-ORDERLINK1) — which is also what lets her read it back.
+    var order = new Order { VisitId = visitId, Fulfilment = Fulfilment.Collect, DeliveryMethod = "collect", DeliveryLabel = collect.Label,
+                            PaymentMethod = "stripe", PaymentLabel = "Card", Currency = currency, Rate = rate,
+                            RateDate = sale.RateDate, RateSource = sale.Source,
+                            Subtotal = 10.95m, Total = 10.95m, Vat = 2.19m, HoldDays = 3,
+                            PlacedAt = DateTime.UtcNow, Reference = reference, PlacedFrom = BagFor(false),
+                            // The visit that writes it, as the checkout records it — an order is read by its own visit
+                            // (D-GUESTROWS1, D-ORDERLINK1), so without it the status below reads as nothing at all.
+                            VisitId = Visitor.Id };
+    new OrderLine { Order = order, Variant = Pick("Loafer", "38"), ProductName = "Loafer", VariantLabel = "38", Quantity = 1,
+                    Price = 10.95m, VatPercent = 25m };
+    new OrderVat { Order = order, Percent = 25m, Gross = 10.95m, Vat = 2.19m, Country = "SE" };
+    new OrderContact { Order = order, Name = "Maja Berg", Email = "maja@example.test" };
+    UnitOfWork.Commit();
+    status = order.Status;
+  }
+  return status;
+}
+
+// SECURITY-INVARIANT(an-order-is-priced-by-the-shop), for the currency: the checkout writes an order's rows as the
+// customer, so its currency and its rate are claims too — one that says "the shop's own" for a bag bought in euros
+// would be charged the euro figures in kronor, and one with a rate of its own would be booked at it.
+[Test(Floor)]
+void a_customer_cannot_state_their_own_currency_or_rate() {
+  KronorShopSellingEuros();
+  // The euro figures, said to be kronor — and euros at a rate of the customer's own: neither is held.
+  Assert.Equal(OrderStatus.Unavailable, ForgedEuroOrder("v-sell-forge-1", "KT-FX1", null, 1m));
+  Assert.Equal(OrderStatus.Unavailable, ForgedEuroOrder("v-sell-forge-2", "KT-FX2", "EUR", 1m));
+  runas (Desk) { Assert.Equal(2, Pick("Loafer", "38").Stock); }
+  // The same rows with the shop's own currency and rate are an order like any other.
+  Assert.Equal(OrderStatus.Reserved, ForgedEuroOrder("v-sell-forge-3", "KT-FX3", "EUR", 0.08833532m));
+}
+
+// Only an EXPLICIT stop is the shop no longer selling in a currency (owner, 2026-09-29): "Only show it", or the rates
+// stopped altogether. A rate gone stale sells nothing while it is stale, and is not the shop deciding anything — an
+// add-on holding something agreed in the currency (a subscription) hears nothing of it. Heard while the rate still
+// stands, so there is a rate to convert at.
+[Test(Floor)]
+void an_add_on_hears_when_the_shop_stops_selling_a_currency_and_not_when_its_rate_goes_stale() {
+  KronorShopSellingEuros();
+  TestClock.Advance(TimeSpan.FromDays(7));
+  runas (Desk) { Assert.False(RateUsable(ExchangeRate.Single(r => r.Currency == "EUR"))); }
+  Assert.Equal(0, AddOnHeard.Count(h => h.What.StartsWith("not sold")));
+  runas (Desk) {
+    SellInCurrency("EUR", false);
+    SellInCurrency("EUR", false);                                                // already only shown: heard once
+  }
+  Assert.Equal(["not sold EUR at 0.0883"], AddOnHeard.Where(h => h.What.StartsWith("not sold")).Select(h => h.What).ToList());
+  // Sold again, then every rate stopped: heard again — before the rate goes.
+  runas (Desk) {
+    FetchExchangeRatesNow();
+    SellInCurrency("EUR", true);
+    StopExchangeRates();
+  }
+  Assert.Equal(2, AddOnHeard.Count(h => h.What == "not sold EUR at 0.0883"));
+  Assert.Equal(0, AddOnHeard.Count(h => h.What.StartsWith("not sold USD")));    // only shown, never sold
+}
+
+// ── a gift card in a currency the shop no longer sells (owner, 2026-09-29: "yes to all the open questions") ────────
+
+/// A €40 card from Maja for Anna, bought in euros by card and paid — answers the code mailed to Anna. The caller stubs
+/// the card provider (`CardSession`).
+string EuroCardForAnna(string visitId) {
+  var reference = "";
+  runas (new Visitor { Id = visitId }) {
+    ShowPricesIn("EUR");
+    Assert.Equal("", AddGiftCardToBag(CardOf("Your amount"), 40m, "Maja", "Anna", "anna@example.test", "Happy birthday", null));
+    runas (Maja) {
+      reference = PlaceOrder("Maja Berg", "maja@example.test", "", NothingToShipId(), "stripe", "", "", "", "SE").Reference;
+    }
+  }
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    MarkPaid(order, "");
+    Workflow.Settle(order);
+    Workflow.Settle(GiftCard.Single(c => c.SoldWith == order));
+  }
+  return CodeMailedTo("anna@example.test");
+}
+
+// The card is reissued at the rate it was SOLD at (`GiftCard.Rate`), never the day's: that is the rate its debt is
+// booked at, so the move earns and costs the shop nothing, and the holder gets exactly what the buyer paid for.
+[Test(Floor)]
+void a_card_in_a_currency_no_longer_sold_is_reissued_in_the_shops_own_at_the_rate_it_was_sold_at() {
+  KronorShopSellingEuros();
+  GiftShelf();
+  Http.Post.Stub((url, body) => CardSession());
+  var code = EuroCardForAnna("v-reissue");
+  runas (Desk) {
+    var card = GiftCard.Single();
+    Assert.Equal(0.08833532m, card.Rate);
+    // Still sold in euros: nothing to reissue — it pays for an order in euros as it is.
+    Assert.Contains("still sells in EUR", Assert.Throws<Exception>(() => ReissueGiftCard(card, "")).Message);
+    Assert.False(DeskGiftCardRows("").Single().CanReissue);
+    SellInCurrency("EUR", false);
+    var row = DeskGiftCardRows("").Single();
+    Assert.True(row.CanReissue);
+    Assert.Equal(452.82m, row.InShopMoney);                                      // €40 / 0.08833532
+    var again = ReissueGiftCard(card, "");
+    Workflow.Settle(card);
+    Workflow.Settle(again);
+    Assert.Equal(GiftCardStatus.Voided, card.Status);
+    Assert.Equal(0m, card.Balance);
+    Assert.Null(again.Currency);
+    Assert.Equal(452.82m, again.Amount);
+    Assert.Equal(452.82m, again.Balance);
+    Assert.Equal(1m, again.Rate);
+    Assert.False(again.SinglePurpose);
+    Assert.Equal(card.ExpiresAt, again.ExpiresAt);                               // its last day, not a new one
+    Assert.Equal("anna@example.test", again.SendTo);
+    // The ledger shows both sides, each naming the other — a move, not a void written off.
+    var off = GiftCardLedger(card).First();
+    Assert.Equal("Reissued", off.What);
+    Assert.Equal(-40m, off.Amount);
+    Assert.Contains($"as …{again.Last4}", off.Note);
+    Assert.False(GiftCardLedger(card).Any(l => l.What == "Voided"));
+    var on = GiftCardLedger(again).Single();
+    Assert.Equal("Reissued", on.What);
+    Assert.Equal(452.82m, on.Amount);
+    Assert.Contains($"from …{card.Last4}", on.Note);
+    Assert.Contains("1 EUR = 11.3205 SEK", on.Note);
+    var rows = DeskGiftCardRows("");
+    Assert.Equal($"Reissued in SEK as …{again.Last4}", rows.Single(r => r.Ending == card.Last4).Reissue);
+    Assert.Equal($"Reissued from …{card.Last4} (EUR)", rows.Single(r => r.Ending == again.Last4).Source);
+    Assert.Contains("SEK already", Assert.Throws<Exception>(() => ReissueGiftCard(again, "")).Message);
+    var mail = ShopMail.Single(m => m.To == "anna@example.test" && m.Text.Contains("We no longer sell in EUR"));
+    Assert.Contains("452.82 kr", mail.Text);
+    Assert.Contains("1 EUR = 11.3205 SEK", mail.Text);
+    Assert.Contains("The old code no longer works", mail.Text);
+  }
+  // The old code pays nothing; the new one, mailed to Anna, pays for an order in kronor.
+  Assert.NotEqual("", GiftCardBalance(code).Problem);
+  var fresh = CodeMailedTo("anna@example.test");
+  Assert.NotEqual(code, fresh);
+  Bag("v-reissue-sek", "Loafer", "38", 1);
+  runas (new Visitor { Id = "v-reissue-sek" }) {
+    Assert.Equal($"Gift card ending {fresh.Substring(15, 4)}, 452.82 kr to spend", ApplyGiftCard(fresh));
+  }
+}
+
+[Test(Floor)]
+void a_single_purpose_card_reissued_stays_single_purpose_with_the_vat_its_sale_paid() {
+  KronorShopSellingEuros();
+  GiftShelf();
+  runas (Desk) {
+    TheShop().GiftCardsAreSinglePurpose = true;
+    UnitOfWork.Commit();
+  }
+  Http.Post.Stub((url, body) => CardSession());
+  EuroCardForAnna("v-reissue-spv");
+  runas (Desk) {
+    var card = GiftCard.Single();
+    Assert.True(card.SinglePurpose);
+    // Staff do not get to change what a card was sold as — turning the setting off changes nothing for it.
+    TheShop().GiftCardsAreSinglePurpose = false;
+    UnitOfWork.Commit();
+    SellInCurrency("EUR", false);
+    var again = ReissueGiftCard(card, "The shop no longer sells in euros");
+    Assert.True(again.SinglePurpose);
+    Assert.Equal(25m, again.VatPercent);
+    Assert.Equal(card.VatPercent, again.VatPercent);
+  }
+}

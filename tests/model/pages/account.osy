@@ -1,0 +1,52 @@
+// The account pages a store writes around the kit's components — here as bare as a page can be, so the tests drive
+// the components and nothing else.
+using Osysharp.Shop;
+using Osysharp.Ui;
+
+[Page("/")] [AllowAnonymous] component KitHome() { render { Text("Kit test shop"); } }
+[Page("/account/sign-in")] [AllowAnonymous] component KitSignIn() { render { ShopSignIn(); } }
+[Page("/account/new")] [AllowAnonymous] component KitSignUp() { render { ShopSignUp(); } }
+[Page("/account/forgot")] [AllowAnonymous] component KitForgot() { render { ShopForgotPassword(); } }
+[Page("/account/reset/{token}")] [AllowAnonymous] component KitReset(string token) { render { ShopChooseNewPassword(token); } }
+[Page("/account/confirm/{token}")] [AllowAnonymous] component KitConfirm(string token) { render { ShopConfirmAddress(token); } }
+[Page("/account")] component KitAccount() { render { ShopAccountPanel(); } }
+[Page("/desk")] component KitDesk() { render { ShopDesk(); } }
+/// What this store offers before a free gift card — added to the shop's slot, as an add-on kit adds its own.
+component CodesInstead() : GiftCardGoodwill {
+  render { Link(href: "/codes", label: "Discount codes") { Text("Make a discount code"); } }
+}
+[Page("/counter")] [Authorize(IsShopCounter)] component KitCounter() { render { ShopCounter(); } }
+[Page("/pay/{pay}")] [AllowAnonymous] component KitPay(Pay pay) { render { ShopPayByLink(pay); } }
+[Page("/bag/back/{link}")] [AllowAnonymous] component KitResumeBag(ResumeBag link) { render { ShopResumeBag(link); } }
+[Page("/download/{link}")] [AllowAnonymous] component KitDownload(DownloadLink link) { render { ShopDownload(link); } }
+[Page("/gift-card")] [AllowAnonymous] component KitGiftCard() { render { ShopGiftCardBalance(); } }
+// The bag page a store has — here only what the visit's bag holds, so a test can see what arrived in it.
+[Page("/bag")] [AllowAnonymous] component KitBag() {
+  string visitId = Visitor.Id;
+  live var bag = Bag.Include(b => b.Lines.Variant.Product).SingleOrDefault(b => b.VisitId == visitId);
+  render {
+    Stack(gap: 2) {
+      Text("The bag");
+      if (bag != null) {
+        foreach (var l in bag.Lines) {
+          Text($"In the bag: {l.Variant.Product.Name} ({l.Variant.Size}) × {l.Quantity} at €{l.PriceWhenAdded:0}");
+        }
+      }
+    }
+  }
+}
+// The checkout's small parts a store places in its own checkout — here alone, for this browser's own visit (a test
+// makes the browser the visit it means with `runas (new Visitor { Id = … })`).
+[Page("/checkout-parts")] [AllowAnonymous] component KitCheckoutParts() {
+  render {
+    Stack(gap: 4) {
+      CheckoutTerms();
+      CheckoutStoreCredit(() => { });
+      CheckoutGiftCard(() => { });
+      CheckoutDigitalConsent();
+    }
+  }
+}
+[Page("/search")] [AllowAnonymous] component KitSearch() { render { ShopSearchPage(); } }
+[Page("/sale")] [AllowAnonymous] component KitSale() { render { ShopSearchPage(onlySale: true); } }
+[Page("/returns-policy")] [AllowAnonymous] component KitReturns() { render { ShopPolicy("returns"); } }

@@ -1,0 +1,32 @@
+// The producer's test project for Osysharp.Shop — an ordinary app that depends on the kit by name, and the smallest
+// shop there is: the kit's model, a subtype for its own fields, and the three lines of wiring every shop writes.
+//
+// ⭐ IT READS THE WORKING TREE: the repository's `osy.workspace` lists `kits/*`, so `use Osysharp.Shop` resolves from
+//    the directory beside this one. ⛔ It does not ship — `tests` in ../package.osy is a setting, not a role.
+app ShopKitTests {
+  model "model/**/*.osy";
+  tests "**/*.test.osy";
+
+  // The kit reads its mail key; the providers the app lists bring their own hosts, which the app grants.
+  use Osysharp.Shop@0 { egress "api.resend.com"; secret "ResendApiKey"; }
+  use Osysharp.Payments@0;
+  use Osysharp.Delivery@0;
+  use Osysharp.Seo@0;
+  // Analytics to Plausible under a reserved domain (model/shop.osy): sales are noted for it, and nothing is ever sent.
+  use Osysharp.Analytics@0 { egress browser "plausible.io"; }
+  use Osysharp.Payments.Klarna@0 { egress "api.klarna.com"; egress "api.playground.klarna.com"; }
+  use Osysharp.Payments.Stripe@0 { egress "api.stripe.com"; }
+  use Osysharp.Resend@0 { egress "api.resend.com"; }
+  // The tests stub `Http.Post`/`Http.Get`, and a stub needs the capability named here.
+  use Osysharp.Http;
+  use Osysharp.Workflow;
+  use Osysharp.Ui;
+  use Osysharp.Storage;
+  use Osysharp.PdfWriter@0;
+  // The store's own mail template (model/mails.osy) is built from the same parts as the kit's.
+  use Osysharp.EmailTemplates@0;
+  // What staff arrange in the mails' regions (model/arranged.osy grants it to the shop's staff).
+  use Osysharp.Blocks;
+  // The letter and the bag reminder go to readers of the store's mailing lists (model/lists.osy).
+  use Osysharp.MailingLists@0;
+}

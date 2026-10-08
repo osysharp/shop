@@ -1,0 +1,322 @@
+// The shop's mail as a customer receives it (D-EMAILTEMPLATES1): a designed HTML mail in the store's theme and a
+// plain-text twin saying the same thing, filled from the order — and a store's own template, where it has one.
+
+using Osysharp.Shop;
+using Osysharp.Blocks;
+
+[Test(Floor)]
+void the_order_confirmation_is_a_designed_mail_with_a_text_twin() {
+  var reference = Buy("v-mail", "Loafer", "39", 1);
+  runas (Desk) {
+    var mail = ShopMail.Single(m => m.Subject.StartsWith($"Your order {reference}"));
+    Assert.NotNull(mail.Html);
+    var html = mail.Html ?? "";
+    // Built from tables, with every style on the element it styles — the only HTML every mail client lays out.
+    Assert.Contains("role=\"presentation\"", html);
+    Assert.DoesNotContain("<script", html);
+    Assert.DoesNotContain("<style", html);
+    Assert.DoesNotContain(" class=", html);
+    // What was ordered, in both halves.
+    foreach (var words in new List<string> { "1 × Loafer (39)", "€120", "IBAN SE00 0000 0000" }) {
+      Assert.Contains(words, html);
+      Assert.Contains(words, mail.Text);
+    }
+    Assert.Contains($"order {reference} is reserved", mail.Text);
+    // The reference never breaks across two lines — on a phone "KT-1041" wrapped as "KT-" / "1041" (measured in Gmail
+    // on an iPhone) — and it is still the same characters, so it copies and searches as itself.
+    Assert.Contains($"order <span style=\"white-space:nowrap;\">{reference}</span> is reserved", html);
+    // Greeted by the first name the customer gave.
+    Assert.Contains("Thank you, Maja<", html);
+    Assert.DoesNotContain("Thank you, Maja Berg", html);
+    // The customer's right of withdrawal travels with the confirmation.
+    Assert.Contains("right of withdrawal", html);
+  }
+}
+
+[Test(Floor)]
+void the_shipped_mail_has_a_button_to_follow_the_parcel() {
+  runas (new Visitor { Id = "v-mail-track" }) {
+    runas (Desk) { Pick("Loafer", "39").WeightGrams = 900; UnitOfWork.Commit(); }
+    Bag("v-mail-track", "Loafer", "39", 1);
+    var reference = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                               "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      MarkPaid(order, "");
+      Workflow.Settle(order);
+      MarkSent(order, "");
+      Workflow.Settle(order);
+      var mail = ShopMail.Single(m => m.Subject.StartsWith($"On its way — order {reference}"));
+      Assert.Contains($"href=\"https://track.example/{reference}\"", mail.Html ?? "");
+      Assert.Contains($"Follow your parcel: https://track.example/{reference}", mail.Text);
+      Assert.Contains($"TRK-{reference}-900", mail.Text);
+    }
+  }
+}
+
+/// ⭐ A STORE'S OWN TEMPLATE REACHES EVERY PLACE THAT MAIL GOES OUT FROM. This app lists `KitTestMails`, which overrides
+/// back-in-stock alone: the stock alert — sent from deep inside a stock adjustment — goes out in the store's words,
+/// while the order mail beside it stays the kit's.
+[Test(Floor)]
+void a_store_can_send_its_own_template_for_one_kind_of_mail() {
+  Buy("v-own", "Chelsea", "38", 1);
+  NotifyMe(Pick("Chelsea", "38"), "own@example.test");
+  runas (Desk) {
+    AdjustStock(Pick("Chelsea", "38"), 2, StockReason.Received, "");
+    var back = ShopMail.Single(m => m.To == "own@example.test");
+    Assert.Equal("Back at Kit Test Shop: Chelsea (38)", back.Subject);
+    Assert.Contains("Good news — it is back", back.Html ?? "");
+    Assert.True(ShopMail.Any(m => m.Subject.StartsWith("Your order") && (m.Html ?? "").Contains("right of withdrawal")));
+  }
+}
+
+/// ⭐ THE RETURN'S QR CODE TRAVELS INSIDE THE MAIL. It has to show at the counter, where a client that blocks remote
+/// pictures (Outlook, by default) would leave a blank square — so the HTML names it by `cid:`, the outbox keeps the
+/// picture beside the mail, and what goes to the provider is an attachment under the SAME content id.
+[Test(Floor)]
+void the_return_code_mail_carries_its_qr_code_inside_itself() {
+  runas (new Visitor { Id = "v-mail-qr" }) {
+    var reference = "";
+    runas (Maja) {
+      Bag("v-mail-qr", "Loafer", "39", 1);
+      reference = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                             "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+    }
+    runas (Desk) { PayAndSend(reference); }
+    runas (Maja) {
+      var ret = ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, "Too big");
+      SendItBack(ret);
+    }
+    runas (Desk) {
+      var mail = ShopMail.Single(m => m.Subject.StartsWith("Sending back your return"));
+      var image = mail.Images.Single();
+      Assert.Equal("image/png", image.ContentType);
+      Assert.Contains($"src=\"cid:{image.ContentId}\"", mail.Html ?? "");
+      // The text twin reads the code out; it has no picture to name.
+      Assert.Contains("CODE-" + reference, mail.Text);
+      Assert.DoesNotContain("cid:", mail.Text);
+      // What the provider is handed: the file's bytes, under the id the HTML names.
+      var files = InlineAttachments(mail);
+      Assert.Equal(1, files.Count);
+      Assert.Equal(image.ContentId, files[0].ContentId);
+      Assert.True(files[0].Content.Length > 0);
+    }
+  }
+}
+
+/// Staff see what a mail looks like for a real order, on the desk, before any customer does — the same template the
+/// shop sends, rendered in a frame of its own.
+[Test(Floor)]
+void the_desk_previews_a_mail_for_a_real_order() {
+  var reference = Buy("v-desk-preview", "Loafer", "38", 1);
+  SignInAsStaff();
+  Ui.Click("Mail");
+  Assert.Visible("What the mail looks like");
+  Ui.Click(reference);
+  Assert.Visible($"Your order {reference} — Kit Test Shop");
+  Ui.Click("On its way");
+  Assert.Visible($"Collected — order {reference} — Kit Test Shop");
+  Ui.Click("Order confirmation");
+  Ui.Shot("desk-mail-preview");
+}
+
+/// The words block of a region's draft — the paragraph the shop greets with.
+Guid WordsOf(Guid draft) {
+  return DraftOf(draft, "en").Blocks.First(b => b.Block == "Osysharp.EmailTemplates.EmailWords").Id;
+}
+
+/// ⭐ STAFF OWN THE WORDS, CODE OWNS THE LAYOUT (D-BLOCKS1 slice 3). The confirmation's words are the words block of its
+/// region: staff write them in a DRAFT nobody is mailed and PUBLISH it; a placeholder the mail does not fill is refused
+/// at that save, by name. The next customer gets the new words, and nothing was deployed. Back to the code's own puts
+/// the template's words back.
+[Test(Floor)]
+void staff_arrange_the_confirmations_words_and_an_unknown_placeholder_is_refused() {
+  var first = Buy("v-words-1", "Loafer", "38", 1);
+  runas (Desk) {
+    var draft = EditRegion(MainVersion().Id, "shop-order-confirmation", "");
+    var words = WordsOf(draft);
+    var refused = SaveBlockValue(words, "en", new BlockValue { Name = "words", Text = "Thanks, {customer.name}! Order {order.referense} is ours to pack." });
+    Assert.Contains("{order.referense} is not a placeholder this mail fills", refused);
+    Assert.Equal("", SaveBlockValue(words, "en", new BlockValue { Name = "words", Text = "Thanks, {customer.name}! Order {order.reference} is ours to pack." }));
+    // A draft reaches nobody.
+    Assert.Contains($"order {first} is reserved", ShopMail.Single(m => m.Subject.StartsWith($"Your order {first}")).Text);
+    Assert.Equal("", PublishRegion(draft));
+  }
+  var second = Buy("v-words-2", "Loafer", "39", 1);
+  runas (Desk) {
+    var mail = ShopMail.Single(m => m.Subject.StartsWith($"Your order {second}"));
+    Assert.Contains($"Thanks, Maja Berg! Order {second} is ours to pack.", mail.Text);
+    ResetRegion(MainVersion().Id, "shop-order-confirmation", "");
+  }
+  var third = Buy("v-words-3", "Chelsea", "38", 1);
+  runas (Desk) {
+    Assert.Contains($"order {third} is reserved", ShopMail.Single(m => m.Subject.StartsWith($"Your order {third}")).Text);
+  }
+}
+
+/// The order's lines are a block the confirmation KEEPS: staff may move them, place a quote beside them, never take them
+/// out — they are what the customer must be told they bought.
+[Test(Floor)]
+void staff_place_a_quote_beside_the_order_and_cannot_take_the_order_out() {
+  var reference = Buy("v-arrange", "Loafer", "38", 1);
+  runas (Desk) {
+    var draft = EditRegion(MainVersion().Id, "shop-order-confirmation", "");
+    var lines = DraftOf(draft, "en").Blocks.Single(b => b.Block == "Osysharp.Shop.ShopMailOrderLines");
+    Assert.True(lines.Kept);
+    Assert.Throws(() => RemoveBlock(lines.Id));
+    var quote = AddBlock(draft, "Osysharp.EmailTemplates.EmailQuote", 2);
+    Assert.Equal("", SaveBlockValue(quote, "en", new BlockValue { Name = "quote", Text = "Worn every day since, {customer.firstname}?" }));
+    Assert.Equal("", PublishRegion(draft));
+    var text = ShopMailPreview("confirmation", Order.Single(o => o.Reference == reference).Id).Text;
+    Assert.Contains("Worn every day since, Maja?", text);
+    Assert.True(text.IndexOf("1 × Loafer (38)") < text.IndexOf("Worn every day since"));
+    Assert.Contains("right of withdrawal", text);
+  }
+}
+
+/// ⭐ STAFF'S WORDS ARE KEPT PER LANGUAGE (D-I18N1). A mail is in the language its customer shopped in, and it says the
+/// words staff published in THAT language — a Swedish order the Swedish words, an English order the English — and a
+/// language staff wrote nothing in says the template's own words, translated: never the other language's.
+[Test(Floor)]
+void a_swedish_order_says_the_swedish_words_and_an_english_order_the_english() {
+  var english = Buy("v-lang-en", "Loafer", "38", 1);
+  var swedish = Buy("v-lang-sv", "Loafer", "39", 1);
+  runas (Desk) {
+    var en = Order.Single(o => o.Reference == english);
+    var sv = Order.Single(o => o.Reference == swedish);
+    sv.Language = "sv";
+    UnitOfWork.Commit();
+
+    var draft = EditRegion(MainVersion().Id, "shop-order-confirmation", "");
+    var words = WordsOf(draft);
+    Assert.Equal("", SaveBlockValue(words, "en", new BlockValue { Name = "words", Text = "Thanks! Order {order.reference} is ours to pack." }));
+    Assert.Equal("", SaveBlockValue(words, "sv", new BlockValue { Name = "words", Text = "Tack! Order {order.reference} packas nu." }));
+    Assert.Equal("", PublishRegion(draft));
+
+    // Each order's own mail — the recipient's language, with no language named.
+    var toSwede = ShopMailPreview("confirmation", sv.Id);
+    Assert.Contains($"Tack! Order {swedish} packas nu.", toSwede.Text);
+    Assert.DoesNotContain("ours to pack", toSwede.Text);
+    Assert.StartsWith($"Din order {swedish}", toSwede.Subject);
+    // The words the mail's HELPERS write are the recipient's language too — the right of withdrawal above all.
+    Assert.Contains("Din ångerrätt", toSwede.Text);
+    Assert.DoesNotContain("right of withdrawal", toSwede.Text);
+    Assert.DoesNotContain("Of which VAT", toSwede.Text);
+    var toBrit = ShopMailPreview("confirmation", en.Id);
+    Assert.Contains($"Thanks! Order {english} is ours to pack.", toBrit.Text);
+    Assert.DoesNotContain("packas", toBrit.Text);
+
+    // Back to the code's own: a Swedish order says the template's words, in Swedish.
+    ResetRegion(MainVersion().Id, "shop-order-confirmation", "");
+    var reset = ShopMailPreview("confirmation", sv.Id);
+    Assert.Contains($"Din order {swedish} är reserverad åt dig.", reset.Text);
+    Assert.DoesNotContain("packas nu", reset.Text);
+  }
+}
+
+/// ⛔ ONE LANGUAGE'S WORDS NEVER REACH ANOTHER'S READER, on a real send too: staff changed the collected mail's words in
+/// English only, and the Swedish customer's mail — sent from the order's own workflow — says the Swedish default.
+[Test(Floor)]
+void words_saved_in_english_only_never_reach_a_swedish_customer() {
+  var swedish = Buy("v-lang-sv-sent", "Loafer", "39", 1);
+  var english = Buy("v-lang-en-sent", "Loafer", "38", 1);
+  runas (Desk) {
+    var sv = Order.Single(o => o.Reference == swedish);
+    sv.Language = "sv";
+    UnitOfWork.Commit();
+    var draft = EditRegion(MainVersion().Id, "shop-collected", "");
+    Assert.Equal("", SaveBlockValue(WordsOf(draft), "en", new BlockValue { Name = "words", Text = "Order {order.reference} is yours. Brew well!" }));
+    Assert.Equal("", PublishRegion(draft));
+    PayAndSend(swedish);
+    PayAndSend(english);
+    var toSwede = ShopMail.Single(m => m.Subject.StartsWith($"Hämtad: order {swedish}"));
+    Assert.Contains($"Order {swedish} har hämtats. Njut!", toSwede.Text);
+    Assert.DoesNotContain("Brew well", toSwede.Text);
+    var toBrit = ShopMail.Single(m => m.Subject.StartsWith($"Collected — order {english}"));
+    Assert.Contains($"Order {english} is yours. Brew well!", toBrit.Text);
+  }
+}
+
+/// ⛔ A PREVIEW IS NEVER SENT. A member of staff previewing a draft of the confirmation sees it in the mail — and a mail
+/// rendered then is refused by the outbox, so an order marked sent mid-preview cannot mail the draft to a customer.
+[Test(Floor)]
+void a_mail_rendered_while_staff_preview_is_never_sent() {
+  var reference = Buy("v-preview", "Loafer", "38", 1);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    var draft = EditRegion(MainVersion().Id, "shop-order-confirmation", "");
+    Assert.Equal("", SaveBlockValue(WordsOf(draft), "en", new BlockValue { Name = "words", Text = "A Christmas draft for {customer.firstname}." }));
+    StartSitePreview(MainVersion().Id, null, true);
+    var previewed = ShopOrderConfirmation(order);
+    Assert.True(previewed.IsPreview);
+    Assert.Contains("A Christmas draft for Maja.", previewed.Text);
+    var before = ShopMail.Count();
+    Assert.Throws(() => Mail("maja@example.test", previewed));
+    Assert.Equal(before, ShopMail.Count());
+    StopSitePreview();
+    var live = ShopOrderConfirmation(order);
+    Assert.False(live.IsPreview);
+    Assert.DoesNotContain("A Christmas draft", live.Text);
+  }
+}
+
+/// ⭐ NOTHING A SHOP WROTE BEFORE IS LOST. The words staff published into the old mails — and the ones still being
+/// written — move onto the mails' regions, in each language, the first time the desk opens; then the old tables are
+/// empty.
+[Test(Floor)]
+void the_words_staff_wrote_before_the_regions_move_onto_them() {
+  var reference = Buy("v-move", "Loafer", "38", 1);
+  runas (Desk) {
+    new ShopMailWords { Template = "Osysharp.Shop.ShopOrderConfirmation", Part = "Intro", Language = "en",
+                        Words = "Thanks, {customer.firstname}! Order {order.reference} is ours to pack.", UpdatedAt = DateTime.UtcNow };
+    new ShopMailWords { Template = "Osysharp.Shop.ShopOrderConfirmation", Part = "Intro", Language = "sv",
+                        Words = "Tack, {customer.firstname}! Order {order.reference} packas nu.", UpdatedAt = DateTime.UtcNow };
+    new ShopMailWords { Template = "Osysharp.Shop.ShopShipped", Part = "Collected", Language = "en",
+                        Words = "Collected — brew well!", UpdatedAt = DateTime.UtcNow };
+    UnitOfWork.Commit();
+    var unfinished = new ShopMailDraft { Template = "Osysharp.Shop.ShopRefunded", Part = "Intro", Language = "en" };
+    UnitOfWork.Commit();
+    unfinished.Body = "Sorry, {customer.firstname} — here is your money.";
+    UnitOfWork.Commit();
+
+    Assert.Equal(3, MoveShopMailWordsOntoBlocks());
+    Assert.Equal(0, ShopMailWords.Count());
+    Assert.Equal(0, ShopMailDraft.Count());
+    Assert.Equal(0, MoveShopMailWordsOntoBlocks());
+
+    var order = Order.Single(o => o.Reference == reference);
+    Assert.Contains($"Thanks, Maja! Order {reference} is ours to pack.", ShopMailPreview("confirmation", order.Id).Text);
+    Assert.Contains($"Tack, Maja! Order {reference} packas nu.", ShopMailPreview("confirmation", order.Id, "sv").Text);
+    Assert.Contains("Collected — brew well!", ShopMailPreview("shipped", order.Id).Text);
+    // The unfinished words wait in a draft — not in what a customer is sent.
+    Assert.DoesNotContain("here is your money", ShopMailPreview("refunded", order.Id).Text);
+    var draft = RegionArrangement.Single(a => a.Region == "shop-refunded" && a.Stage == ArrangementStage.Draft);
+    Assert.Contains("here is your money", string.Join(" ", DraftOf(draft.Id, "en").Blocks.SelectMany(b => b.Values).Select(v => v.Text ?? "")));
+  }
+}
+
+/// The desk previews each mail in any language the shop speaks — the words each language's customers get.
+[Test(Floor)]
+void the_desk_previews_a_mail_in_swedish() {
+  var reference = Buy("v-words-sv", "Loafer", "38", 1);
+  SignInAsStaff();
+  Ui.Click("Mail");
+  Ui.Click(reference);
+  Assert.Visible($"Your order {reference}");
+  Ui.Click("SV", within: "Mail language");
+  Assert.Visible($"Din order {reference}");
+  Ui.Shot("desk-mail-preview-swedish");
+}
+
+/// What the confirmation LOOKS like — under `osy test --pixels` it is photographed into `osy-shots/`.
+[Test(Floor)]
+void the_order_confirmation_is_photographed() {
+  var reference = Buy("v-mail-shot", "Loafer", "38", 2);
+  // Rendered as staff, who may read the order's contact — then photographed outside the `runas`, where a test drives.
+  var mail = new RenderedEmail("", "");
+  runas (Desk) { mail = ShopOrderConfirmation(Order.Single(o => o.Reference == reference)); }
+  Ui.Shot("shop-order-confirmation", mail);
+  // …and the same mail in Swedish, as a Swedish customer gets it.
+  runas (Desk) { mail = ShopOrderConfirmation(Order.Single(o => o.Reference == reference), language: "sv"); }
+  Ui.Shot("shop-order-confirmation-swedish", mail);
+}

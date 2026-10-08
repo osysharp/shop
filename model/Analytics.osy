@@ -1,0 +1,64 @@
+// What the shop tells the store's analytics (`Osysharp.Analytics`): which page is a product and which the checkout, and
+// which of this visit's orders are sales to report. A store puts `ShopAnalytics()` in its frame once and writes nothing
+// else — the events come from the shop's own rows (see ui/Analytics.osy).
+//
+// ⚑ A SALE IS REPORTED FROM THE ORDER, NOT FROM A THANK-YOU PAGE. A thank-you page can be reloaded, bookmarked, or never
+//   reached (the customer closes the tab at Stripe's page, and Stripe's webhook pays the order anyway). So placing an
+//   order with analytics on leaves a `ShopPurchaseReport` for the visit that placed it; the store's frame reports it as
+//   `purchase` once the order is paid — at once, for a way to pay with no page to go to (a bank transfer, the counter) —
+//   and the row is gone when it has been. The browser remembers it too, so a reload racing the delete sends nothing.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Analytics;
+
+/// A sale waiting to be reported to the store's analytics, by the browser of the visit that made it.
+public entity ShopPurchaseReport {
+  [Required] Order Order;
+  [Required, MaxLength(64)] string VisitId;
+  /// Paid on a provider's page (Stripe, Klarna): reported once the order is paid, not when it is placed.
+  bool WaitForPayment = false;
+  // A visit's own (SECURITY-INVARIANT(a-guest-row-is-its-visits)): written as its order is placed, read and cleared by
+  // the browser of that visit, whose frame reports the sale — and by no other visitor.
+  security {
+    allow read, create, delete when IsAnonymous || IsAuthenticated where VisitId == Visitor.Id;
+    allow read, create, delete when IsShopStaff;
+  }
+}
+
+/// Where the store's pages are, and its currency — what the frame's analytics needs to name a page's events.
+public class ShopAnalyticsSetup {
+  public string ProductPath = "";
+  public string CheckoutPath = "";
+  public string Currency = "";
+}
+
+[AllowAnonymous]
+public ShopAnalyticsSetup ShopAnalyticsPaths() {
+  var setup = App.Setting<ShopSetup>();
+  return new ShopAnalyticsSetup { ProductPath = setup.ProductPath, CheckoutPath = setup.CheckoutPath, Currency = TheShop().Currency };
+}
+
+/// Leaves the sale to be reported — when the app has analytics at all. Called as the order is placed.
+void NoteSaleForAnalytics(Order order, bool waitForPayment) {
+  var visitId = Visitor.Id;
+  if (App.Setting<AnalyticsSetup>().Provider == AnalyticsProvider.None || visitId == null || visitId == "") { return; }
+  new ShopPurchaseReport { Order = order, VisitId = visitId, WaitForPayment = waitForPayment };
+  UnitOfWork.Commit();
+}
+
+/// A sale nobody came back for (a payment page abandoned, a browser never reopened) is let go after a month. Swept by
+/// the order's workflow, as the shop: a visitor can clear only its own visit's reports, so the sweep that reaches every
+/// visit's cannot be one it runs.
+void ForgetStalePurchaseReports() {
+  var cutoff = DateTime.UtcNow.AddDays(-30);
+  foreach (var old in ShopPurchaseReport.Where(r => r.CreatedAt < cutoff).Take(20).ToList()) { old.Delete(); }
+}
+
+/// The store's frame has reported this visit's sale — it is not offered again.
+[AllowAnonymous]
+public void ShopPurchaseReported(string reference) {
+  var visitId = Visitor.Id;
+  foreach (var r in ShopPurchaseReport.Where(r => r.VisitId == visitId && r.Order.Reference == reference).ToList()) { r.Delete(); }
+  UnitOfWork.Commit();
+}

@@ -1,0 +1,51 @@
+// Staff and packers, and the shop told about its orders.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Floor)]
+void a_packer_gets_an_order_out_of_the_door_and_touches_no_money() {
+  runas (new Visitor { Id = "v-pack" }) {
+    Bag("v-pack", "Loafer", "39", 1);
+    var reference = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                               "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+    runas (Packer) {
+      var order = Order.Single(o => o.Reference == reference);
+      Assert.Throws<Exception>(() => MarkPaid(order, ""));                  // taking money is staff's
+    }
+    runas (Desk) { var o = Order.Single(x => x.Reference == reference); MarkPaid(o, ""); Workflow.Settle(o); }
+    runas (Packer) {
+      var order = Order.Single(o => o.Reference == reference);
+      Assert.Equal("Storgatan 1", order.Contact.Single().Street);           // the address, to ship to
+      StartPicking(order);   Workflow.Settle(order);
+      MarkPacked(order);     Workflow.Settle(order);
+      Assert.NotEqual("", MarkSent(order, ""));                             // books the carrier, answers the label
+      Workflow.Settle(order);
+      Assert.Equal(OrderStatus.Fulfilled, order.Status);
+      Assert.NotNull(order.TrackingUrl);
+      Assert.Throws<Exception>(() => RefundOrder(order, "no", true));       // giving money back is staff's
+      Assert.Throws<Exception>(() => { order.Total = 1m; UnitOfWork.Commit(); });   // …and so is a price
+      Assert.False(IsStaffMember());
+    }
+    runas (Desk) { Assert.True(IsStaffMember()); }
+  }
+}
+
+[Test(Floor)]
+void the_shop_is_told_of_a_new_order_and_again_when_it_is_paid() {
+  runas (Desk) { var shop = TheShop(); shop.OrderAlertEmail = "orders@shop.test"; UnitOfWork.Commit(); }
+  var reference = Buy("v-alert", "Loafer", "38", 1);
+  runas (Desk) {
+    Assert.True(ShopMail.Any(m => m.To == "orders@shop.test" && m.Subject.StartsWith($"New order {reference}")));
+    var order = Order.Single(o => o.Reference == reference);
+    MarkPaid(order, "");
+    Workflow.Settle(order);
+    Assert.True(ShopMail.Any(m => m.To == "orders@shop.test" && m.Subject.StartsWith($"Paid — {reference} is ready to pick")));
+  }
+}
+
+[Test(Floor)]
+void a_shop_without_an_alert_address_mails_nobody() {
+  var reference = Buy("v-no-alert", "Loafer", "38", 1);
+  runas (Desk) { Assert.False(ShopMail.Any(m => m.Subject.StartsWith($"New order {reference}"))); }
+}

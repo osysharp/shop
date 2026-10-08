@@ -1,0 +1,1734 @@
+// Orders. A visitor places the bag as an order, receives it one of the ways the app offers and pays one of the ways it
+// offers — both are providers the app lists in `app.Shop` (see Setup.osy).
+//
+// ⚑ THE ORDER'S WORKFLOW TAKES THE STOCK. An order is committed first and its workflow then DECIDES (`Placed`): if
+//   every line's stock is still there it takes it and the order is `Reserved`; if not, the order is `Unavailable` and
+//   says what ran out. The workflow writes as the system, which is what lets an anonymous visitor's order take stock
+//   the visitor could never write — and `Variant.Stock`'s `[ConcurrencyCheck]` makes two orders racing for the last
+//   one meet, so the second is retried and finds it gone. `PlaceOrder` reads the outcome on the line after its commit.
+//
+// ⚑ THE ORDER CARRIES NO PERSONAL DATA, and that split is what lets a visitor see their own receipt. An order is a
+//   reference, amounts, a status and its lines. WHO placed it lives in `OrderContact`, which only staff read.
+//
+// ⚑ AND AN ORDER IS READ THROUGH ITS LINK, NEVER BY ITS REFERENCE (D-ORDERLINK1). A reference is printed on parcels,
+//   read out on the phone and counts up by one, so it proves nothing. An order is read by the account it was placed
+//   from, by the visit that placed it, by staff and packers — and by whoever holds an `OrderLink` to it: the signed
+//   link every order mail, the paid page and the receipt carry.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Delivery;
+using Osysharp.Payments;
+using Osysharp.Workflow;
+using Osysharp.Blocks;
+
+Counter OrderNumber = new() { Start = 1040 };
+
+public enum Fulfilment {
+  [Label("Collect")] Collect,
+  [Label("Delivery")] Deliver,
+  /// Nothing ships — a plan, a licence: the order is delivered the moment it is paid.
+  [Label("Nothing to ship")] Digital,
+}
+
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum OrderStatus {
+  [Label("Placed")] Placed,
+  [Label("Reserved")] Reserved,
+  [Label("Unavailable")] Unavailable,
+  [Label("Paid")] Paid,
+  [Label("Sent")] Fulfilled,
+  [Label("Lapsed")] Lapsed,
+  [Label("Cancelled")] Cancelled,
+  [Label("Refund requested")] RefundRequested,
+  [Label("Refund processing")] RefundProcessing,
+  [Label("Refunded")] Refunded,
+  [Label("Voided")] Voided,
+  [Label("Being picked")] Picking,
+  [Label("Packed")] Packed,
+  [Label("Delivered")] Delivered,
+}
+
+public entity Order {
+  [Counter(OrderNumber)] int Number;
+  /// What the customer quotes — the shop's prefix and the number. Unique: a payment finds its order by it.
+  [Unique, MaxLength(24)] string Reference;
+  /// Collected or delivered — whether the chosen delivery needs the customer's address.
+  [Required] Fulfilment Fulfilment;
+  /// The delivery the customer chose — its provider's key, and the option's id when a provider offers several.
+  [Required, MaxLength(80)] string DeliveryMethod;
+  [MaxLength(120)] string? DeliveryLabel;
+  /// The key of the payment provider the customer chose ("stripe", "banktransfer") — what a refund goes back through.
+  [Required, MaxLength(40)] string PaymentMethod;
+  [MaxLength(80)] string? PaymentLabel;
+  /// The language the customer shopped in (`sv`) — every mail about this order is written in it, whoever sends it
+  /// (D-I18N1). Null for an order taken on the desk: its mails go out in the language of the person sending them.
+  [MaxLength(35)] string? Language;
+  /// How to pay, for a payment with no page to go to — a bank transfer's details. Sent in the confirmation.
+  [MaxLength(1000)] string? PayInstructions;
+  /// The currency every amount of it is in — ISO 4217 — when the customer bought in one the shop SELLS in besides its
+  /// own (Currencies.osy). Null: the shop's own. Its invoice, credit notes, payment and refunds are in it too.
+  [MaxLength(3)] string? Currency;
+  /// How many of `Currency` one unit of the shop's own bought the day it was placed, and whose rate — what its prices
+  /// were converted at. 1 for an order in the shop's own currency. Its invoice records the rate of the day it was paid.
+  [Precision(18, 8)] decimal Rate = 1;
+  DateTime? RateDate;
+  [MaxLength(80)] string? RateSource;
+  decimal Subtotal;
+  /// What the shop's add-ons took off the goods — a code, points (see `Adjustments`).
+  decimal Discount;
+  decimal Delivery;
+  decimal Total;
+  /// Copied from the shop when the order is placed, so changing the setting later does not move a live hold.
+  int HoldDays = 3;
+  DateTime PlacedAt;
+  OrderStatus Status;                                // no default — OrderLifecycle owns it
+  /// Why the order could not go through (`Unavailable`), in a sentence for the customer.
+  [MaxLength(400)] string? Problem;
+  [MaxLength(40)] string? PaidWith;
+  DateTime? PaidAt;
+  /// When staff started picking it, packed it, and when it arrived (collected, or the carrier says so).
+  DateTime? PickingAt;
+  DateTime? PackedAt;
+  DateTime? FulfilledAt;
+  DateTime? DeliveredAt;
+  /// The courier's tracking number, or how it was handed over.
+  [MaxLength(120)] string? Tracking;
+  /// Where the customer follows the parcel — the carrier's link, when a carrier booked it.
+  [MaxLength(400)] string? TrackingUrl;
+  /// The carrier's label, kept private (a signed link hands it to staff) — see LabelLink.
+  [MaxLength(200)] string? LabelPath;
+  /// When a payment its provider only authorised was captured — so a retried send never captures twice.
+  DateTime? CapturedAt;
+  [MaxLength(300)] string? CancelReason;
+  /// The provider's id for the payment — what a capture and a refund are made against, and how the provider's refund
+  /// events find this order again. Null for a payment staff marked as received.
+  [MaxLength(80), Unique] string? PaymentRef;
+  [MaxLength(80)] string? RefundRef;
+  [MaxLength(300)] string? RefundReason;
+  [MaxLength(300)] string? RefundProblem;
+  /// Whether a refund puts the goods back in stock — true when they came back, false when they did not.
+  bool RestockOnRefund = true;
+  /// The account it was placed from — null for a guest. What puts it in the customer's order history.
+  ShopAccount? Account;
+  /// The visit (browser) that placed it — so a guest reads their own order on the page they placed it from, without a
+  /// link (D-GUESTROWS1). Null for an order the shop placed (the desk, a renewal).
+  [MaxLength(64)] string? VisitId;
+  /// Its products are on the "bought together" tally (Related.osy) — counted when paid, taken off when given back; so a
+  /// recount, or a second event, never counts it twice.
+  bool CountedTogether = false;
+  /// The customer asked to keep the way they pay, for charges they are not there for — a subscription's renewals.
+  bool SaveMethod = false;
+  /// The age the goods needed and the buyer was checked to (0: none) — the parcel is handed over against ID proving it.
+  int AgeChecked = 0;
+  /// Who PROVED that age — the identity provider's name ("BankID") and when — or null when the buyer declared a date
+  /// of birth, and whoever hands the goods over checks ID. A verified order keeps no date of birth (AgeChecks.osy).
+  [MaxLength(60)] string? AgeVerifiedBy;
+  DateTime? AgeVerifiedAt;
+  /// When the customer accepted the terms, and which text (`TermsVersion`) — kept with the order, as the law asks.
+  DateTime? TermsAcceptedAt;
+  [MaxLength(16)] string? TermsVersion;
+  /// Sold without VAT to a business in another EU country, which accounts for it (reverse charge) — its VAT number.
+  bool ReverseCharge = false;
+  /// Delivered outside the shop's customs area, so sold without its VAT (art. 146 for an EU shop).
+  bool Exported = false;
+  [MaxLength(20)] string? BuyerVatNumber;
+  [MaxLength(200)] string? BuyerCompany;
+  /// The VAT part of the total, at the shop's rate when the order was placed.
+  decimal Vat;
+  /// Paid from the customer's store credit (StoreCredit.osy) — a means of payment, not money off: the VAT is on the
+  /// whole total. Taken by the order's workflow as it takes the stock (`CreditTaken`), given back if the order is
+  /// called off or refunded (`CreditReturned`). What a provider is asked for is `AmountDue`.
+  decimal CreditUsed = 0;
+  bool CreditTaken = false;
+  decimal CreditReturned = 0;
+  /// The store credit was not there when the order was placed — why it is `Unavailable`.
+  bool CreditShort = false;
+  /// Paid with gift cards (GiftCards.osy) — a means of payment like store credit: the VAT is on the whole price of the
+  /// goods. Taken by the order's workflow from the cards on the bag it was placed from (`GiftCardTaken`, and an
+  /// `OrderGiftCard` per card), given back to them if the order is called off or refunded (`GiftCardReturned`).
+  decimal GiftCardUsed = 0;
+  bool GiftCardTaken = false;
+  decimal GiftCardReturned = 0;
+  /// A gift card did not hold what it did at the checkout — why it is `Unavailable`.
+  bool GiftCardShort = false;
+  /// Of `Total`, what is gift cards SOLD — vouchers, and no revenue until they are spent; the books keep it as money
+  /// owed (GiftCards.osy). A multi-purpose card carries no VAT and is left out of the order's VAT rows.
+  decimal GiftCardsSold = 0;
+  /// The cards were sold as SINGLE-purpose vouchers (`ShopSettings.GiftCardsAreSinglePurpose` when the order was
+  /// placed): their VAT, `GiftCardsSoldVat`, is due on this sale and is in the order's VAT rows.
+  bool GiftCardsSinglePurpose = false;
+  decimal GiftCardsSoldVat = 0;
+  /// Of `GiftCardUsed`, what single-purpose cards paid — goods whose VAT was paid when those cards were sold, so it is
+  /// out of the order's VAT rows — and that VAT (`VoucherVat`), which the books take out of what the cards owed.
+  decimal SinglePurposeUsed = 0;
+  decimal VoucherVat = 0;
+  /// When the customer agreed to have the files in this order at once, knowing they lose the right to withdraw from
+  /// buying them (Downloads.osy) — null for an order with no files.
+  DateTime? DigitalConsentAt;
+  /// For an exchange's replacement: the order whose goods are coming back for these (`ExchangeItem`), and — once they
+  /// arrived — what they were worth, set against this order (`AmountDue`).
+  Order? ExchangeFor;
+  decimal ExchangeCredit = 0;
+  /// The bag it was placed from — what the order's workflow prices again (`PriceProblem`). Cleared when the bag goes.
+  Bag? PlacedFrom;
+  /// On invoice terms (Wholesale.osy): the days the customer has to pay, and the day the invoice is due — set by its
+  /// workflow when a wholesale account orders to pay by invoice. The goods go out before it is paid; `PaidAt` is set
+  /// when staff record the money (`MarkInvoicePaid`).
+  int PaymentTermsDays = 0;
+  DateTime? InvoiceDueAt;
+  /// Where it is picked from (Locations.osy) — chosen by its workflow, as the shop, when it is placed: the counter it
+  /// is collected at, or the first shipping location that holds it all. Null for a shop without locations.
+  StockLocation? Location;
+  /// Placed by the shop itself — staff at the desk, a subscription's renewal, an exchange staff arranged — so its price
+  /// is not worked out again. Only staff, or the shop's own workflows, may write one (see the create rule).
+  bool PlacedByShop = false;
+  /// Its lines or figures were not the shop's price for the bag it came from — why it is `Unavailable`.
+  bool Mispriced = false;
+  /// Sold at a shop's counter (Counter.osy): rung up by `SoldBy` at the counter of `SoldAt` (null: a shop without
+  /// locations), paid there and handed over the moment it is paid. Priced again by its workflow like any customer's.
+  bool AtCounter = false;
+  StockLocation? SoldAt;
+  ShopAccount? SoldBy;
+  [ForeignKey(Order)] OrderLine[] Lines;
+  [ForeignKey(Order)] OrderAdjustment[] Adjustments;
+  [ForeignKey(Order)] OrderVat[] VatRates;
+  [ForeignKey(Order)] OrderContact[] Contact;        // exactly one — staff's (and a packer's) to read
+  /// The gift cards that paid it, card by card — written by its workflow.
+  [ForeignKey(Order)] OrderGiftCard[] GiftCards;
+  security {
+    // SECURITY-INVARIANT(an-order-reads-through-its-link): an order is read by the account it was placed from, by the
+    //   visit that placed it, by staff and packers (`IsShopPacker` holds for staff too), and by whoever holds a signed
+    //   link to THAT order — `OrderLink` (the receipt, the paid page, every order mail) or `Pay` (a payment link) — and
+    //   by nobody else: a reference opens nothing, and no visitor lists orders. Its lines, VAT rows, adjustments and
+    //   gift-card payments carry the same rule through `Order`. Failure mode: any caller lists every order — what was
+    //   bought, when, for how much, and its status. Guarded by order-link.test.osy
+    //   a_stranger_with_the_reference_reads_nothing_and_lists_no_orders and the_link_reads_its_own_order_and_no_other.
+    // SECURITY-INVARIANT(a-packer-sees-only-their-locations-orders): a packer limited to a location
+    //   (`ShopRoleGrant.Location`) reads the orders picked there — and through them their lines, contact and address —
+    //   and no other location's; `PacksAt` holds for staff and for an unlimited packer as `IsShopPacker` did. Failure
+    //   mode: a pop-up's temporary packer reads every customer's name and address the shop has. Guarded by
+    //   locations.test.osy a_packer_limited_to_a_location_sees_only_its_orders.
+    // SECURITY-INVARIANT(a-counter-sees-only-its-own-counters-collections): a counter clerk reads the orders handed over
+    //   at their counter — its sales and the web's collections there (`SellsAt(Location)`, collected) — and through them
+    //   the lines and the collector's contact; never a parcel's order, nor another counter's. Failure mode: a clerk at a
+    //   pop-up reads every customer's name and address. Guarded by counter.test.osy a_clerk_sells_only_at_their_own_counter.
+    allow read when IsAnonymous || IsAuthenticated
+      where Account == user || VisitId == Visitor.Id || Id == OrderLink.Row || Id == Pay.Row;
+    allow read when IsShopPacker where PacksAt(Location);
+    allow read when IsShopCounter where SellsAt(Location) && Fulfilment == Fulfilment.Collect;
+    // SECURITY-INVARIANT(store-credit-spent-only-by-its-owner): an order is placed for the account of whoever places it
+    //   (or by staff) — a visitor naming somebody else's account on an order would otherwise spend that account's
+    //   credit, since the order's workflow takes it as the system, and put the order in their history. What goods sent
+    //   back are worth is set against an order by staff alone, when the parcel arrives. Guarded by
+    //   store-credit.test.osy nobody_spends_another_customers_credit.
+    // SECURITY-INVARIANT(an-order-starts-unpaid): an order a customer writes starts where every order starts — not
+    //   paid, holding no store credit, not placed as the shop — and an exchange's replacement is for one of their own
+    //   orders. The workflow writes those fields as the order moves; written at creation, cancelling an order that says
+    //   it took credit would give back credit it never took, and one "placed by the shop" would skip its price check.
+    //   Nor on invoice terms: those are the workflow's to give a wholesale account (Wholesale.osy).
+    //   Guarded by order-pricing.test.osy a_customer_cannot_write_an_order_that_is_already_paid_or_holds_credit and
+    //   wholesale.test.osy a_customer_cannot_write_their_own_invoice_terms.
+    allow create when IsShopStaff;
+    allow create when IsAnonymous || IsAuthenticated
+      where (Account == null || Account == user) && !PlacedByShop && ExchangeCredit == 0 && CreditUsed >= 0
+             && !CreditTaken && CreditReturned == 0 && GiftCardUsed >= 0 && !GiftCardTaken && GiftCardReturned == 0
+             && PaidAt == null && PaymentRef == null && CapturedAt == null
+             && RefundRef == null && InvoiceDueAt == null && PaymentTermsDays == 0
+             && (ExchangeFor == null || (Account != null && ExchangeFor.Account == Account))
+             // A counter sale is rung up by a clerk of that counter, as themselves (Counter.osy).
+             && (!AtCounter || SellsAt(SoldAt) && SoldBy == user);
+    allow update when IsShopStaff;
+  }
+}
+
+/// The VAT in an order at one rate — what a receipt, an invoice and the bookkeeping export state per rate. Delivery
+/// and discounts are shared out over the rates in proportion to the goods, as delivery follows the goods it carries.
+public entity OrderVat {
+  [Required] Order Order;
+  decimal Percent;
+  /// Whose VAT it is — the shop's home country, or the destination's under OSS. What the OSS return is filed by.
+  [MaxLength(2)] string? Country;
+  /// What was paid at this rate, VAT included.
+  decimal Gross;
+  decimal Vat;
+  security {
+    // SECURITY-INVARIANT(an-order-reads-through-its-link): its order's readers, and nobody else.
+    allow read when IsAnonymous || IsAuthenticated
+      where Order.Account == user
+         || Order.VisitId == Visitor.Id
+         || Order == OrderLink.Row
+         || Order == Pay.Row;
+    allow read when IsShopPacker where PacksAt(Order.Location);
+    allow read when IsShopCounter where SellsAt(Order.Location) && Order.Fulfilment == Fulfilment.Collect;
+    allow create when IsAnonymous || IsAuthenticated where Order.Status == OrderStatus.Placed && (Order.Account == null || Order.Account == user);
+    allow create when IsShopStaff;
+    allow update, delete when IsShopStaff;
+  }
+}
+
+/// The rate a product's price includes, at the shop's current rates.
+public decimal VatRateOf(Product product, ShopSettings shop) {
+  // A gift card is a voucher: no VAT when it is sold — its goods carry theirs when it is spent.
+  if (product.IsGiftCard) { return 0m; }
+  return product.Vat == VatClass.Reduced ? shop.VatReducedPercent
+       : product.Vat == VatClass.Lower ? shop.VatLowerPercent
+       : product.Vat == VatClass.Exempt ? 0m
+       : shop.VatPercent;
+}
+
+/// What a bag costs at one VAT rate: its goods, its share of delivery and of any discount, and the VAT in that.
+public class RateShare {
+  public decimal Percent = 0;
+  public decimal Goods = 0;
+  public decimal Delivery = 0;
+  public decimal Discount = 0;
+  /// Of the goods at this rate, what single-purpose gift cards pay — its VAT was paid when the cards were sold.
+  public decimal Voucher = 0;
+  /// Single-purpose gift cards sold at this rate.
+  public decimal Cards = 0;
+  /// What is paid at this rate, VAT included.
+  public decimal Gross = 0;
+  public decimal Vat = 0;
+}
+
+/// A bag priced per VAT rate — delivery and discount shared over the rates in proportion to the goods, to the cent.
+/// The ONE computation behind the checkout's quote and the order's VAT, so the two cannot disagree.
+public List<RateShare> RateShares(Bag bag, decimal delivery, decimal discount, ShopSettings shop, string country) {
+  List<RateShare> shares = [];
+  // A gift card is a voucher, not goods: no VAT, and no share of delivery or of a discount.
+  foreach (var l in bag.Lines.Where(x => !x.Variant.Product.IsGiftCard)) {
+    var r = VatRateFor(l.Variant.Product, shop, country);
+    var share = shares.FirstOrDefault(x => x.Percent == r);
+    if (share == null) { share = new RateShare { Percent = r }; shares.Add(share); }
+    share.Goods = share.Goods + LinePrice(l) * l.Quantity;
+  }
+  var goods = shares.Select(x => x.Goods).ToList();
+  var deliveryShares = Share(delivery, goods);
+  var discountShares = Share(discount, goods);
+  for (var i = 0; i < shares.Count; i = i + 1) {
+    var s = shares[i];
+    s.Delivery = deliveryShares[i];
+    s.Discount = discountShares[i];
+    s.Gross = s.Goods + s.Delivery - s.Discount;
+    s.Vat = s.Percent <= 0 ? 0m : Math.Round(s.Gross * s.Percent / (100 + s.Percent), 2, MidpointRounding.AwayFromZero);
+  }
+  return shares;
+}
+
+/// The VAT an order OWES, per rate: its goods' shares (`RateShares`), less what single-purpose gift cards pay of them
+/// (`singlePurposePaid`, shared over the rates as the goods are) — their VAT was due when those cards were sold, and is
+/// not due twice (VAT Directive art. 30b(1)) — plus the single-purpose cards SOLD in it, at the rate they are sold at.
+/// The one computation behind the checkout's VAT and the order's VAT rows.
+public List<RateShare> VatDue(Bag bag, decimal delivery, decimal discount, ShopSettings shop, string country, decimal singlePurposePaid) {
+  var shares = RateShares(bag, delivery, discount, shop, country);
+  var paid = Share(singlePurposePaid, shares.Select(x => x.Gross).ToList());
+  for (var i = 0; i < shares.Count; i = i + 1) {
+    shares[i].Voucher = paid[i];
+    shares[i].Gross = shares[i].Gross - paid[i];
+  }
+  var cardRate = CardVatPercent(shop);
+  var cards = bag.Lines.ToList().Where(l => l.Variant.Product.IsGiftCard).Sum(l => LinePrice(l) * l.Quantity);
+  if (cardRate > 0 && cards > 0) {
+    var at = shares.FirstOrDefault(x => x.Percent == cardRate);
+    if (at == null) { at = new RateShare { Percent = cardRate }; shares.Add(at); }
+    at.Cards = cards;
+    at.Gross = at.Gross + cards;
+  }
+  foreach (var s in shares) { s.Vat = VatIn(s.Gross, s.Percent); }
+  return shares.Where(x => x.Gross != 0 || x.Goods != 0).ToList();
+}
+
+/// `amount` shared over `weights` in proportion, to the cent, the parts adding up to it exactly — the largest part
+/// takes the rounding.
+List<decimal> Share(decimal amount, List<decimal> weights) {
+  List<decimal> parts = [];
+  var total = weights.Sum();
+  if (total == 0) {
+    foreach (var w in weights) { parts.Add(0m); }
+    if (parts.Count > 0) { parts[0] = amount; }
+    return parts;
+  }
+  foreach (var w in weights) { parts.Add(Math.Round(amount * w / total, 2, MidpointRounding.AwayFromZero)); }
+  var biggest = 0;
+  for (var i = 1; i < weights.Count; i = i + 1) { if (weights[i] > weights[biggest]) { biggest = i; } }
+  parts[biggest] = parts[biggest] + (amount - parts.Sum());
+  return parts;
+}
+
+/// Who an order is for, and where it goes. Staff's to read — nobody else's.
+public entity OrderContact {
+  [Required, Unique] Order Order;
+  [Required, MaxLength(120)] string Name;
+  [Required, MaxLength(200)] string Email;
+  [MaxLength(40)] string? Phone;
+  [MaxLength(200)] string? Street;
+  [MaxLength(20)] string? PostCode;
+  [MaxLength(80)] string? City;
+  [MaxLength(80)] string? Country;
+  /// Set when the customer was erased but this order was invoiced: the name and address stay on it, for the books,
+  /// until this date — then they go too (`PurgeExpiredRetention`).
+  DateTime? RetainedUntil;
+  /// The date of birth the buyer gave for goods with an age — kept here, with the rest of what only staff read.
+  DateOnly? BornOn;
+  /// The point the customer chose to collect the parcel from — a carrier's service point — with its name and address.
+  /// Here rather than on the order, which anyone may read: where somebody collects says where they live.
+  [MaxLength(40)] string? PickupPointId;
+  [MaxLength(120)] string? PickupPointName;
+  [MaxLength(200)] string? PickupPointStreet;
+  [MaxLength(20)] string? PickupPointPostCode;
+  [MaxLength(80)] string? PickupPointCity;
+  [MaxLength(2)] string? PickupPointCountry;
+  security {
+    allow create when IsAnonymous || IsAuthenticated where Order.Status == OrderStatus.Placed && (Order.Account == null || Order.Account == user);
+    allow create when IsShopStaff;
+    // Staff, and the customer whose account placed the order — their own address, in their own order history.
+    allow read when IsAuthenticated
+      where Order.Account == user;
+    allow read when IsShopPacker where PacksAt(Order.Location);
+    allow read when IsShopCounter where SellsAt(Order.Location) && Order.Fulfilment == Fulfilment.Collect;
+    allow read when IsShopStaff;
+    allow update when IsShopStaff;
+  }
+}
+
+/// One thing ordered. The product's name and the variant's label are COPIED at the time of the order, so a renamed
+/// or archived product never rewrites what somebody bought.
+// SECURITY-INVARIANT(order-children-only-with-the-order): an order's lines, contact, adjustments and VAT rows may be
+//   created by a customer ONLY while the order is being placed (status `Placed`, which the order's workflow leaves as the
+//   placing commits) — never after. Otherwise a customer could add goods at price 0 to their own paid order (staff pack
+//   from the lines), point it at another address, or write VAT rows into the books. Guarded by
+//   order-integrity.test.osy a_customer_cannot_add_a_line_to_their_own_order_after_it_is_placed.
+public entity OrderLine {
+  [Required] Order Order;
+  [Required] Variant Variant;
+  [Required, MaxLength(120)] string ProductName;
+  [MaxLength(80)] string? VariantLabel;
+  int Quantity = 1;
+  decimal Price;
+  /// The VAT rate the price includes, as it was when ordered.
+  decimal VatPercent;
+  /// What one unit cost the shop, without VAT, when the order was placed — from the variant's `CostPrice`, taken by
+  /// the order's workflow so a later change of cost never rewrites a past margin. Null: no cost was known.
+  decimal? UnitCost;
+  /// Whether this line's units are out of stock on the order's account — set when the workflow takes them, cleared
+  /// when it gives them back.
+  bool Held = false;
+  /// Goods that are packed and sent, a gift card (no VAT, issued when paid), or a file to download.
+  LineKind Kind = LineKind.Goods;
+  security {
+    // SECURITY-INVARIANT(an-order-reads-through-its-link): its order's readers, and nobody else.
+    allow read when IsAnonymous || IsAuthenticated
+      where Order.Account == user
+         || Order.VisitId == Visitor.Id
+         || Order == OrderLink.Row
+         || Order == Pay.Row;
+    allow read when IsShopPacker where PacksAt(Order.Location);
+    allow read when IsShopCounter where SellsAt(Order.Location) && Order.Fulfilment == Fulfilment.Collect;
+    allow create when IsAnonymous || IsAuthenticated where Order.Status == OrderStatus.Placed && (Order.Account == null || Order.Account == user);
+    allow create when IsShopStaff;
+    allow update, delete when IsShopStaff;
+    // SECURITY-INVARIANT(a-cost-is-the-desks-alone): a customer reads their own order's lines; the cost recorded on
+    // them is the shop's. Guarded by products-csv.test.osy the_margin_is_net_of_vat_and_a_cost_is_the_desks_alone.
+    deny read UnitCost when !IsShopStaff;
+  }
+}
+
+/// What the customer is shown once their order is placed. `PayUrl` is the provider's page — the checkout sends the
+/// browser there — and empty for a payment with nowhere to go (then `PayInstructions` says how to pay), or when the
+/// provider could not be reached (`PayProblem` says so).
+public class Receipt {
+  public string Reference;
+  public OrderStatus Status;
+  /// The currency every amount below is in — the order's (ISO 4217).
+  public string Currency = "";
+  public decimal Total;
+  /// Paid from store credit — part of `Total`.
+  public decimal Credit = 0;
+  /// Paid with gift cards — part of `Total`.
+  public decimal GiftCard = 0;
+  /// What is left to pay once the store credit is taken off `Total`.
+  public decimal ToPay = 0;
+  /// What came off — already taken out of `Total`.
+  public decimal Discount;
+  public string PaymentLabel = "";
+  public string DeliveryLabel = "";
+  /// Where the customer collects it — "ICA Supermarket Hornstull, Långholmsgatan 21, 11733 Stockholm" — when they
+  /// chose a point; "" otherwise. Only on the receipt placing answers, never on one read back by reference.
+  public string PickupPoint = "";
+  public Fulfilment Fulfilment;
+  public string PayUrl = "";
+  public string PayInstructions = "";
+  public string PayProblem = "";
+  /// The customer's signed link to the order (`OrderLink`) — the store's order page is `ShopSetup.OrderPath` + `/` +
+  /// this. The link, never the reference, is what opens an order to somebody who is not signed in.
+  public string Link = "";
+}
+
+// ── the order's life ───────────────────────────────────────────────────────────────────────────────────────────
+//
+// ⚑ A PAYMENT FINDS ITS ORDER BY REFERENCE, and never by reading the row. Whoever reports a payment — a provider's
+//   webhook, or staff marking a transfer received — is not somebody who may read a customer's order, and does not
+//   need to be: `[CorrelateOn]` deposits the event into the run that owns that reference.
+//
+// ⚑ AND A RESERVATION THAT IS NOT PAID LAPSES, after the shop's `HoldDays`, and its goods go back on sale.
+public workflow OrderLifecycle {
+  Tracks    = Order.Status;
+  Autostart = true;
+  Initial   = Placed;
+
+  [CorrelateOn(this.Item.Reference == reference)]
+  /// `savedMethod` / `savedLabel`: the way to pay the provider kept, when the order asked (`SaveMethod`) — "" otherwise.
+  event PaymentReceived(string reference, string how, string paymentRef, string savedMethod, string savedLabel);
+
+  /// A payment provider's own event says the order is paid — `amount` in minor units as the provider reports it (0: it
+  /// did not say). Heard in every state and decided HERE, as the shop: the webhook that brings it may not read orders
+  /// (an order is read through its link, D-ORDERLINK1), so what it would have checked by reading one — that the order
+  /// is waiting for a payment, and for this amount — is checked by the order's own run. A repeat (a provider sends an
+  /// event twice, or `CheckPayment` recorded the payment first) changes nothing.
+  [CorrelateOn(this.Item.Reference == reference)]
+  event PaymentReported(string reference, long amount, string paymentRef, string savedMethod, string savedLabel);
+
+  /// Staff call a reservation off before it lapses. Only while RESERVED: a paid order is refunded, not cancelled.
+  event Cancel(string reason);
+
+  /// A paid order has been sent, or collected — with the carrier's tracking link and the label kept for staff, when a
+  /// carrier booked it. Sending writes the order through here, so whoever sends it (a packer) needs no write of its own.
+  event Fulfil(string tracking, string trackingUrl, string labelPath);
+
+  /// A payment its provider only authorised has been captured — recorded, so a retried send never charges twice.
+  event Captured();
+
+  /// The optional steps before it goes out — staff start picking it, then it is packed (and a collection is ready).
+  event StartPicking();
+  event Pack();
+
+  /// It arrived — the carrier says so (asked every few hours while the parcel is out), or staff say so.
+  event Delivered();
+
+  /// A refund, in the three steps the money takes: staff REQUEST it, the provider may take a while (PROCESSING), and it
+  /// is REFUNDED once the provider says so — or back where it was if the provider says it failed.
+  event RequestRefund(string reason);
+
+  /// What the payment provider says about a refund — from its answer to the request and from its webhooks. One
+  /// event for both, found by the payment it refunds, so the two cannot tell the order different stories.
+  [CorrelateOn(this.Item.PaymentRef == paymentRef)]
+  event RefundUpdate(string paymentRef, string status, string refundRef);
+
+  /// Ends the order whatever state it is in and puts its goods back, with no money moving — for a demo shop's reset,
+  /// or an order entered by mistake.
+  event Void(string reason);
+
+  /// The parcel goes to another address — staff, or the customer from their account, before it goes out. Written HERE,
+  /// as the shop, so a customer needs no write on the order's contact; a sent order no longer listens (see
+  /// `ChangeOrderAddress`). `who` is how the timeline names whoever asked.
+  event ChangeAddress(string street, string postCode, string city, string country, string who);
+
+  /// A counter sale's receipt mailed to `email` after the sale — the customer asked for it at the counter. Written HERE,
+  /// as the shop, so the clerk needs no write on the order's contact (Counter.osy).
+  event SendReceipt(string email);
+
+  on PaymentReported(string reference, long amount, string paymentRef, string savedMethod, string savedLabel) {
+    if (this.Item.Status == OrderStatus.Reserved && amount > 0 && amount != Minor(AmountDue(this.Item))) {
+      Log.Warning($"A payment event for {reference} is for {amount}, but the order asks for {Minor(AmountDue(this.Item))}.");
+    }
+    if (this.Item.Status == OrderStatus.Reserved && (amount <= 0 || amount == Minor(AmountDue(this.Item)))) {
+      TakePayment(this.Item, this.Item.PaymentLabel ?? this.Item.PaymentMethod, paymentRef, savedMethod, savedLabel);
+      goto Paid;
+    }
+  }
+
+  // ⚑ ACCEPTED, NOT FIXED (D-AUTOSTART1, 2026-09-30): an app that installs a payment provider calling out (Stripe) is
+  //   told this step reaches the network through a contract — `PriceProblem` calls `provider.Start(…)`, and the lint
+  //   counts every implementation in view. It is called only for a MANUAL provider (`provider.IsManual` — a bank
+  //   transfer's instructions), whose `Start` is local; a card provider's `Start` runs in the checkout's own call, not
+  //   here. And this step is what the checkout reads next (Reserved or Unavailable), so it cannot move to a clock.
+  [SuppressWarning("workflow-first-step-waits-on-a-slow-call")]
+  state Placed {
+    enter {
+      // A counter sale for a customer who proved themselves with the code mailed to them (Counter.osy): their account,
+      // set HERE, as the shop — never by the clerk — before it is priced, so their price list and credit are theirs.
+      if (this.Item.AtCounter) { AttachCounterCustomer(this.Item); }
+      // Priced by the shop before anything is held: a customer's order whose rows are not the shop's price for its bag
+      // holds nothing and asks no payment (`PriceProblem`).
+      var mispriced = PriceProblem(this.Item);
+      if (mispriced != "") {
+        this.Item.Problem = mispriced;
+        this.Item.Mispriced = true;
+        goto Unavailable;
+      }
+      var gone = this.Item.Lines
+        .Where(l => (!l.Variant.Unlimited && l.Variant.Stock < l.Quantity) || l.Variant.Product.Status != ProductStatus.Listed)
+        .ToList();
+      if (gone.Count > 0) {
+        this.Item.Problem = string.Join("; ", gone.Select(l => GoneSentence(l)));
+        goto Unavailable;
+      }
+      // Where it is picked from (Locations.osy): the counter it is collected at, or the first shipping location that
+      // holds it all — decided here, as the shop, never taken from the order's row.
+      var from = FulfilmentOf(this.Item);
+      if (from.Problem != "") {
+        this.Item.Problem = from.Problem;
+        goto Unavailable;
+      }
+      this.Item.Location = from.Location;
+      // The store credit it pays with, taken here like the stock — as the shop, and against the balance as it stands
+      // now: two checkouts spending the same credit meet on it, and the second finds it gone.
+      // …and its gift cards, asked first and taken once the credit is sure too: nothing is taken for an order that
+      // then turns out unavailable.
+      var cardProblem = GiftCardProblem(this.Item);
+      if (cardProblem != "") {
+        this.Item.Problem = cardProblem;
+        this.Item.GiftCardShort = true;
+        goto Unavailable;
+      }
+      var creditProblem = TakeCredit(this.Item);
+      if (creditProblem != "") {
+        this.Item.Problem = creditProblem;
+        this.Item.CreditShort = true;
+        goto Unavailable;
+      }
+      TakeGiftCards(this.Item);
+      // The cost of what was sold, as it stands now — the figures' margin. Taken here, as the shop, because a
+      // customer placing the order may not read a cost price.
+      foreach (var l in this.Item.Lines) { l.UnitCost = l.Variant.CostPrice; }
+      foreach (var l in this.Item.Lines.Where(x => !x.Variant.Unlimited)) {
+        MoveStockAt(this.Item.Location, l.Variant, -l.Quantity, l.Quantity);
+        l.Held = true;
+      }
+      // A counter sale is paid and handed over in the next minute: its receipt is mailed then, and the shop needs no
+      // mail about a sale it made itself.
+      if (!this.Item.AtCounter) {
+        MailCustomer(this.Item, App.Setting<ShopSetup>().Mails.OrderConfirmation(this.Item));
+        MailShop(this.Item, $"New order {this.Item.Reference}");
+      }
+      Raise(new OrderPlaced { Order = this.Item });
+      ForgetStalePurchaseReports();
+      // A wholesale account paying by invoice (Wholesale.osy): the goods are sold on its terms and go out now.
+      var terms = App.Setting<ShopSetup>().OnlyForWholesale.Contains(this.Item.PaymentMethod) ? InvoiceDaysFor(this.Item.Account) : 0;
+      if (terms > 0) {
+        GiveTerms(this.Item, terms);
+        goto Paid;
+      }
+      goto Reserved;
+    }
+  }
+
+  terminal cancel Unavailable { enter { Raise(new OrderCancelled { Order = this.Item }); } }
+
+  state Reserved {
+    subscribe PaymentReceived() as Payment {
+      Finished {
+        Within = TimeSpan.FromDays(this.Item.HoldDays);
+        Unfinished { goto Lapsed; }
+      }
+    }
+    subscribe Cancel() as Cancellation;
+    subscribe Void() as VoidReserved;
+    subscribe ChangeAddress() as MovedReserved;
+    on MovedReserved(string street, string postCode, string city, string country, string who) {
+      MoveOrder(this.Item, street, postCode, city, country, who);
+    }
+    on Payment(string reference, string how, string paymentRef, string savedMethod, string savedLabel) {
+      TakePayment(this.Item, how, paymentRef, savedMethod, savedLabel);
+      goto Paid;
+    }
+    on Cancellation(string reason) {
+      this.Item.CancelReason = reason;
+      goto Cancelled;
+    }
+    on VoidReserved(string reason) { this.Item.CancelReason = reason; goto Voided; }
+  }
+
+  state Paid {
+    // Nothing to ship: paid is delivered.
+    enter {
+      // Sold at the counter: the customer is standing there, so paid is handed over.
+      if (this.Item.AtCounter) {
+        HandOverAtCounter(this.Item);
+        goto Delivered;
+      }
+      if (this.Item.Fulfilment == Fulfilment.Digital) {
+        this.Item.DeliveredAt = DateTime.UtcNow;
+        Raise(new OrderDelivered { Order = this.Item });
+        goto Delivered;
+      }
+    }
+    subscribe StartPicking() as PickingStarted;
+    subscribe Pack() as PackedFromPaid;
+    subscribe Fulfil() as Sent;
+    subscribe Captured() as Charged;
+    subscribe RequestRefund() as RefundAsked;
+    subscribe Void() as Void;
+    subscribe ChangeAddress() as MovedPaid;
+    on MovedPaid(string street, string postCode, string city, string country, string who) {
+      MoveOrder(this.Item, street, postCode, city, country, who);
+    }
+    on PickingStarted() { this.Item.PickingAt = DateTime.UtcNow; goto Picking; }
+    on PackedFromPaid() { this.Item.PackedAt = DateTime.UtcNow; goto Packed; }
+    on Charged() { this.Item.CapturedAt = DateTime.UtcNow; }
+    on Sent(string tracking, string trackingUrl, string labelPath) {
+      SendOut(this.Item, tracking, trackingUrl, labelPath);
+      if (this.Item.Fulfilment == Fulfilment.Collect) { goto Delivered; }
+      goto Fulfilled;
+    }
+    on RefundAsked(string reason) {
+      this.Item.RefundReason = reason;
+      this.Item.RefundProblem = null;
+      goto RefundRequested;
+    }
+    on Void(string reason) { this.Item.CancelReason = reason; goto Voided; }
+  }
+
+  state Picking {
+    subscribe Pack() as PackedFromPicking;
+    subscribe Fulfil() as SentPicking;
+    subscribe Captured() as ChargedPicking;
+    subscribe RequestRefund() as RefundAskedPicking;
+    subscribe Void() as VoidPicking;
+    subscribe ChangeAddress() as MovedPicking;
+    on MovedPicking(string street, string postCode, string city, string country, string who) {
+      MoveOrder(this.Item, street, postCode, city, country, who);
+    }
+    on PackedFromPicking() { this.Item.PackedAt = DateTime.UtcNow; goto Packed; }
+    on ChargedPicking() { this.Item.CapturedAt = DateTime.UtcNow; }
+    on SentPicking(string tracking, string trackingUrl, string labelPath) {
+      SendOut(this.Item, tracking, trackingUrl, labelPath);
+      if (this.Item.Fulfilment == Fulfilment.Collect) { goto Delivered; }
+      goto Fulfilled;
+    }
+    on RefundAskedPicking(string reason) {
+      this.Item.RefundReason = reason;
+      this.Item.RefundProblem = null;
+      goto RefundRequested;
+    }
+    on VoidPicking(string reason) { this.Item.CancelReason = reason; goto Voided; }
+  }
+
+  state Packed {
+    enter {
+      if (this.Item.Fulfilment == Fulfilment.Collect) {
+        TellCustomer(this.Item, $"Ready to collect — order {this.Item.Reference}",
+          $"Your order {this.Item.Reference} is ready. " + (TheShop().CollectionAddress == null ? "" : $"Collect it at {TheShop().CollectionAddress}."));
+      }
+    }
+    subscribe Fulfil() as SentPacked;
+    subscribe Captured() as ChargedPacked;
+    subscribe RequestRefund() as RefundAskedPacked;
+    subscribe Void() as VoidPacked;
+    subscribe ChangeAddress() as MovedPacked;
+    on MovedPacked(string street, string postCode, string city, string country, string who) {
+      MoveOrder(this.Item, street, postCode, city, country, who);
+    }
+    on ChargedPacked() { this.Item.CapturedAt = DateTime.UtcNow; }
+    on SentPacked(string tracking, string trackingUrl, string labelPath) {
+      SendOut(this.Item, tracking, trackingUrl, labelPath);
+      if (this.Item.Fulfilment == Fulfilment.Collect) { goto Delivered; }
+      goto Fulfilled;
+    }
+    on RefundAskedPacked(string reason) {
+      this.Item.RefundReason = reason;
+      this.Item.RefundProblem = null;
+      goto RefundRequested;
+    }
+    on VoidPacked(string reason) { this.Item.CancelReason = reason; goto Voided; }
+  }
+
+  // Not terminal: a sent order can still be refunded — a return.
+  state Fulfilled {
+    // It arrives when staff say so (`MarkDelivered`), or when the carrier does: every six hours the parcel's carrier
+    // is asked, and a delivered answer raises this run's own Delivered. A month without either stops the asking.
+    subscribe Delivered() as Arrived {
+      Finished {
+        Within = TimeSpan.FromDays(30);
+        Remind Track(After = TimeSpan.FromHours(6), ThenEvery = TimeSpan.FromHours(6)) { CheckDelivery(this.Item); }
+        Unfinished { }
+      }
+    }
+    on Arrived() {
+      this.Item.DeliveredAt = DateTime.UtcNow;
+      Raise(new OrderDelivered { Order = this.Item });
+      goto Delivered;
+    }
+    subscribe RequestRefund() as ReturnAsked;
+    subscribe Void() as VoidFulfilled;
+    on ReturnAsked(string reason) {
+      this.Item.RefundReason = reason;
+      this.Item.RefundProblem = null;
+      goto RefundRequested;
+    }
+    on VoidFulfilled(string reason) { this.Item.CancelReason = reason; goto Voided; }
+  }
+
+  // Arrived — collected at the counter, or delivered. Still refundable: a return.
+  state Delivered {
+    subscribe SendReceipt() as ReceiptAsked;
+    on ReceiptAsked(string email) { MailCounterReceipt(this.Item, email); }
+    subscribe RequestRefund() as ReturnAskedDelivered;
+    subscribe Void() as VoidDelivered;
+    on ReturnAskedDelivered(string reason) {
+      this.Item.RefundReason = reason;
+      this.Item.RefundProblem = null;
+      goto RefundRequested;
+    }
+    on VoidDelivered(string reason) { this.Item.CancelReason = reason; goto Voided; }
+  }
+
+  state RefundRequested {
+    subscribe RefundUpdate() as ProviderSays;
+    subscribe Void() as VoidRequested;
+    on ProviderSays(string paymentRef, string status, string refundRef) {
+      this.Item.RefundRef = refundRef == "" ? this.Item.RefundRef : refundRef;
+      if (status == "succeeded") { goto Refunded; }
+      if (status == "failed" || status == "canceled") {
+        this.Item.RefundProblem = $"The payment provider says the refund {status}.";
+        if (this.Item.DeliveredAt != null) { goto Delivered; }
+        if (this.Item.FulfilledAt != null) { goto Fulfilled; }
+        if (this.Item.PackedAt != null) { goto Packed; }
+        if (this.Item.PickingAt != null) { goto Picking; }
+        goto Paid;
+      }
+      goto RefundProcessing;
+    }
+    on VoidRequested(string reason) { this.Item.CancelReason = reason; goto Voided; }
+  }
+
+  state RefundProcessing {
+    subscribe RefundUpdate() as ProviderSaysLater;
+    subscribe Void() as VoidProcessing;
+    on ProviderSaysLater(string paymentRef, string status, string refundRef) {
+      if (status == "succeeded") { goto Refunded; }
+      if (status == "failed" || status == "canceled") {
+        this.Item.RefundProblem = $"The payment provider says the refund {status}.";
+        if (this.Item.DeliveredAt != null) { goto Delivered; }
+        if (this.Item.FulfilledAt != null) { goto Fulfilled; }
+        if (this.Item.PackedAt != null) { goto Packed; }
+        if (this.Item.PickingAt != null) { goto Picking; }
+        goto Paid;
+      }
+    }
+    on VoidProcessing(string reason) { this.Item.CancelReason = reason; goto Voided; }
+  }
+
+  terminal cancel Refunded {
+    enter {
+      if (this.Item.RestockOnRefund) { GiveBack(this.Item); }
+      var creditBack = GiveCreditBack(this.Item, GiveBackCause.Refunded);
+      var cardsBack = GiveGiftCardsBack(this.Item, this.Item.GiftCardUsed, GiveBackCause.Refunded, null);
+      // Money back for the gift cards it sold: they were never paid for, so they stop working.
+      VoidCardsSoldBy(this.Item, $"Order {this.Item.Reference} was refunded");
+      CloseDownloads(this.Item);
+      CountBoughtTogether(this.Item, -1);
+      CreditWholeOrder(this.Item, creditBack, cardsBack);
+      Raise(new OrderRefunded { Order = this.Item });
+      MailCustomer(this.Item, App.Setting<ShopSetup>().Mails.Refunded(this.Item));
+    }
+  }
+  // Called off: nothing is left to pay, so no payment link to it works any more.
+  terminal cancel Lapsed {
+    enter {
+      GiveBack(this.Item); GiveCreditBack(this.Item, GiveBackCause.NotPaidInTime); GiveGiftCardsBack(this.Item, this.Item.GiftCardUsed, GiveBackCause.NotPaidInTime, null);
+      EndPayLinks(this.Item); Raise(new OrderCancelled { Order = this.Item });
+    }
+  }
+  terminal cancel Cancelled {
+    enter {
+      GiveBack(this.Item); GiveCreditBack(this.Item, GiveBackCause.Cancelled); GiveGiftCardsBack(this.Item, this.Item.GiftCardUsed, GiveBackCause.Cancelled, null);
+      EndPayLinks(this.Item); Raise(new OrderCancelled { Order = this.Item });
+    }
+  }
+  terminal cancel Voided {
+    enter {
+      GiveBack(this.Item); GiveCreditBack(this.Item, GiveBackCause.Voided); GiveGiftCardsBack(this.Item, this.Item.GiftCardUsed, GiveBackCause.Voided, null);
+      VoidCardsSoldBy(this.Item, $"Order {this.Item.Reference} was voided");
+      CloseDownloads(this.Item);
+      if (this.Item.PaidAt != null) { CountBoughtTogether(this.Item, -1); }
+      EndPayLinks(this.Item); Raise(new OrderCancelled { Order = this.Item });
+    }
+  }
+}
+
+/// Why one line could not be had, as the customer reads it.
+string GoneSentence(OrderLine line) {
+  var what = line.VariantLabel == null ? line.ProductName : $"{line.ProductName} ({line.VariantLabel})";
+  if (line.Variant.Product.Status != ProductStatus.Listed || line.Variant.Stock == 0) { return $"{what} has sold out"; }
+  return line.Variant.Stock == 1 ? $"only one {what} is left" : $"only {line.Variant.Stock} of {what} are left";
+}
+
+/// Puts an order's goods back in stock. Only lines that are holding stock — so an order that never took any, or
+/// already gave it back, changes nothing. An unpaid order's units also leave `Reserved`; a paid one's left it when
+/// it was paid.
+void GiveBack(Order order) {
+  foreach (var line in order.Lines.Where(l => l.Held)) {
+    // Back where it was taken from.
+    MoveStockAt(order.Location, line.Variant, line.Quantity, order.PaidAt == null ? -line.Quantity : 0);
+    line.Held = false;
+    SendStockAlerts(line.Variant);
+  }
+}
+
+/// The order goes out: sent with its tracking, or collected — stamped, the customer told, the add-ons too. A collection
+/// has arrived the moment it is collected.
+void SendOut(Order order, string tracking, string trackingUrl, string labelPath) {
+  order.Tracking = tracking == "" ? null : tracking;
+  if (trackingUrl != "") { order.TrackingUrl = trackingUrl; }
+  if (labelPath != "") { order.LabelPath = labelPath; }
+  order.FulfilledAt = DateTime.UtcNow;
+  if (order.Fulfilment == Fulfilment.Collect) { order.DeliveredAt = order.FulfilledAt; }
+  MailCustomer(order, App.Setting<ShopSetup>().Mails.Shipped(order));
+  Raise(new OrderSent { Order = order });
+  if (order.Fulfilment == Fulfilment.Collect) { Raise(new OrderDelivered { Order = order }); }
+}
+
+/// Asks the parcel's carrier where it is, and records the delivery when it has arrived. Quiet when there is no carrier
+/// to ask, or it cannot be reached — it is asked again later.
+void CheckDelivery(Order order) {
+  if (order.Fulfilment != Fulfilment.Deliver || order.Tracking == null) { return; }
+  var key = CarrierKeyOf(order);
+  var carrier = App.Setting<ShopSetup>().Delivery.FirstOrDefault(d => d.Key == key);
+  if (carrier == null) { return; }
+  try {
+    if (carrier.Track(order.Tracking).State == DeliveryState.Delivered) { OrderLifecycle.RaiseDelivered(order); }
+  }
+  catch (Exception ex) { Log.Warning($"Could not ask the carrier about {order.Reference}: {ex.Message}"); }
+}
+
+/// Being prepared — paid, and not yet out of the door.
+public bool IsBeingPrepared(Order order) {
+  return order.Status == OrderStatus.Paid || order.Status == OrderStatus.Picking || order.Status == OrderStatus.Packed;
+}
+
+/// Out of the door — sent or collected, delivered or on its way.
+public bool IsSent(Order order) {
+  return order.Status == OrderStatus.Fulfilled || order.Status == OrderStatus.Delivered;
+}
+
+/// Where an order stands, in the customer's words — a collection says "Ready to collect" and "Collected".
+public string StatusText(Order order) {
+  if (order.Fulfilment == Fulfilment.Collect && order.Status == OrderStatus.Packed) { return "Ready to collect"; }
+  if (order.Fulfilment == Fulfilment.Collect && order.Status == OrderStatus.Delivered) { return "Collected"; }
+  return order.Status.Label;
+}
+
+/// Tells the shop about an order — its own inbox (`OrderAlertEmail`), when it has one: what, how much, how it goes.
+void MailShop(Order order, string subject) {
+  var shop = TheShop();
+  if (shop.OrderAlertEmail == null) { return; }
+  var lines = string.Join("\n", order.Lines.ToList().Select(l =>
+    $"  {l.Quantity} × {l.ProductName}{(l.VariantLabel == null ? "" : " (" + l.VariantLabel + ")")}"));
+  Mail(shop.OrderAlertEmail, App.Setting<ShopSetup>().Mails.Notice($"{subject} — {OrderMoney(order.Total, order)}", subject,
+    $"{lines}\n\n{order.DeliveryLabel ?? order.Fulfilment.Label} · {order.PaymentLabel ?? order.PaymentMethod}"));
+}
+
+/// Mails the customer a rendered mail about their order. Written by the order's workflow, which writes as the system — a
+/// visitor never creates a mail row themselves.
+void MailCustomer(Order order, RenderedEmail mail, List<MailFile>? files = null) {
+  var contact = order.Contact.FirstOrDefault();
+  // An erased customer is not mailed — whatever happens to an order the books still keep.
+  if (contact == null || !contact.Email.Contains("@")) { return; }
+  // Kept with the order it is about — the order's timeline lists what the customer was sent.
+  Mail(contact.Email, mail, order: order, files: files);
+}
+
+/// Tells the customer a short piece of an order's news — paid, ready to collect — in the shop's frame.
+void TellCustomer(Order order, string subject, string text) {
+  var contact = order.Contact.FirstOrDefault();
+  if (contact == null || !contact.Email.Contains("@")) { return; }
+  MailCustomer(order, App.Setting<ShopSetup>().Mails.Notice($"{subject} — {TheShop().Name}", subject, $"Hello {FirstName(contact.Name)},\n\n{text}",
+                                                            "See your order", OrderPageLink(order)));
+}
+
+/// Who a withdrawal is sent to: the seller's registered address — the company's own postal address, the one its
+/// invoices name — or the collection address when it has none, with the shop's name in front unless the address
+/// already begins with it ("Grounds & Grapes, Hornsgatan 64" is not written "Grounds & Grapes, Grounds & Grapes, …").
+public string WithdrawalAddressee(ShopSettings shop) {
+  var address = (shop.CompanyAddress ?? shop.CollectionAddress ?? "").Trim();
+  if (address == "") { return shop.Name; }
+  return address.ToLower().StartsWith(shop.Name.Trim().ToLower()) ? address : $"{shop.Name}, {address}";
+}
+
+/// The right of withdrawal, and the model form to use it — what an EU distance sale must hand the customer.
+string WithdrawalText(Order order, ShopSettings shop) {
+  var days = Math.Max(shop.ReturnDays, 14);
+  return $"\n\nYour right of withdrawal: you may cancel this purchase within {days} days of receiving the goods, without "
+    + "giving a reason — return it from your order's page, or tell us"
+    + (shop.ContactEmail == null ? "." : $" at {shop.ContactEmail}.")
+    + "\n\nWithdrawal form (fill in and send only if you want to withdraw):\n"
+    + $"  To: {WithdrawalAddressee(shop)}{(shop.ContactEmail == null ? "" : ", " + shop.ContactEmail)}\n"
+    + $"  I hereby give notice that I withdraw from my contract of sale of the following goods: order {order.Reference}\n"
+    + "  Ordered on / received on:\n  Name:\n  Address:\n  Date:";
+}
+
+/// Places the visit's bag as one order, delivered the way `delivery` says (a `DeliveryChoice.Id`) and paid the way
+/// `payment` says (a `PaymentChoice.Key`). Answers the receipt when the goods are reserved; when something in the bag
+/// has sold in the meantime, it fixes the bag to what is left and throws the sentence that says what changed —
+/// nothing is reserved in that case, so the visitor looks again at a bag that is now true.
+[AllowAnonymous]
+public Receipt PlaceOrder(string name, string email, string phone, string delivery, string payment,
+                          string street, string postCode, string city, string country) {
+  // D-BLOCKS1 — a member of staff previewing the site sees what it WOULD look like; nothing they do there is real.
+  if (SitePreviewing()) { throw new Exception("You are previewing the site — orders are off until you go back to the live site."); }
+  var shop = TheShop();
+  var bag = BagFor(false);
+  if (bag == null || bag.Lines.Count() == 0) { throw new Exception("Your bag is empty."); }
+  // Said before anything about prices: a line that cannot be bought in this currency at all is the first thing to fix.
+  if (SoldCurrencyProblem(bag) != "") { throw new Exception(SoldCurrencyProblem(bag)); }
+  if (bag.Lines.ToList().Any(l => LineProblem(l) != "")) {
+    // Nothing is bought at a price or a quantity the customer has not seen: the bag is made true, and they look again.
+    throw new Exception($"Something in your bag changed since you added it: {FixBag()}. Your bag now holds what is left — look it over, then place the order.");
+  }
+
+  if (shop.Terms != null && bag.TermsAcceptedAt == null) { throw new Exception("Accept the terms of purchase to place the order."); }
+  if (bag.Lines.ToList().Any(l => l.Variant.IsDownload) && bag.DigitalConsentAt == null) {
+    throw new Exception("Say that you want the download as soon as it is paid. You then lose the right to withdraw from buying it.");
+  }
+  if (name.Trim() == "") { throw new Exception("Tell us your name."); }
+  if (!email.Contains("@")) { throw new Exception("We need an email address to send the confirmation to."); }
+
+  // Priced again here, for the country given — never taken from the page.
+  var way = DeliveryChoices(country).FirstOrDefault(d => d.Id == delivery);
+  if (way == null) { throw new Exception("Choose how you want to receive your order."); }
+  // The place it would come from does not hold it all (Locations.osy) — nothing is placed; they choose again.
+  if (way.Problem != "") { throw new Exception($"{way.Problem}. Choose another way to receive it, or change your bag."); }
+  if (way.NeedsAddress && (street.Trim() == "" || postCode.Trim() == "" || city.Trim() == "" || country.Trim() == "")) {
+    throw new Exception("For delivery we need the full address.");
+  }
+  if (way.ChoosePoint && (bag.PickupPointId == null || bag.PickupPointFor != way.Id)) {
+    throw new Exception($"Choose the point you want to collect your parcel from — {way.Label} delivers to the one you pick.");
+  }
+  var fulfilment = way.NothingToShip ? Fulfilment.Digital : way.NeedsAddress ? Fulfilment.Deliver : Fulfilment.Collect;
+  // A file's VAT is the buyer's country's (an electronic service, art. 58 of the VAT Directive), so a bag of nothing to
+  // ship asks where they live.
+  if (fulfilment == Fulfilment.Digital && bag.Lines.ToList().Any(l => l.Variant.IsDownload) && country.Trim() == "") {
+    throw new Exception("Tell us which country you live in. The VAT on a download is that country's.");
+  }
+  // "storecredit" / "giftcard": store credit and gift cards cover it all, and no provider is asked for anything
+  // (checked in PlaceBag, against the price it works out).
+  var vatCountry = way.NeedsAddress || fulfilment == Fulfilment.Digital ? CountryCode(country) : "";
+  var choice = payment == StoreCreditKey() || payment == GiftCardKey()
+    ? new PaymentChoice { Key = payment, Label = payment == GiftCardKey() ? "Gift card" : "Store credit" }
+    : PaymentChoicesIn(fulfilment == Fulfilment.Collect, BagCurrency(bag), vatCountry, bag.Owner).FirstOrDefault(p => p.Key == payment);
+  if (choice == null) { throw new Exception("That way to pay is not on offer for this order — choose another."); }
+
+  var placement = new Placement {
+    Name = name, Email = email, Phone = phone, Street = street, PostCode = postCode, City = city, Country = country,
+    Way = way, Pay = choice, Fulfilment = fulfilment,
+    // A collection is sold at the shop: its VAT is the shop's own, whatever address was typed. Nothing to ship: the
+    // buyer's country's.
+    VatCountry = vatCountry,
+    SaveMethod = bag.SaveMethod,
+    UseCredit = bag.UseCredit && Session.CurrentUser != null,
+  };
+  var receipt = PlaceBag(bag, placement, Session.CurrentUser);
+  // The sale, for the store's analytics — reported once it is paid (at once when there is no payment page).
+  NoteSaleForAnalytics(Order.Single(o => o.Reference == receipt.Reference), receipt.PayUrl != "");
+  return receipt;
+}
+
+/// Why `bag` cannot be placed in the currency it is bought in — "" when it can. An agreed price (a subscription's) is
+/// agreed in ONE currency and renewed in it, so it is placed only in a bag bought in that currency. The shop agrees it
+/// again when the bag moves to another (`IShopAddOn.BagCurrencyChanged`); what is left is a price agreed in a currency
+/// whose rate has since gone stale, or one no add-on re-agrees.
+public string SoldCurrencyProblem(Bag bag) {
+  var own = TheShop().Currency;
+  var bagIn = BagCurrency(bag);
+  foreach (var l in bag.Lines.ToList()) {
+    var agreed = l.Agreed.FirstOrDefault();
+    if (agreed == null) { continue; }
+    var agreedIn = agreed.Currency == null || agreed.Currency == "" ? own : agreed.Currency!;
+    if (agreedIn != bagIn) {
+      return $"{agreed.Label ?? l.Variant.Product.Name} was agreed in {agreedIn}, and your bag is in {bagIn} now — choose it again to have it in {bagIn}.";
+    }
+  }
+  return "";
+}
+
+/// Everything an order is placed from besides the bag: who, where, how it reaches them and how they pay, and whose VAT.
+public class Placement {
+  public string Name = "";
+  public string Email = "";
+  public string Phone = "";
+  public string Street = "";
+  public string PostCode = "";
+  public string City = "";
+  public string Country = "";
+  public DeliveryChoice Way = new DeliveryChoice();
+  public PaymentChoice Pay = new PaymentChoice();
+  public Fulfilment Fulfilment = Fulfilment.Deliver;
+  /// ISO 3166 alpha-2 whose VAT applies — "" for the shop's own (a collection).
+  public string VatCountry = "";
+  /// What the SHOP takes off beside the add-ons — a subscription's credit for days not used. Only the shop's own
+  /// callers fill it (`PlaceOrderForAccount` is staff-only); capped, with the add-ons, at what the goods cost.
+  public List<Adjustment> Credits = [];
+  /// Keep the way the customer pays, for charges they are not there for (a subscription's). Only with an account,
+  /// and only where the provider can (`SavesMethods`).
+  public bool SaveMethod = false;
+  /// Open the provider's payment page now — the checkout's case. False for an order placed with nobody there to send
+  /// to it (a renewal): it is paid from a kept way to pay, or the customer is sent a link.
+  public bool StartPayment = true;
+  /// Pay with the signed-in customer's store credit — as much of the total as they hold.
+  public bool UseCredit = false;
+  /// For an exchange's replacement: the order whose goods are coming back for these.
+  public Order? ExchangeFor = null;
+  /// How many days the goods are held unpaid — 0: the shop's own `HoldDays`. An exchange waits for its parcel.
+  public int HoldDays = 0;
+  /// Placed by the shop itself — staff, or a workflow acting for the shop — so the order's workflow takes its price as
+  /// it is (`Order.PlacedByShop`). Set only by the shop's own callers; the order's create rule refuses it from anyone
+  /// else.
+  public bool ByShop = false;
+  /// Sold over the counter of `SoldAt` (Counter.osy): no payment page, no provider at placing — the counter takes the
+  /// money next; the ID seen at the counter is the age check.
+  public bool AtCounter = false;
+  public StockLocation? SoldAt = null;
+  /// What the customer's store credit pays, at a counter — what the code-confirmed customer holds (the order's workflow
+  /// takes it from their balance as it stands, as the shop).
+  public decimal CounterCredit = 0;
+}
+
+/// An order the SHOP places for an account — a subscription's renewal. The bag is the shop's to fill (its lines may carry
+/// agreed prices, which only the shop writes); delivery and payment are chosen by key and priced HERE, as the checkout
+/// prices them — never taken from the caller. `deliveryId` "" is an order with nothing to ship, taxed in the buyer's
+/// country. `credits` come off the goods after the add-ons, never below nothing — see the order's adjustments for
+/// what was taken.
+[Authorize(IsShopStaff)]
+public Receipt PlaceOrderForAccount(Bag bag, ShopAccount customer, string paymentKey, string deliveryId, List<Adjustment> credits) {
+  if (SitePreviewing()) { throw new Exception("You are previewing the site — orders are off until you go back to the live site."); }
+  var shop = TheShop();
+  if (bag.Lines.Count() == 0) { throw new Exception("There is nothing to order."); }
+  var country = customer.Country ?? shop.HomeCountry;
+  var digital = deliveryId == "";
+  var way = digital ? new DeliveryChoice { Id = "digital", Label = "Nothing to ship", Price = 0m, NeedsAddress = false }
+                    : DeliveryChoicesFor(bag, country).FirstOrDefault(d => d.Id == deliveryId);
+  if (way == null) { throw new Exception($"The shop does not deliver by '{deliveryId}' to {country}."); }
+  var pay = PaymentChoicesIn(!way.NeedsAddress && !digital, BagCurrency(bag), digital || way.NeedsAddress ? CountryCode(country) : "", customer)
+    .FirstOrDefault(c => c.Key == paymentKey);
+  if (pay == null) { throw new Exception($"The shop does not take '{paymentKey}' for this order."); }
+  var placement = new Placement {
+    Name = customer.Name ?? customer.Email, Email = customer.Email, Phone = customer.Phone ?? "",
+    Street = customer.Street ?? "", PostCode = customer.PostCode ?? "", City = customer.City ?? "", Country = country,
+    Way = way, Pay = pay,
+    Fulfilment = digital ? Fulfilment.Digital : way.NeedsAddress ? Fulfilment.Deliver : Fulfilment.Collect,
+    VatCountry = digital || way.NeedsAddress ? CountryCode(country) : "",
+    Credits = credits,
+    StartPayment = false,
+    ByShop = true,
+  };
+  return PlaceBag(bag, placement, customer);
+}
+
+// ── the price of an order ──────────────────────────────────────────────────────────────────────────────────────────
+//
+// ⚑ AN ORDER IS PRICED BY THE SHOP. `PriceBag` is the one computation of what an order costs — its lines, what the
+//   add-ons take off, delivery, the VAT per rate — from the bag it is placed from and the choices the customer made.
+//   `PlaceBag` writes the order's rows from it; the order's workflow, as the shop, works it out AGAIN from the same bag
+//   for every order a customer placed (`PriceProblem`) and refuses one whose rows say anything else. A customer may
+//   write an order's rows — the checkout does, as them — but what those rows say it costs is never taken on trust.
+
+/// A line of an order as the shop prices it.
+public class PricedLine {
+  public Variant? Variant = null;
+  public int Quantity = 1;
+  /// One unit, as it is charged — without VAT for a sale that carries none.
+  public decimal Price = 0;
+  public decimal VatPercent = 0;
+  public string ProductName = "";
+  /// The agreed or the variant's label, "" for none.
+  public string Label = "";
+  /// The bag line it was priced from — null for a line the shop wrote.
+  public BagLine? From = null;
+}
+
+/// An order's VAT at one rate, as the shop prices it.
+public class PricedVat {
+  public decimal Percent = 0;
+  public decimal Gross = 0;
+  public decimal Vat = 0;
+  public string? Country = null;
+}
+
+/// What an order costs — worked out by `PriceBag`. It says nothing of HOW it is paid (store credit, a provider): that
+/// is the customer's choice, and changes no price.
+public class PricedOrder {
+  /// The currency it is priced in — the bag's (`BagCurrency`) — and the day's rate that priced it (1: the shop's own).
+  public string Currency = "";
+  public decimal Rate = 1;
+  public DateTime? RateDate = null;
+  public string? RateSource = null;
+  public decimal Subtotal = 0;
+  public decimal Discount = 0;
+  public decimal Delivery = 0;
+  public decimal Total = 0;
+  /// Of `Total`, what is gift cards sold — without VAT and out of `VatRates` unless they are sold as single-purpose
+  /// vouchers (`GiftCardsSinglePurpose`), whose VAT is `GiftCardsSoldVat`.
+  public decimal GiftCardsSold = 0;
+  public bool GiftCardsSinglePurpose = false;
+  public decimal GiftCardsSoldVat = 0;
+  /// What the gift cards on the bag pay (never a customer's to choose — as much as they hold), and of it what
+  /// single-purpose cards pay, with the VAT already paid inside that part.
+  public decimal GiftCardUsed = 0;
+  public decimal SinglePurposeUsed = 0;
+  public decimal VoucherVat = 0;
+  /// The VAT included in `Total`.
+  public decimal Vat = 0;
+  public bool ReverseCharge = false;
+  public bool Exported = false;
+  public string? BuyerVatNumber = null;
+  public string? BuyerCompany = null;
+  /// The age the goods need (0: none), and the date of birth that proves it — or, verified, who proved it and when
+  /// (and then no date of birth).
+  public int AgeChecked = 0;
+  public DateOnly? BornOn = null;
+  public string? AgeVerifiedBy = null;
+  public DateTime? AgeVerifiedAt = null;
+  public int HoldDays = 0;
+  public List<Adjustment> Adjustments = [];
+  public List<PricedLine> Lines = [];
+  public List<PricedVat> VatRates = [];
+  /// What a payment provider is shown — the goods, delivery and anything taken off, per VAT rate; they add up to `Total`.
+  public List<PaymentLine> PaymentLines = [];
+}
+
+/// The country a bag is priced for: where it goes — none for a collection, which is sold at the shop.
+string PricingCountry(Placement p) {
+  return p.Way.NeedsAddress || p.Fulfilment == Fulfilment.Digital ? p.Country : "";
+}
+
+/// What an order placed from `bag` for `account` (null: a guest) costs, the way `p` says it is delivered — priced from
+/// the bag and the shop's own settings, never from a page. Throws the sentence the customer reads when it may not be
+/// ordered as it is (an add-on refuses it, or the goods need an age the buyer has not proved).
+public PricedOrder PriceBag(Bag bag, Placement p, ShopAccount? account) {
+  var shop = TheShop();
+  var way = p.Way;
+  // In a SOLD currency everything below — lines, delivery, what comes off, VAT — is in it (LinePrice, DeliveryChoices).
+  var sale = SaleRate(bag.Currency);
+  var currency = sale == null ? shop.Currency : sale.Currency;
+  // An agreed price (a subscription's) is placed only in the currency it was agreed in.
+  if (SoldCurrencyProblem(bag) != "") { throw new Exception(SoldCurrencyProblem(bag)); }
+  var subtotal = BagSubtotal(bag);
+  // Bought on a price list (Wholesale.osy): its minimums hold, and the invoice is made out to the company.
+  var trade = WholesaleOf(BagCustomer(bag));
+  var tradeProblem = WholesaleProblem(bag);
+  if (tradeProblem != "") { throw new Exception(tradeProblem); }
+  // A gift card whose buyer chose its amount: within the shop's bounds (in a sold currency, those bounds converted),
+  // or not at all.
+  foreach (var l in bag.Lines.Where(x => x.Variant.Product.IsGiftCard && x.Variant.AnyAmount)) {
+    var amount = LinePrice(l);
+    var min = Converted(shop.GiftCardMin, sale);
+    var max = Converted(shop.GiftCardMax, sale);
+    if (amount < min || amount > max) {
+      throw new Exception($"A gift card is from {MoneyIn(min, currency, shop)} to {MoneyIn(max, currency, shop)} — change the amount.");
+    }
+  }
+  var cardsSold = bag.Lines.Where(x => x.Variant.Product.IsGiftCard).ToList().Sum(x => LinePrice(x) * x.Quantity);
+  // What the add-ons take off. A free delivery is already in `way.Price` (DeliveryChoices asked the same add-ons).
+  var basket = BasketOf(bag, PricingCountry(p));
+  basket.Email = p.Email.Trim();
+  foreach (var addOn in ShopAddOns()) {
+    var refused = addOn.Refuses(basket);
+    if (refused != "") { throw new Exception(refused); }
+  }
+  var adjustments = AdjustmentsFor(basket);
+  var left = basket.Subtotal - adjustments.Sum(a => a.Amount);
+  foreach (var c in p.Credits) {
+    var amount = Math.Min(Math.Max(c.Amount, 0m), left);
+    left = left - amount;
+    if (amount > 0) { adjustments.Add(new Adjustment { Source = c.Source, Label = c.Label, Amount = amount, Reference = c.Reference }); }
+  }
+  var discount = adjustments.Sum(a => a.Amount);
+  // Goods with an age: the buyer's date of birth — the one given for this bag, or for an account, the one its earlier
+  // order proved (a renewal has nobody there to ask).
+  var ageNeeded = AgeNeeded(bag);
+  DateOnly? bornOn = bag.BuyerBornOn;
+  // …or PROVED by an identity provider for this bag (AgeChecks.osy) — which wins over a typed date, and keeps none.
+  string? verifiedBy = null;
+  DateTime? verifiedAt = null;
+  if (ageNeeded > 0) {
+    var check = VerifiedAgeCheck(bag, ageNeeded);
+    var verifier = App.Setting<ShopSetup>().AgeVerifier;
+    if (check != null) {
+      verifiedBy = verifier != null && verifier.Key == check.Provider ? verifier.Label : check.Provider;
+      verifiedAt = check.VerifiedAt;
+      bornOn = null;
+    }
+  }
+  if (ageNeeded > 0 && verifiedBy == null && bornOn == null && account != null) {
+    // A renewal has nobody there to ask: what the account's earlier order proved stands — verified, or the date given.
+    var earlier = Order.Where(o => o.Account == account && o.AgeChecked >= ageNeeded && o.AgeVerifiedBy != null)
+                       .OrderByDescending(o => o.PlacedAt).FirstOrDefault();
+    if (earlier != null) { verifiedBy = earlier.AgeVerifiedBy; verifiedAt = earlier.AgeVerifiedAt; }
+    else {
+      var proved = OrderContact.Where(c => c.Order.Account == account && c.BornOn != null).OrderByDescending(c => c.Order.PlacedAt).FirstOrDefault();
+      if (proved != null) { bornOn = proved.BornOn; }
+    }
+  }
+  if (ageNeeded > 0 && verifiedBy == null) {
+    var offered = AgeVerifiedWith();
+    // At a counter the clerk sees the ID: the date of birth they checked is the proof there.
+    if (offered != "" && App.Setting<ShopSetup>().AgeMustBeVerified && !p.AtCounter) {
+      throw new Exception($"Something in your bag is sold only to people {ageNeeded} or older. Verify your age with {offered}.");
+    }
+    if (bornOn == null) { throw new Exception($"Something in your bag is sold only to people {ageNeeded} or older. Tell us your date of birth."); }
+    if (AgeOn(bornOn!.Value, DateOnly.FromDateTime(DateTime.UtcNow)) < ageNeeded) {
+      throw new Exception($"Something in your bag is sold only to people {ageNeeded} or older.");
+    }
+  }
+  var vatCountry = p.VatCountry;
+  var reverse = ReverseChargeApplies(bag, shop, vatCountry);
+  var exported = !reverse && Exported(shop, vatCountry);
+  var net = reverse || exported ? ReverseChargePricing(bag, way.Price, discount, shop) : null;
+  var priced = new PricedOrder {
+    Currency = currency, Rate = sale == null ? 1m : sale.PerUnit,
+    RateDate = sale == null ? null : sale.RateDate, RateSource = sale == null ? null : sale.Source,
+    Subtotal = net == null ? subtotal : net.Goods, Discount = net == null ? discount : net.Discount,
+    Delivery = net == null ? way.Price : net.Delivery, Total = net == null ? subtotal - discount + way.Price : net.Total,
+    ReverseCharge = reverse, Exported = exported,
+    BuyerVatNumber = reverse ? bag.BuyerVatNumber : trade != null ? trade.VatNumber : null,
+    BuyerCompany = reverse ? bag.BuyerCompany : trade != null ? trade.Company : null,
+    AgeChecked = ageNeeded, BornOn = ageNeeded > 0 && verifiedBy == null ? bornOn : null,
+    AgeVerifiedBy = ageNeeded > 0 ? verifiedBy : null, AgeVerifiedAt = ageNeeded > 0 ? verifiedAt : null,
+    HoldDays = p.HoldDays > 0 ? p.HoldDays : shop.HoldDays,
+    Adjustments = adjustments,
+    GiftCardsSold = cardsSold,
+  };
+  // The gift cards on the bag pay first, as much as they hold — and what single-purpose ones pay carries no second VAT.
+  // An order the shop places carries no cards.
+  if (!p.ByShop) {
+    var uses = GiftCardUses(bag, priced.Total - cardsSold);
+    priced.GiftCardUsed = uses.Sum(u => u.Amount);
+    priced.SinglePurposeUsed = SinglePurposePaid(uses);
+    priced.VoucherVat = VoucherVatOf(uses);
+  }
+  // Cards sold as single-purpose vouchers carry the standard rate — not in a sale without the shop's VAT (reverse
+  // charge, an export), where a card's place of supply is not the shop's, so it is a multi-purpose one.
+  var cardRate = net != null ? 0m : CardVatPercent(shop);
+  priced.GiftCardsSinglePurpose = cardRate > 0 && cardsSold > 0;
+  priced.GiftCardsSoldVat = cardRate > 0 ? bag.Lines.ToList().Where(x => x.Variant.Product.IsGiftCard).Sum(x => VatIn(LinePrice(x) * x.Quantity, cardRate)) : 0m;
+  var shares = VatDue(bag, way.Price, discount, shop, vatCountry, priced.SinglePurposeUsed);
+  foreach (var l in bag.Lines) {
+    var label = LineLabel(l);
+    var rate = net != null ? 0m : l.Variant.Product.IsGiftCard ? cardRate : VatRateFor(l.Variant.Product, shop, vatCountry);
+    // Reverse charge or an export: the unit price without the shop's VAT, and no VAT on the line.
+    var price = net != null ? NetOf(LinePrice(l), VatRateOf(l.Variant.Product, shop)) : LinePrice(l);
+    priced.Lines.Add(new PricedLine { Variant = l.Variant, Quantity = l.Quantity, Price = price, VatPercent = rate,
+                                      ProductName = l.Variant.Product.Name, Label = label, From = l });
+    priced.PaymentLines.Add(new PaymentLine { Name = label == "" ? l.Variant.Product.Name : $"{l.Variant.Product.Name} — {label}",
+                                              Quantity = l.Quantity, UnitPrice = Minor(price), TaxRate = (long)Math.Round(rate * 100m) });
+  }
+  var many = shares.Count > 1;
+  var offLabel = string.Join(", ", adjustments.Where(a => a.Amount > 0).Select(a => a.Label));
+  if (net != null) {
+    // One line of the order's VAT: none — the buyer's country accounts for it (reverse charge), or the goods left.
+    priced.VatRates.Add(new PricedVat { Percent = 0m, Gross = priced.Total - cardsSold - priced.SinglePurposeUsed, Vat = 0m,
+                                        Country = reverse ? PrefixCountry(bag.BuyerVatNumber!.Substring(0, 2)) : vatCountry });
+    if (net!.Delivery > 0) { priced.PaymentLines.Add(new PaymentLine { Name = way.Label, UnitPrice = Minor(net.Delivery) }); }
+    if (net.Discount > 0) { priced.PaymentLines.Add(new PaymentLine { Name = offLabel, UnitPrice = -Minor(net.Discount) }); }
+    shares = [];
+  }
+  foreach (var r in shares) {
+    priced.VatRates.Add(new PricedVat { Percent = r.Percent, Gross = r.Gross, Vat = r.Vat, Country = VatCountryOf(shop, vatCountry) });
+    priced.Vat = priced.Vat + r.Vat;
+    // Delivery and a discount go to the provider once per rate, so each line's tax is true.
+    if (r.Delivery > 0) {
+      priced.PaymentLines.Add(new PaymentLine { Name = many ? $"{way.Label} ({r.Percent:0.##} %)" : way.Label,
+                                                UnitPrice = Minor(r.Delivery), TaxRate = (long)Math.Round(r.Percent * 100m) });
+    }
+    // A discount is a negative line, so the lines still add up to the amount — each provider shows it its own way.
+    if (r.Discount > 0) {
+      priced.PaymentLines.Add(new PaymentLine { Name = many ? $"{offLabel} ({r.Percent:0.##} %)" : offLabel,
+                                                UnitPrice = -Minor(r.Discount), TaxRate = (long)Math.Round(r.Percent * 100m) });
+    }
+  }
+  return priced;
+}
+
+/// Places an order from `bag` for `account` (null: a guest) — the checkout's path, and a renewal's. Everything is priced
+/// here, from the bag and the placement (`PriceBag`), never taken from a page.
+Receipt PlaceBag(Bag bag, Placement p, ShopAccount? account) {
+  var shop = TheShop();
+  var way = p.Way;
+  var choice = p.Pay;
+  var fulfilment = p.Fulfilment;
+  var email = p.Email;
+  var priced = PriceBag(bag, p, account);
+  var total = priced.Total;
+  // What gift cards and store credit may pay: everything but a gift card bought now.
+  var payable = total - priced.GiftCardsSold;
+  // Gift cards pay first (the one that expires first first), then store credit — never more than they hold, or than
+  // the order costs. The order's workflow takes both (or finds them gone) when the order is placed. Not for an order
+  // the shop places: its bag carries no cards.
+  var cards = priced.GiftCardUsed;
+  var credit = p.AtCounter ? Math.Min(Math.Max(p.CounterCredit, 0m), Math.Max(payable - cards, 0m))
+    : p.UseCredit && account != null && account == Session.CurrentUser ? CreditFor(bag, payable - cards) : 0m;
+  if ((choice.Key == StoreCreditKey() || choice.Key == GiftCardKey()) && credit + cards < total) {
+    throw new Exception(credit + cards <= 0 ? "There is no gift card or store credit to pay with. Choose another way to pay."
+      : $"Your gift card and store credit cover {MoneyIn(credit + cards, priced.Currency, shop)} of {MoneyIn(total, priced.Currency, shop)} . Choose how to pay the rest.");
+  }
+  // All of it from gift cards and store credit: no provider takes anything, whichever was chosen.
+  var byCredit = credit + cards > 0 && credit + cards >= total;
+  var prepaidKey = cards > 0 ? GiftCardKey() : StoreCreditKey();
+  var prepaidLabel = cards > 0 && credit > 0 ? "Gift card and store credit" : cards > 0 ? "Gift card" : "Store credit";
+  var order = new Order {
+    Currency = priced.Currency == shop.Currency ? null : priced.Currency, Rate = priced.Rate, RateDate = priced.RateDate,
+    RateSource = priced.RateSource,
+    Fulfilment = fulfilment, DeliveryMethod = way.Id, DeliveryLabel = way.Label,
+    PaymentMethod = byCredit ? prepaidKey : choice.Key, PaymentLabel = byCredit ? prepaidLabel : choice.Label,
+    Subtotal = priced.Subtotal, Discount = priced.Discount, Delivery = priced.Delivery, Total = total, Vat = priced.Vat,
+    CreditUsed = credit, GiftCardUsed = cards, GiftCardsSold = priced.GiftCardsSold, ExchangeFor = p.ExchangeFor,
+    GiftCardsSinglePurpose = priced.GiftCardsSinglePurpose, GiftCardsSoldVat = priced.GiftCardsSoldVat,
+    SinglePurposeUsed = priced.SinglePurposeUsed, VoucherVat = priced.VoucherVat,
+    ReverseCharge = priced.ReverseCharge, Exported = priced.Exported,
+    BuyerVatNumber = priced.BuyerVatNumber, BuyerCompany = priced.BuyerCompany,
+    HoldDays = priced.HoldDays,
+    PlacedAt = DateTime.UtcNow,
+    TermsAcceptedAt = bag.TermsAcceptedAt,
+    DigitalConsentAt = bag.Lines.ToList().Any(l => l.Variant.IsDownload) ? bag.DigitalConsentAt : null,
+    TermsVersion = shop.Terms == null ? null : TermsVersion(shop),
+    Account = account,
+    VisitId = p.ByShop || p.AtCounter ? null : Visitor.Id,
+    AtCounter = p.AtCounter, SoldAt = p.AtCounter ? p.SoldAt : null, SoldBy = p.AtCounter ? Session.CurrentUser : null,
+    SaveMethod = p.SaveMethod && account != null,
+    AgeChecked = priced.AgeChecked,
+    AgeVerifiedBy = priced.AgeVerifiedBy, AgeVerifiedAt = priced.AgeVerifiedAt,
+    PlacedFrom = bag,
+    PlacedByShop = p.ByShop,
+    Language = p.ByShop ? null : Session.Language,
+  };
+  foreach (var a in priced.Adjustments) {
+    new OrderAdjustment { Order = order, Source = a.Source, Label = a.Label, Amount = a.Amount, FreeDelivery = a.FreeDelivery,
+                          Reference = a.Reference == "" ? null : a.Reference };
+  }
+  order.Reference = $"{shop.OrderPrefix}{order.Number}";
+  var contact = new OrderContact {
+    Order = order, Name = p.Name.Trim(), Email = email.Trim(), Phone = Blank(p.Phone),
+    // An address only for a delivery — a collection's order has none, rather than four empty strings.
+    Street = way.NeedsAddress ? Blank(p.Street) : null,
+    PostCode = way.NeedsAddress ? Blank(p.PostCode) : null,
+    City = way.NeedsAddress ? Blank(p.City) : null,
+    // A digital order keeps the buyer's country: its VAT is theirs.
+    Country = way.NeedsAddress || fulfilment == Fulfilment.Digital ? Blank(p.Country) : null,
+    BornOn = priced.BornOn,
+  };
+  // The point the customer chose for THIS way of delivering goes with the order; one chosen for another does not.
+  var point = way.ChoosePoint && bag.PickupPointFor == way.Id && bag.PickupPointId != null;
+  // Read off the bag now: after the commit a guest may no longer read the contact it was copied to.
+  var pointText = point ? PointLine(bag.PickupPointName, bag.PickupPointStreet, bag.PickupPointPostCode, bag.PickupPointCity) : "";
+  if (point) {
+    contact.PickupPointId = bag.PickupPointId;
+    contact.PickupPointName = bag.PickupPointName;
+    contact.PickupPointStreet = bag.PickupPointStreet;
+    contact.PickupPointPostCode = bag.PickupPointPostCode;
+    contact.PickupPointCity = bag.PickupPointCity;
+    contact.PickupPointCountry = bag.PickupPointCountry;
+  }
+  foreach (var l in priced.Lines) {
+    var line = new OrderLine {
+      Order = order, Variant = l.Variant!, Quantity = l.Quantity, Price = l.Price, VatPercent = l.VatPercent,
+      ProductName = l.ProductName, VariantLabel = l.Label == "" ? null : l.Label, Kind = KindOf(l.Variant!),
+    };
+    // Who a gift card is for goes with its line — the buyer's words, which the card is mailed with.
+    var gift = l.From == null ? null : GiftCardOf(l.From!);
+    if (gift != null) {
+      new GiftCardOrderLine { Line = line, Amount = l.Price, FromName = gift.FromName, ToName = gift.ToName, ToEmail = gift.ToEmail,
+                              Message = gift.Message, SendOn = gift.SendOn };
+    }
+  }
+  foreach (var r in priced.VatRates) {
+    new OrderVat { Order = order, Percent = r.Percent, Gross = r.Gross, Vat = r.Vat, Country = r.Country };
+  }
+  var lines = priced.PaymentLines;
+  // The customer's link to the order — where the provider's page sends them back, and what the receipt opens.
+  var link = $"{OrderLink.For(order)}";
+
+  // Store credit and gift cards are means of payment, not money off: they carry no VAT of their own, and the lines
+  // still add up to what the provider is asked for.
+  if (cards > 0 && !byCredit) { lines.Add(new PaymentLine { Name = "Gift card", UnitPrice = -Minor(cards) }); }
+  if (credit > 0 && !byCredit) { lines.Add(new PaymentLine { Name = "Store credit", UnitPrice = -Minor(credit) }); }
+
+  var request = new PaymentRequest {
+    Reference = order.Reference, Currency = priced.Currency, Amount = Minor(total - credit - cards), Lines = lines,
+    CustomerEmail = email.Trim(), Description = $"{shop.Name} — order {order.Reference}",
+    Country = p.VatCountry == "" ? null : p.VatCountry,
+    ReturnUrl = $"{App.BaseUrl}/paid/{link}/{choice.Key}-{{token}}",
+    CancelUrl = $"{App.BaseUrl}/paid/{link}/cancelled",
+    EventsUrl = $"{App.BaseUrl}/payments/{choice.Key}/events",
+    IdempotencyKey = order.Id.ToString(),
+    SaveMethod = order.SaveMethod,
+  };
+  // None when store credit pays it all — nothing is asked of a provider.
+  // A counter sale is paid at the counter next (Counter.osy) — nothing is started here.
+  var provider = byCredit || p.AtCounter ? null : App.Setting<ShopSetup>().Payments.FirstOrDefault(p => p.Key == choice.Key);
+  if (!byCredit && !p.AtCounter && provider == null) { throw new Exception("That way to pay is not on offer for this order — choose another."); }
+  // A payment with nowhere to go says how to pay now, so the confirmation mail — sent as the order is reserved — can
+  // carry it. Starting one moves nothing. An exchange's replacement is not paid now: what is owed on it is worked out
+  // when the goods come back (`ReceiveReturn`).
+  if (provider != null && provider.IsManual && p.ExchangeFor == null) { order.PayInstructions = HandPayInstructions(provider, request); }
+  UnitOfWork.Commit();
+  // The order's workflow has decided by now — see OrderLifecycle's `Placed`.
+
+  if (order.Status == OrderStatus.Unavailable && order.Mispriced) {
+    // The shop's price for the bag moved between pricing it here and the order's workflow checking it (a price was
+    // changed, a code ran out) — nothing was held; the customer looks at a checkout that is true again.
+    throw new Exception($"{order.Problem} — look at the checkout again.");
+  }
+  if (order.Status == OrderStatus.Unavailable && (order.CreditShort || order.GiftCardShort)) {
+    // The goods are there; the store credit is not (spent at another checkout a moment ago). Nothing in the bag changed.
+    throw new Exception($"{order.Problem} — look at the checkout again.");
+  }
+  if (order.Status == OrderStatus.Unavailable) {
+    // Make the bag true: what sold out leaves it, what ran short drops to what is left.
+    foreach (var l in bag.Lines) {
+      if ((!l.Variant.Unlimited && Buyable(l.Variant) == 0) || l.Variant.Product.Status != ProductStatus.Listed) { l.Delete(); }
+      else if (!l.Variant.Unlimited && l.Quantity > Buyable(l.Variant)) { l.Quantity = Buyable(l.Variant); }
+    }
+    UnitOfWork.Commit();
+    EndBagLinksIfEmpty(bag);
+    throw new Exception($"Something in your bag went a moment before you: {order.Problem}. Your bag now holds what is left.");
+  }
+
+  // An agreed price goes with its line (`[Required] BagLine Line` — a cascade): it is the shop's row, which the
+  // customer placing the order may not delete one by one.
+  foreach (var l in bag.Lines) { l.Delete(); }
+  // Ordered: a link the reminder carried has nothing left to open, and the next time this bag fills and is left, it
+  // may be reminded about once more.
+  EndBagLinks(bag);
+  bag.RemindedAt = null;
+  // The point was chosen for this order: the next one chooses again.
+  bag.PickupPointFor = null;
+  bag.PickupPointId = null;
+  // The cards paid (or the order holds them to): the next checkout adds its own. So does the consent to a download.
+  foreach (var c in BagGiftCard.Where(x => x.Bag == bag).ToList()) { c.Delete(); }
+  bag.DigitalConsentAt = null;
+  UnitOfWork.Commit();
+
+  // Paid in full from store credit: taken already by the order's workflow, so it is paid now — the same event any
+  // provider's payment raises.
+  if (byCredit && order.Status == OrderStatus.Reserved) {
+    OrderLifecycle.CorrelatePaymentReceived(order.Reference, prepaidLabel, "", "", "");
+  }
+
+  var receipt = new Receipt {
+    Reference = order.Reference, Status = order.Status, Currency = priced.Currency, Total = order.Total, Discount = order.Discount, Fulfilment = fulfilment,
+    PaymentLabel = order.PaymentLabel ?? choice.Label, DeliveryLabel = way.Label, PayInstructions = order.PayInstructions ?? "",
+    PickupPoint = pointText, Credit = order.CreditUsed, GiftCard = order.GiftCardUsed, ToPay = AmountDue(order),
+    Link = link,
+  };
+  if (provider != null && !provider.IsManual && p.StartPayment) {
+    // ⚠ AFTER the commit, deliberately: the goods are reserved whether or not the provider answers. An outage must not
+    //   lose the customer their order — it leaves the reservation standing and says so.
+    try {
+      receipt.PayUrl = provider.Start(request).RedirectUrl;
+    }
+    catch (Exception ex) {
+      Log.Warning($"{choice.Label} payment for {order.Reference} could not be started: {ex.Message}");
+      receipt.PayProblem = $"{choice.Label} could not be reached just now. Your order is reserved for {shop.HoldDays} days — "
+        + "try again shortly, or write to us and we will help.";
+    }
+  }
+  return receipt;
+}
+
+/// Why `order` is not what the shop charges for it — "" when it is. Called by the order's workflow, as the shop, before
+/// anything is held for the order or any payment asked for it.
+///
+/// An order the shop placed itself (`PlacedByShop` — staff, a renewal) is taken as it is. One a customer placed —
+/// through the checkout, an exchange of their own, or by writing the rows themselves — is priced AGAIN from the bag it
+/// was placed from, by `PriceBag`, for the delivery it names and the address it goes to; every figure, line, adjustment
+/// and VAT row must be that price, and the way it is paid one the shop offers for it.
+// SECURITY-INVARIANT(an-order-is-priced-by-the-shop): a customer may write an order's rows (the checkout does, as them),
+//   so nothing those rows SAY it costs is trusted: the workflow re-prices a customer's order with the checkout's own
+//   `PriceBag` and refuses one that differs, before it holds a thing. Without it a visitor writes a Loafer at 1.00, pays
+//   1.00, and it is packed. Guarded by order-pricing.test.osy a_customer_cannot_price_their_own_order,
+//   a_customer_cannot_state_their_own_total and a_visitor_cannot_price_their_own_order; its currency and rate by
+//   sell-currencies.test.osy a_customer_cannot_state_their_own_currency_or_rate.
+string PriceProblem(Order order) {
+  if (order.PlacedByShop) { return ""; }
+  var wrong = "The price on this order is not the shop's price";
+  var bag = order.PlacedFrom;
+  var contact = order.Contact.FirstOrDefault();
+  if (bag == null || contact == null) { return wrong; }
+  var p = PlacementOf(order, bag!, contact!);
+  if (p == null) { return wrong; }
+  var shop0 = TheShop();
+  PricedOrder priced;
+  try { priced = PriceBag(bag!, p!, order.Account); }
+  catch (Exception ex) { return ex.Message; }
+  // The currency and the rate it was priced at are the shop's too: a customer's order in euros at a rate of their own
+  // would be converted by it in the books, and one that says "the shop's own" would be charged the euro figures in kronor.
+  if ((order.Currency ?? shop0.Currency) != priced.Currency || order.Rate != priced.Rate || order.RateDate != priced.RateDate
+      || (order.RateSource ?? "") != (priced.RateSource ?? "")) {
+    return wrong;
+  }
+  if (order.Subtotal != priced.Subtotal || order.Discount != priced.Discount || order.Delivery != priced.Delivery
+      || order.Total != priced.Total || order.Vat != priced.Vat || order.GiftCardsSold != priced.GiftCardsSold
+      || order.GiftCardsSinglePurpose != priced.GiftCardsSinglePurpose || order.GiftCardsSoldVat != priced.GiftCardsSoldVat
+      || order.SinglePurposeUsed != priced.SinglePurposeUsed || order.VoucherVat != priced.VoucherVat
+      || order.SinglePurposeUsed > order.GiftCardUsed
+      || order.ReverseCharge != priced.ReverseCharge
+      || order.Exported != priced.Exported || (order.BuyerVatNumber ?? "") != (priced.BuyerVatNumber ?? "")
+      || (order.BuyerCompany ?? "") != (priced.BuyerCompany ?? "") || order.AgeChecked != priced.AgeChecked
+      || (order.AgeVerifiedBy ?? "") != (priced.AgeVerifiedBy ?? "") || order.AgeVerifiedAt != priced.AgeVerifiedAt
+      || order.HoldDays != priced.HoldDays || order.Fulfilment != p!.Fulfilment || order.DeliveryMethod != p!.Way.Id
+      || (order.DeliveryLabel ?? "") != p!.Way.Label || (priced.AgeChecked > 0 && contact!.BornOn != priced.BornOn)) {
+    return wrong;
+  }
+  var lines = order.Lines.ToList().Select(l => $"{l.Variant.Id}|{l.Quantity}|{l.Price:0.00##}|{l.VatPercent:0.00##}|{l.ProductName}|{l.VariantLabel ?? ""}|{l.Kind}");
+  var pricedLines = priced.Lines.Select(l => $"{l.Variant!.Id}|{l.Quantity}|{l.Price:0.00##}|{l.VatPercent:0.00##}|{l.ProductName}|{l.Label}|{KindOf(l.Variant!)}");
+  var offs = order.Adjustments.ToList().Select(a => $"{a.Source}|{a.Label}|{a.Amount:0.00##}|{a.FreeDelivery}|{a.Reference ?? ""}");
+  var pricedOffs = priced.Adjustments.Select(a => $"{a.Source}|{a.Label}|{a.Amount:0.00##}|{a.FreeDelivery}|{a.Reference}");
+  var rates = order.VatRates.ToList().Select(r => $"{r.Percent:0.00##}|{r.Gross:0.00##}|{r.Vat:0.00##}|{r.Country ?? ""}");
+  var pricedRates = priced.VatRates.Select(r => $"{r.Percent:0.00##}|{r.Gross:0.00##}|{r.Vat:0.00##}|{r.Country ?? ""}");
+  if (!SameRows(lines.ToList(), pricedLines.ToList()) || !SameRows(offs.ToList(), pricedOffs.ToList())
+      || !SameRows(rates.ToList(), pricedRates.ToList())) {
+    return wrong;
+  }
+  // How it is paid: gift cards and store credit as far as they hold (the workflow takes them next, against their
+  // balances) — never for a gift card bought now — and the rest through a way the shop offers for this order, with
+  // the instructions the shop gives, not the page's.
+  if (order.CreditUsed < 0 || order.GiftCardUsed < 0 || order.CreditUsed + order.GiftCardUsed > order.Total - order.GiftCardsSold) {
+    return "A gift card or store credit cannot pay for a gift card.";
+  }
+  // A file comes with the customer's consent to have it at once — asked for this bag.
+  if (order.Lines.ToList().Any(l => l.Kind == LineKind.Download) && (order.DigitalConsentAt == null || bag!.DigitalConsentAt == null)) {
+    return "Say that you want the download as soon as it is paid. You then lose the right to withdraw from buying it.";
+  }
+  var byCredit = order.CreditUsed + order.GiftCardUsed > 0 && order.CreditUsed + order.GiftCardUsed >= order.Total;
+  if (byCredit) { return order.PaymentMethod == StoreCreditKey() || order.PaymentMethod == GiftCardKey() ? "" : wrong; }
+  if (order.AtCounter) {
+    // Paid at the counter a way the counter offers (Counter.osy) — and nothing to pay "as the shop told you".
+    var atCounter = CounterPayChoices(priced.Currency).FirstOrDefault(c => c.PaysAs == order.PaymentMethod && c.Label == (order.PaymentLabel ?? ""));
+    return atCounter == null || order.PayInstructions != null ? wrong : "";
+  }
+  var pay = PaymentChoicesIn(p!.Fulfilment == Fulfilment.Collect, priced.Currency, p!.VatCountry, bag!.Owner).FirstOrDefault(c => c.Key == order.PaymentMethod);
+  if (pay == null || (order.PaymentLabel ?? "") != pay.Label) { return wrong; }
+  var provider = App.Setting<ShopSetup>().Payments.FirstOrDefault(x => x.Key == order.PaymentMethod);
+  var instructions = provider != null && provider.IsManual && order.ExchangeFor == null
+    ? HandPayInstructions(provider, PaymentRequestFor(order)) : null;
+  if ((order.PayInstructions ?? "") != (instructions ?? "")) { return wrong; }
+  // The terms: accepted for this bag, in the words the shop has now. An exchange is placed under the original's.
+  var shop = TheShop();
+  if (shop.Terms != null && order.ExchangeFor == null && (bag!.TermsAcceptedAt == null || order.TermsVersion != TermsVersion(shop))) {
+    return "Accept the terms of purchase to place the order.";
+  }
+  return "";
+}
+
+/// Two lists holding the same rows, in any order.
+bool SameRows(List<string> a, List<string> b) {
+  return a.Count == b.Count && string.Join("\n", a.OrderBy(x => x)) == string.Join("\n", b.OrderBy(x => x));
+}
+
+/// The choices a customer's order was placed with, read back from it — how it reaches them, where, and whose VAT —
+/// the way `PlaceOrder` and `ExchangeItem` make them. Null when the order names a delivery the shop does not offer
+/// for its bag, or an exchange of somebody else's order.
+Placement? PlacementOf(Order order, Bag bag, OrderContact contact) {
+  var country = contact.Country ?? "";
+  DeliveryChoice? way = null;
+  var holdDays = 0;
+  if (order.AtCounter) {
+    // Sold over the counter (Counter.osy) — collected where it was sold, priced for no country.
+    way = CounterWay(order.SoldAt);
+  } else if (order.ExchangeFor != null) {
+    var original = order.ExchangeFor!;
+    if (order.Account == null || original.Account != order.Account) { return null; }
+    var originalContact = original.Contact.FirstOrDefault();
+    if (originalContact == null) { return null; }
+    way = ExchangeWay(bag, original, originalContact.Country ?? TheShop().HomeCountry);
+    holdDays = TheShop().ReturnDays + 14;
+  } else {
+    // A collection is priced for no country (it is sold at the shop); a delivery for the one it goes to.
+    way = DeliveryChoicesFor(bag, order.Fulfilment == Fulfilment.Collect ? "" : country).FirstOrDefault(d => d.Id == order.DeliveryMethod);
+  }
+  if (way == null) { return null; }
+  var digital = way!.NothingToShip;
+  return new Placement {
+    Name = contact.Name, Email = contact.Email, Phone = contact.Phone ?? "", Street = contact.Street ?? "",
+    PostCode = contact.PostCode ?? "", City = contact.City ?? "", Country = way!.NeedsAddress || digital ? country : "",
+    Way = way!, Fulfilment = digital ? Fulfilment.Digital : way!.NeedsAddress ? Fulfilment.Deliver : Fulfilment.Collect,
+    VatCountry = way!.NeedsAddress || digital ? CountryCode(country) : "",
+    ExchangeFor = order.ExchangeFor, HoldDays = holdDays,
+    AtCounter = order.AtCounter, SoldAt = order.SoldAt,
+  };
+}
+
+/// How an exchange's replacement for `original` travels: the way the original went (or the nearest like it), at the
+/// shop's cost. Null when the shop has no way to send it to `country`.
+DeliveryChoice? ExchangeWay(Bag bag, Order original, string country) {
+  var ways = DeliveryChoicesFor(bag, country);
+  var like = ways.FirstOrDefault(w => w.Id == original.DeliveryMethod)
+          ?? ways.FirstOrDefault(w => w.NeedsAddress == (original.Fulfilment == Fulfilment.Deliver) && !w.ChoosePoint)
+          ?? ways.FirstOrDefault(w => !w.ChoosePoint);
+  if (like == null) { return null; }
+  return new DeliveryChoice { Id = like.Id, Label = like.Label, Description = like.Description, Price = 0m,
+                              NeedsAddress = like.NeedsAddress, ChoosePoint = like.ChoosePoint, Days = like.Days };
+}
+
+/// The point an order is collected from, as one line — "ICA Supermarket Hornstull, Långholmsgatan 21, 11733 Stockholm".
+/// "" when the customer chose none.
+public string PickupPointText(OrderContact contact) {
+  if (contact.PickupPointId == null) { return ""; }
+  return PointLine(contact.PickupPointName, contact.PickupPointStreet, contact.PickupPointPostCode, contact.PickupPointCity);
+}
+
+/// A point's name and address as one line, leaving out what is missing.
+public string PointLine(string? name, string? street, string? postCode, string? city) {
+  var town = $"{postCode ?? ""} {city ?? ""}".Trim();
+  return string.Join(", ", new List<string> { name ?? "", street ?? "", town }.Where(s => s != ""));
+}
+
+/// What being paid does to an order — its stock is sold, the payment recorded, what is not packed is issued, and the
+/// customer and the shop are told. Called by the order's workflow, as the shop, from either way a payment arrives.
+void TakePayment(Order order, string how, string paymentRef, string savedMethod, string savedLabel) {
+  // Paid: what was reserved is sold. Out of `Reserved`, and still out of `Stock`.
+  foreach (var l in order.Lines.Where(x => x.Held)) { MoveStockAt(order.Location, l.Variant, 0, -l.Quantity); }
+  order.PaidWith = how;
+  order.PaymentRef = paymentRef == "" ? null : paymentRef;
+  order.PaidAt = DateTime.UtcNow;
+  // Kept HERE, by the order's own workflow, from what the provider answered — never a row a caller writes, so
+  // nobody can put a way to pay on somebody else's account.
+  if (savedMethod != "" && order.SaveMethod && order.Account != null) {
+    KeepPaymentMethod(order.Account!, order.PaymentMethod, savedMethod, savedLabel);
+  }
+  IssueInvoice(order);
+  // What was bought that is not packed: the gift cards are issued (and mailed, now or on their day), the files open.
+  IssueGiftCards(order);
+  OpenDownloads(order);
+  // A counter sale was paid in front of the clerk and is handed over now: its receipt is the only mail.
+  if (!order.AtCounter) {
+    MailShop(order, $"Paid — {order.Reference} is ready to pick");
+    TellCustomer(order, $"Paid — order {order.Reference}",
+      $"Thank you — we have your payment of {OrderMoney(order.Total, order)} for order {order.Reference}. "
+      + (order.Fulfilment == Fulfilment.Deliver ? "We will mail you again when it is on its way."
+         : order.Fulfilment == Fulfilment.Digital ? "It is yours to use now."
+         : "We will mail you when it is ready to collect."));
+  }
+  Raise(new OrderPaid { Order = order });
+  EndPayLinks(order);                         // paid: a payment link has done its job
+  CountBoughtTogether(order, 1);              // what sells with what (Related.osy)
+}
+
+/// A typed value, or nothing when the customer left it blank.
+string? Blank(string value) {
+  var t = value.Trim();
+  return t == "" ? null : t;
+}
+
+/// The receipt for the order a link opens — what the "thank you" page and the order page show. It carries no personal
+/// data. (By its link, never its reference: a reference opens nothing.)
+[AllowAnonymous]
+public Receipt ReceiptFor(OrderLink link) {
+  var order = link.Row;
+  return new Receipt {
+    Reference = order.Reference, Status = order.Status, Currency = OrderCurrency(order), Total = order.Total, Fulfilment = order.Fulfilment,
+    Credit = order.CreditUsed, ToPay = AmountDue(order),
+    PaymentLabel = order.PaymentLabel ?? order.PaymentMethod, DeliveryLabel = order.DeliveryLabel ?? "",
+    PayInstructions = order.PayInstructions ?? "", Link = $"{link}",
+  };
+}
+
+/// The signed-in customer's orders, newest first. Empty for a visitor.
+public List<Order> MyOrders() {
+  var me = Session.CurrentUser;
+  if (me == null) { return []; }
+  return Order.Where(o => o.Account == me).OrderByDescending(o => o.PlacedAt).ToList();
+}

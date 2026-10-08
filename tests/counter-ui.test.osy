@@ -1,0 +1,68 @@
+// The counter's screen, driven as the clerk: a sale scanned in, paid on the terminal and handed over; goods taken back.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+void SignInAtTheCounter() {
+  Ui.Visit("/account/sign-in");
+  Ui.Fill("Email", "cia@shop.test");
+  Ui.Fill("Password", "till-pass-1");
+  Ui.Click("Sign in");
+  Ui.Visit("/counter");
+}
+
+[Test(Floor)]
+void a_clerk_scans_a_sale_takes_the_card_and_hands_it_over() {
+  runas (Desk) { Pick("Loafer", "38").Barcode = "7350000000017"; UnitOfWork.Commit(); }
+  Ui.Viewport(1024, 768);
+  SignInAtTheCounter();
+  Assert.Visible("Nothing rung up yet");
+  Ui.Fill("Scan or search", "7350000000017");
+  Ui.Press("Enter");
+  Assert.Visible("Loafer (38) is in.");
+  Ui.Click("One more", within: "Line Loafer (38)");
+  Assert.TextIs("€240", within: "Total");
+  Ui.Shot("counter-tablet");
+  Ui.Click("Card on the terminal");
+  Ui.Click("Take €240");
+  Assert.Visible("Charge it on the card terminal.");
+  Ui.Fill("Slip number", "0042");
+  Ui.Click("Paid");
+  Assert.Visible("Paid. Hand it over.");
+  Assert.Visible("Print the receipt");
+  runas (Desk) {
+    var o = Order.Single(x => x.AtCounter);
+    Workflow.Settle(o);
+    Assert.Equal(OrderStatus.Delivered, o.Status);
+    Assert.Equal(0, Pick("Loafer", "38").Stock);
+  }
+  Ui.Click("Next sale");
+  Assert.Visible("Nothing rung up yet");
+  // Today's sales, and the same sale back over the counter.
+  Ui.Click("Today", within: "Till");
+  Assert.Visible("Collected · Card on the terminal, slip 0042");
+  Ui.Click("Returns", within: "Till");
+  var reference = "";
+  runas (Desk) { reference = Order.Single(x => x.AtCounter).Reference; }
+  Ui.Fill("Sale or order number", reference);
+  Ui.Click("Find");
+  Assert.Visible("2 of 2 can come back");
+  Ui.Click("Take back");
+  Ui.Click("Take it back");
+  Assert.Visible("back on the card terminal");
+  Assert.Visible("1 of 2 can come back");
+  Ui.Shot("counter-return");
+}
+
+[Test(Floor)]
+void on_a_phone_the_sale_and_its_payment_stack_one_above_the_other() {
+  Ui.Viewport(390, 844);
+  SignInAtTheCounter();
+  Ui.Fill("Scan or search", "Chelsea");
+  Ui.Click("Find");
+  Ui.Click("Add", within: "Chelsea (38)");
+  Assert.TextIs("€190", within: "Total");
+  Assert.Visible("How they pay");
+  Assert.Visible("Card on the reader");
+  Ui.Shot("counter-phone");
+}

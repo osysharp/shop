@@ -1,0 +1,447 @@
+// The shop's mail, as templates filled from the order (D-EMAILTEMPLATES1). Each is an `[Email]` component: calling it
+// renders the mail — HTML in the store's own theme and its plain-text twin — and `Mail(to, …)` puts it in the outbox.
+//
+// ⚑ OVERRIDABLE, NOT FORKED. The shop never calls these by name: it asks `App.Setting<ShopSetup>().Mails` (ShopMails, in Mail.osy), whose
+//   methods answer these by default. A store that wants its own confirmation derives from ShopMails, overrides that one
+//   method, and lists it in `app.Shop` — every other mail stays the kit's.
+//
+// ⚑ THE WORDS A CUSTOMER'S RIGHTS DEPEND ON ARE HERE, not in a store's override by accident: the confirmation carries
+//   the right of withdrawal and its model form, which an EU distance sale must hand the customer (legal.test.osy).
+//
+// ⭐ STAFF ARRANGE WHAT THE MAIL SAYS AROUND THE ORDER (D-BLOCKS1 slice 3). The confirmation, on its way / collected and
+//    refunded each hold a REGION — the words the shop greets with, and whatever staff place beside them (a picture, a
+//    quote, a button) — arranged at the page desk like a page, per language, drafted and published, in the site's
+//    versions (a Christmas confirmation goes out with the Christmas site). The code writes the default; the layout,
+//    the order's facts and the customer's rights stay code: the order's lines are a block the confirmation must keep
+//    (`require:`), and the right of withdrawal is outside the region altogether.
+
+namespace Osysharp.Shop;
+
+using Osysharp.EmailTemplates;
+using Osysharp.Blocks;
+
+/// The frame every shop mail sits in — the shop's name at the top, and at the bottom where it is and how to reach it,
+/// and, for a mail a reader signed up to (a campaign), the link that stops it.
+[Email]
+public component ShopMailLayout(string preview, string? unsubscribe = null) {
+  render {
+    var shop = TheShop();
+    EmailLayout(shop.Name, preview: preview, address: shop.CompanyAddress, unsubscribe: unsubscribe,
+                footer: shop.ContactEmail == null ? null : $"Questions? Reply to this mail, or write to {shop.ContactEmail}.") {
+      Slot;
+    }
+  }
+}
+
+/// A button to the order on the store — its page, through the customer's link to it (`OrderLink`), so it opens for a
+/// guest as well as for an account, on any device.
+[Email]
+public component ShopOrderButton(Order order, string label) {
+  render {
+    EmailButton(label, OrderPageLink(order));
+  }
+}
+
+/// The order confirmation: what was ordered and what it costs, how to pay and how it arrives, and the customer's right
+/// of withdrawal with its model form.
+[Email]
+public component ShopOrderConfirmation(Order order) {
+  language => order.Language;
+  subject => $"Your order {order.Reference} — {TheShop().Name}";
+  placeholders {
+    customer.name => order.Contact.FirstOrDefault()?.Name ?? "";
+    customer.firstname => FirstName(order.Contact.FirstOrDefault()?.Name ?? "");
+    order.reference => order.Reference;
+    order.total => OrderMoney(order.Total, order);
+    shop.name => TheShop().Name;
+  }
+  render {
+    var shop = TheShop();
+    var contact = order.Contact.FirstOrDefault();
+    ShopMailLayout($"Order {order.Reference} is reserved for you — {OrderMoney(order.Total, order)}") {
+      EmailHeading(contact == null ? "Thank you for your order" : $"Thank you, {FirstName(contact.Name)}");
+      // What the shop says around the order — its words, and whatever staff place beside them — and the order's lines,
+      // which the confirmation must keep.
+      Region("shop-order-confirmation", allow: [EmailWords, EmailHeadline, EmailPicture, EmailAction, EmailQuote, EmailSmallPrint,
+                                                ShopMailOrderLines],
+             require: [ShopMailOrderLines], sample: ShopConfirmationSample) {
+        EmailWords(words: "Your order {order.reference} is reserved for you.");
+        ShopMailOrderLines();
+      }
+      EmailText(order.ExchangeFor != null
+        ? $"This is your exchange for order {order.ExchangeFor!.Reference}. We hold it for you and send it once what you are sending back is in; if it costs more than that, we will send you a way to pay the difference."
+        : AmountDue(order) <= 0 ? (order.GiftCardUsed > 0 ? "It is paid in full." : "It is paid in full with your store credit.")
+        : order.PayInstructions != null
+        ? $"Please pay {OrderMoney(AmountDue(order), order)} within {order.HoldDays} days, quoting {order.Reference}:\n{order.PayInstructions}"
+        : $"You are paying with {order.PaymentLabel ?? order.PaymentMethod}; we will confirm when it is through.");
+      EmailText(order.Contact.Any(c => c.PickupPointId != null)
+        ? $"{order.DeliveryLabel ?? "Delivery"}: we will send it to {PickupPointText(order.Contact.First())}, where you collect it."
+        : order.Fulfilment == Fulfilment.Deliver
+        ? $"{order.DeliveryLabel ?? "Delivery"}: we will send it to the address you gave."
+        : order.Fulfilment == Fulfilment.Digital ? "It is yours to use the moment it is paid."
+        : $"{order.DeliveryLabel ?? "Collection"}: we will mail you when it is ready.");
+      if (order.Lines.Any(l => l.Kind == LineKind.GiftCard)) {
+        EmailText("The gift cards are mailed once it is paid — each to whom you named, on the day you chose.");
+      }
+      // The consent to have a file at once, confirmed on a durable medium as the law asks (Downloads.osy).
+      if (order.DigitalConsentAt != null) {
+        EmailNote($"For the downloads you asked: “{DigitalConsentWords()}” The links come by mail as soon as it is paid.");
+      }
+      ShopOrderButton(order, "See your order");
+      EmailDivider();
+      EmailNote(WithdrawalText(order, shop).Trim());
+    }
+  }
+}
+
+/// What the order holds and what it costs — its lines, what came off, the delivery and the total, the VAT in it, how
+/// gift cards and store credit paid for it. A block of the confirmation's region, handed the order from the mail: staff
+/// may move it, and the confirmation keeps it (`require:`) — it is what the customer must be told they bought.
+[Block("The order", Hint = "What was ordered, what it costs and how it was paid — every confirmation carries it.")]
+[Email]
+public component ShopMailOrderLines(Order order) {
+  render {
+    var shop = TheShop();
+    EmailTable() {
+      foreach (var l in order.Lines) {
+        EmailRow($"{l.Quantity} × {l.ProductName}{(l.VariantLabel == null ? "" : " (" + l.VariantLabel + ")")}",
+                 OrderMoney(l.Price * l.Quantity, order));
+      }
+      foreach (var a in order.Adjustments.Where(a => a.Amount > 0)) {
+        EmailRow(a.Label, $"−{OrderMoney(a.Amount, order)}");
+      }
+      if (order.Delivery > 0) { EmailRow("Delivery", OrderMoney(order.Delivery, order)); }
+      EmailTotal("Total", OrderMoney(order.Total, order));
+    }
+    if (order.Vat > 0) { EmailNote(VatLines(order, shop)); }
+    // A gift card bought is a voucher: a multi-purpose one's VAT is paid when it is spent, a single-purpose one's now —
+    // written out here, each sentence whole, so a language file can translate it.
+    if (order.GiftCardsSold > 0 && order.GiftCardsSinglePurpose) {
+      EmailNote($"Gift cards ({OrderMoney(order.GiftCardsSold, order)}) are single-purpose vouchers: their VAT, {OrderMoney(order.GiftCardsSoldVat, order)}, is paid now, and nothing more when they are spent.");
+    } else if (order.GiftCardsSold > 0) {
+      EmailNote($"Gift cards ({OrderMoney(order.GiftCardsSold, order)}) carry no VAT — it is paid on what they buy.");
+    }
+    if (order.SinglePurposeUsed > 0) {
+      EmailNote($"{OrderMoney(order.SinglePurposeUsed, order)} was paid with a single-purpose gift card: its VAT, {OrderMoney(order.VoucherVat, order)}, was paid when the card was bought, so none is charged on it here.");
+    }
+    if (order.CreditUsed > 0 || order.GiftCardUsed > 0) {
+      EmailTable() {
+        foreach (var g in order.GiftCards) { EmailRow($"Paid with gift card …{g.Last4}", $"−{OrderMoney(g.Amount, order)}"); }
+        if (order.GiftCardUsed > 0 && order.GiftCards.Count() == 0) { EmailRow("Paid with gift card", $"−{OrderMoney(order.GiftCardUsed, order)}"); }
+        if (order.CreditUsed > 0) { EmailRow("Paid with store credit", $"−{OrderMoney(order.CreditUsed, order)}"); }
+        EmailTotal("To pay", OrderMoney(AmountDue(order), order));
+      }
+    }
+  }
+}
+
+// ── what the desk previews each region with ─────────────────────────────────────────────────────────────────────
+
+/// The newest order, as the confirmation's region is previewed with — through the store's own mails, in `language`.
+[Authorize(IsShopStaff)]
+public RenderedEmail? ShopConfirmationSample(string language) {
+  var order = Order.OrderByDescending(o => o.PlacedAt).FirstOrDefault();
+  return order == null ? null : App.Setting<ShopSetup>().Mails.OrderConfirmation(order, language);
+}
+
+/// The newest order that is SENT (delivered), as the on-its-way region is previewed with.
+[Authorize(IsShopStaff)]
+public RenderedEmail? ShopShippedSample(string language) {
+  var order = Order.Where(o => o.Fulfilment == Fulfilment.Deliver).OrderByDescending(o => o.PlacedAt).FirstOrDefault();
+  return order == null ? null : App.Setting<ShopSetup>().Mails.Shipped(order, language);
+}
+
+/// The newest order that is COLLECTED (not delivered), as the collected region is previewed with.
+[Authorize(IsShopStaff)]
+public RenderedEmail? ShopCollectedSample(string language) {
+  var order = Order.Where(o => o.Fulfilment != Fulfilment.Deliver).OrderByDescending(o => o.PlacedAt).FirstOrDefault();
+  return order == null ? null : App.Setting<ShopSetup>().Mails.Shipped(order, language);
+}
+
+/// The newest order, as the refunded region is previewed with.
+[Authorize(IsShopStaff)]
+public RenderedEmail? ShopRefundedSample(string language) {
+  var order = Order.OrderByDescending(o => o.PlacedAt).FirstOrDefault();
+  return order == null ? null : App.Setting<ShopSetup>().Mails.Refunded(order, language);
+}
+
+/// The VAT the total includes, one line per rate: "Of which VAT (12 %): 17.68 kr".
+public string VatLines(Order order, ShopSettings shop) {
+  return string.Join("\n", order.VatRates.ToList().Where(v => v.Vat > 0).OrderByDescending(v => v.Percent)
+    .Select(v => $"Of which VAT ({v.Percent:0.##} %): {OrderMoney(v.Vat, order)}"));
+}
+
+/// What a mail greets somebody by: their first name when they gave more than one ("Ada Lovelace" → "Ada"), and
+/// the name as given otherwise.
+public string FirstName(string name) {
+  var trimmed = name.Trim();
+  var space = trimmed.IndexOf(" ");
+  return space > 0 ? trimmed.Substring(0, space) : trimmed;
+}
+
+/// On its way — or collected: the tracking number, a button to follow the parcel, and how long it may be returned.
+[Email]
+public component ShopShipped(Order order) {
+  language => order.Language;
+  subject => order.Fulfilment == Fulfilment.Deliver
+    ? $"On its way — order {order.Reference} — {TheShop().Name}"
+    : $"Collected — order {order.Reference} — {TheShop().Name}";
+  placeholders {
+    customer.name => order.Contact.FirstOrDefault()?.Name ?? "";
+    customer.firstname => FirstName(order.Contact.FirstOrDefault()?.Name ?? "");
+    order.reference => order.Reference;
+    shop.name => TheShop().Name;
+  }
+  render {
+    var shop = TheShop();
+    var sent = order.Fulfilment == Fulfilment.Deliver;
+    ShopMailLayout(sent ? $"Order {order.Reference} is on its way" : $"Order {order.Reference} is collected") {
+      EmailHeading(sent ? "Your order is on its way" : "Your order has been collected");
+      if (sent) {
+        Region("shop-shipped", allow: [EmailWords, EmailHeadline, EmailPicture, EmailAction, EmailQuote, EmailSmallPrint],
+               sample: ShopShippedSample) {
+          EmailWords(words: "We have sent order {order.reference}.");
+        }
+      } else {
+        Region("shop-collected", allow: [EmailWords, EmailHeadline, EmailPicture, EmailAction, EmailQuote, EmailSmallPrint],
+               sample: ShopCollectedSample) {
+          EmailWords(words: "Order {order.reference} has been collected. Enjoy it.");
+        }
+      }
+      if (sent && order.Tracking != null) {
+        EmailTable() { EmailRow("Tracking number", order.Tracking); }
+      }
+      if (sent && order.TrackingUrl != null) {
+        EmailButton("Follow your parcel", order.TrackingUrl);
+      }
+      ShopOrderButton(order, "See your order");
+      EmailNote($"If it is not right you may return it within {shop.ReturnDays} days — from your order's page.");
+    }
+  }
+}
+
+/// A refunded order: how much, and when it arrives.
+[Email]
+public component ShopRefunded(Order order) {
+  language => order.Language;
+  subject => $"Refunded — order {order.Reference} — {TheShop().Name}";
+  placeholders {
+    customer.name => order.Contact.FirstOrDefault()?.Name ?? "";
+    customer.firstname => FirstName(order.Contact.FirstOrDefault()?.Name ?? "");
+    order.reference => order.Reference;
+    order.total => OrderMoney(order.Total, order);
+    shop.name => TheShop().Name;
+  }
+  render {
+    var shop = TheShop();
+    ShopMailLayout($"We have refunded {OrderMoney(order.Total, order)}") {
+      EmailHeading("Your refund is on its way");
+      Region("shop-refunded", allow: [EmailWords, EmailHeadline, EmailPicture, EmailAction, EmailQuote, EmailSmallPrint],
+             sample: ShopRefundedSample) {
+        EmailWords(words: "We are sorry it did not work out, {customer.firstname}. Here is your money back.");
+      }
+      EmailTable() {
+        if (order.CreditUsed > 0) { EmailRow("Back in your store credit", OrderMoney(order.CreditUsed, order)); }
+        EmailTotal($"Refunded for order {order.Reference}", OrderMoney(order.Total, order));
+      }
+      if (AmountDue(order) > 0) {
+        EmailText(order.PaidWith == "Card" ? "It reaches your card within a few working days." : "We will send it back the way you paid.");
+      }
+      ShopOrderButton(order, "See your order");
+    }
+  }
+}
+
+/// How to send a return back: the code to show where parcels are handed in, its QR code, the label and the tracking.
+[Email]
+public component ShopReturnCode(ReturnRequest ret) {
+  language => ret.Order.Language;
+  subject => $"Sending back your return for order {ret.Order.Reference} — {TheShop().Name}";
+  render {
+    var view = ParcelOf(ret);
+    var order = ret.Order;
+    ShopMailLayout(view.Code != "" ? $"Your return code: {view.Code}" : "How to send your return back") {
+      EmailHeading("Sending your return back");
+      if (view.Code != "") {
+        EmailText($"Hand the parcel in wherever {order.DeliveryLabel ?? "the carrier"} takes parcels and show this code:");
+        EmailCode(view.Code);
+      }
+      if (ret.QrPath != null) {
+        EmailText("Or show this QR code:");
+        // Carried inside the mail: it has to show at the counter, where a blocked remote picture is no use.
+        EmailImage(ret.QrPath ?? "", $"QR code for return {view.Code}", width: 200, inline: true);
+      }
+      if (ret.ReturnLabelPath != null) {
+        EmailText("The return label is attached to this mail: print it and tape it over the old one on the parcel.");
+      }
+      if (ret.ParcelNumber != null) { EmailTable() { EmailRow("Tracking number", ret.ParcelNumber ?? ""); } }
+      if (view.TrackingUrl != "") { EmailButton("Follow your return", view.TrackingUrl); }
+      ShopOrderButton(order, "See your order");
+      EmailNote(ReturnWhatNext(ret));
+    }
+  }
+}
+
+/// What happens once the parcel is in — the refund, the store credit, or the exchange going out.
+public string ReturnWhatNext(ReturnRequest ret) {
+  if (ret.Replacement != null) { return $"When it is in, your exchange goes out as order {ret.Replacement!.Reference}."; }
+  if (ret.AsCredit) { return "When it is in, what it is worth goes to your store credit."; }
+  return "When it is in, we refund it the way you paid.";
+}
+
+/// Where to post a return when no carrier label can be had: the shop's address, and what to put inside.
+[Email]
+public component ShopReturnInstructions(ReturnRequest ret) {
+  language => ret.Order.Language;
+  subject => $"Sending back your return for order {ret.Order.Reference} — {TheShop().Name}";
+  render {
+    var shop = TheShop();
+    var order = ret.Order;
+    ShopMailLayout("Where to send your return") {
+      EmailHeading("Sending your return back");
+      EmailText("We have accepted your return. Please post the parcel to:");
+      EmailCode(WithdrawalAddressee(shop));
+      EmailText($"Put a note inside with your order number, {order.Reference}, so we know whose it is — and keep the receipt from the post office until we have it.");
+      ShopOrderButton(order, "See your order");
+      EmailNote(ReturnWhatNext(ret));
+    }
+  }
+}
+
+/// Back in stock, for somebody who asked to be told — in the language of their account when they have one
+/// (`SendStockAlerts` renders it once per language).
+[Email]
+public component ShopBackInStock(Variant variant) {
+  subject => $"{VariantName(variant)} is back at {TheShop().Name}";
+  render {
+    var shop = TheShop();
+    ShopMailLayout($"{VariantName(variant)} is back — {Money(PriceOf(variant), shop)}") {
+      EmailHeading($"{VariantName(variant)} is back");
+      EmailText($"You asked us to tell you: {VariantName(variant)} is back in stock at {shop.Name}, for {Money(PriceOf(variant), shop)}.");
+      EmailButton("Order it now", ShopLink($"/product/{variant.Product.Slug}"));
+      EmailNote("There may not be many — it goes to whoever orders first.");
+    }
+  }
+}
+
+/// A code of the customer's own — a gift or an apology — to type at the checkout.
+[Email]
+public component ShopGiftCode(string code, string gives, DateOnly until) {
+  subject => $"A code from {TheShop().Name}";
+  render {
+    var shop = TheShop();
+    ShopMailLayout($"A code for {gives} your next order") {
+      EmailHeading("A code for you");
+      EmailText($"Here is a code for {gives} your next order: {code}");
+      EmailCode(code);
+      EmailNote($"Type it at the checkout. It is yours alone, for one order, until {until.ToString("d MMMM")}.");
+      EmailButton("Go to the shop", ShopLink("/"));
+    }
+  }
+}
+
+/// Anything else the shop tells somebody — paid, ready to collect, a reset link — in the shop's frame.
+[Email]
+public component ShopNotice(string subject, string heading, string text, string? action = null, string? href = null) {
+  subject => subject;
+  render {
+    ShopMailLayout(heading) {
+      EmailHeading(heading);
+      EmailText(text);
+      if (action != null && href != null) { EmailButton(action, href); }
+    }
+  }
+}
+
+// ── mail about the ACCOUNT, not an order — in the language on the account ────────────────────────────────────────
+
+/// A link to choose a new password — the one way back into an account whose password is lost. In the account's
+/// language: the person asking may be on a borrowed computer, reading the shop in another.
+[Email]
+public component ShopPasswordResetMail(ShopAccount account, string token, string link) {
+  language => account.Language;
+  subject => $"Reset your password at {TheShop().Name}";
+  render {
+    var shop = TheShop();
+    ShopMailLayout("Reset your password") {
+      EmailHeading("Reset your password");
+      EmailText($"Somebody — hopefully you — asked to reset the password for your {shop.Name} account.");
+      if (link == "") { EmailText($"Your reset code: {token}"); }
+      else {
+        EmailText($"Choose a new password here: {link}");
+        EmailButton("Choose a new password", link);
+      }
+      EmailNote("The link works once, for an hour. If you did not ask, ignore this mail and nothing changes.");
+    }
+  }
+}
+
+/// What proves the account's address (`ShopSetup.RequireConfirmedEmail`) — a six-digit code AND a link, either one
+/// enough. In the account's language, as a reset is.
+[Email]
+public component ShopConfirmAddressMail(ShopAccount account, string code, string link) {
+  language => account.Language;
+  subject => $"Confirm your address at {TheShop().Name}";
+  render {
+    var shop = TheShop();
+    ShopMailLayout($"Your code is {code}") {
+      EmailHeading("Confirm your address");
+      EmailText($"Confirm that {account.Email} is yours, and your {shop.Name} account is ready.");
+      EmailText($"Type this code where you were asked for it: {code}");
+      EmailText($"Or open this link: {link}");
+      EmailButton("Confirm my address", link);
+      EmailNote("The code works for fifteen minutes, the link for three days. If you did not open an account, ignore this mail — nothing happens.");
+    }
+  }
+}
+
+/// Somebody tried to open an account with an address that has one — sent to that address instead of a second account.
+/// The sign-up page says only that a message is on its way, so a stranger learns nothing; the owner learns here.
+[Email]
+public component ShopAccountExistsMail(ShopAccount account, string signIn, string reset) {
+  language => account.Language;
+  subject => $"You already have an account at {TheShop().Name}";
+  render {
+    var shop = TheShop();
+    ShopMailLayout("You already have an account") {
+      EmailHeading("You already have an account");
+      EmailText($"Somebody — hopefully you — tried to open a {shop.Name} account with this address. It already has one, so nothing new was made.");
+      EmailText($"Sign in here: {signIn}");
+      EmailButton("Sign in", signIn);
+      EmailText($"Forgotten the password? Choose a new one: {reset}");
+      EmailNote("If it was not you, ignore this mail — nothing changed on your account.");
+    }
+  }
+}
+
+/// The account now signs in with another address — told to BOTH: the old one is how the owner finds out if it was
+/// not them, the new one says it arrived.
+[Email]
+public component ShopAddressChangedMail(ShopAccount account, string address, bool toTheOldAddress) {
+  language => account.Language;
+  subject => toTheOldAddress ? $"Your {TheShop().Name} account's address changed" : $"Welcome to your {TheShop().Name} account at this address";
+  render {
+    ShopMailLayout(toTheOldAddress ? "Your account's address changed" : "Welcome to this address") {
+      EmailHeading(toTheOldAddress ? "Your account's address changed" : "Welcome to this address");
+      EmailText($"Your account now signs in as {address}.");
+      if (toTheOldAddress) { EmailText("If you did not do this, reply to this mail straight away."); }
+    }
+  }
+}
+
+/// Store credit the shop gave: how much, why, and how it is spent.
+[Email]
+public component ShopStoreCreditMail(ShopAccount account, decimal amount, string reason) {
+  language => account.Language;
+  subject => $"{Money(amount, TheShop())} store credit from {TheShop().Name}";
+  render {
+    var shop = TheShop();
+    ShopMailLayout($"{Money(amount, shop)} store credit") {
+      EmailHeading($"{Money(amount, shop)} store credit from {shop.Name}");
+      EmailText(account.Name == null ? "Hello," : $"Hello {FirstName(account.Name!)},");
+      EmailText($"We have added {Money(amount, shop)} to your store credit: {reason}");
+      EmailText("It comes off your next order when you choose to pay with it at the checkout.");
+      EmailButton("Your store credit", ShopLink(App.Setting<ShopSetup>().AccountPath));
+    }
+  }
+}

@@ -1,0 +1,491 @@
+// What staff do to an order. The catalogue needs no functions of its own — staff write products, variants and
+// photographs directly, and `security { }` on each is what lets them.
+//
+// ⚑ `[Authorize(IsShopStaff)]` IS THE LOCK. A refund's real effect — money leaving through a payment provider —
+//   touches no row, so no `security { }` rule could refuse it. The attribute is checked however the function is reached.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Delivery;
+using Osysharp.Payments;
+using Osysharp.Workflow;
+
+/// A bank transfer has arrived — or the customer paid at the counter: the same event a provider's payment raises.
+[Authorize(IsShopStaff)]
+public void MarkPaid(Order order, string how) {
+  if (order.Status != OrderStatus.Reserved) { throw new Exception($"{order.Reference} is {order.Status.Label}, not waiting for payment."); }
+  OrderLifecycle.CorrelatePaymentReceived(order.Reference, how.Trim() == "" ? (order.PaymentLabel ?? order.PaymentMethod) : how.Trim(), "", "", "");
+}
+
+/// The order has gone out — posted with a tracking number, or collected. Answers a link to the parcel's label when a
+/// carrier made one, and "" otherwise.
+///
+/// Three steps, in an order that matters. A payment its provider only AUTHORISED at checkout (Klarna's model) is
+/// captured first — once: a capture is recorded, so a retry never charges twice. Then, when the delivery the customer
+/// chose is a carrier's (PostNord), the parcel is BOOKED: the carrier's tracking number replaces anything typed, its
+/// link goes to the customer and its label is kept for staff. A flat rate or a collection books nothing, and the
+/// tracking typed here is what the customer gets. Only then does the order move — so a refusal anywhere leaves it Paid,
+/// to be tried again.
+[Authorize(IsShopPacker)]
+public string MarkSent(Order order, string tracking) {
+  if (!IsBeingPrepared(order)) { throw new Exception($"{order.Reference} is {order.Status.Label} — only a paid order is sent."); }
+  if (order.PaymentRef != null && order.CapturedAt == null) {
+    var provider = App.Setting<ShopSetup>().Payments.FirstOrDefault(p => p.Key == order.PaymentMethod);
+    if (provider != null && provider.CapturesLater) {
+      provider.Capture(order.PaymentRef, 0);
+      OrderLifecycle.RaiseCaptured(order);
+    }
+  }
+
+  var link = "";
+  var trackingUrl = "";
+  var labelPath = "";
+  var slash = order.DeliveryMethod.IndexOf("/");
+  var key = slash < 0 ? order.DeliveryMethod : order.DeliveryMethod.Substring(0, slash);
+  var carrier = App.Setting<ShopSetup>().Delivery.FirstOrDefault(d => d.Key == key);
+  var contact = order.Contact.FirstOrDefault();
+  if (carrier != null && contact != null && order.Fulfilment == Fulfilment.Deliver && order.Tracking == null) {
+    var shipment = carrier.Ship(new ShipmentRequest {
+      Reference = order.Reference, OptionId = slash < 0 ? key : order.DeliveryMethod.Substring(slash + 1),
+      WeightGrams = order.Lines.Where(l => l.Kind == LineKind.Goods).Sum(l => l.Variant.WeightGrams * l.Quantity),
+      Items = order.Lines.Where(l => l.Kind == LineKind.Goods).Sum(l => l.Quantity),
+      To = new DeliveryAddress { Name = contact.Name, Street = contact.Street ?? "", PostCode = contact.PostCode ?? "",
+                                 City = contact.City ?? "", Country = CountryCode(contact.Country ?? ""),
+                                 Email = contact.Email, Phone = contact.Phone },
+      // From where it was picked (Locations.osy) — a second location's address; the carrier's own sender otherwise.
+      SendFrom = SenderAt(order.Location),
+      Customs = CustomsFor(order, CountryCode(contact.Country ?? "")),
+      ExporterId = TheShop().Eori ?? "",
+      Postage = order.Delivery,
+      MinimumAge = order.AgeChecked,
+      PickupPoint = contact.PickupPointId == null ? null : new PickupPoint {
+        Id = contact.PickupPointId!, Name = contact.PickupPointName ?? "", Street = contact.PickupPointStreet ?? "",
+        PostCode = contact.PickupPointPostCode ?? "", City = contact.PickupPointCity ?? "", Country = contact.PickupPointCountry ?? "",
+      },
+    });
+    if (shipment.TrackingNumber != "") { tracking = shipment.TrackingNumber; }
+    trackingUrl = shipment.TrackingUrl;
+    if (shipment.Label != null) {
+      labelPath = $"labels/{order.Id}.pdf";
+      File.WriteAllBytes(labelPath, shipment.Label);
+      link = File.SignedUrl(labelPath);
+    }
+  }
+  // The order is written by its workflow — the tracking, its link and the label's path travel with the event.
+  OrderLifecycle.RaiseFulfil(order, tracking.Trim(), trackingUrl, labelPath);
+  return link;
+}
+
+/// Staff have started picking a paid order.
+[Authorize(IsShopPacker)]
+public void StartPicking(Order order) {
+  if (order.Status != OrderStatus.Paid) { throw new Exception($"{order.Reference} is {order.Status.Label}, not waiting to be picked."); }
+  OrderLifecycle.RaiseStartPicking(order);
+}
+
+/// It is packed — and a collection is ready, which mails the customer.
+[Authorize(IsShopPacker)]
+public void MarkPacked(Order order) {
+  if (order.Status != OrderStatus.Paid && order.Status != OrderStatus.Picking) {
+    throw new Exception($"{order.Reference} is {order.Status.Label} — only an order being prepared is packed.");
+  }
+  OrderLifecycle.RaisePack(order);
+}
+
+/// The parcel arrived — for a carrier that cannot say so itself.
+[Authorize(IsShopPacker)]
+public void MarkDelivered(Order order) {
+  if (order.Status != OrderStatus.Fulfilled) { throw new Exception($"{order.Reference} is {order.Status.Label}, not on its way."); }
+  OrderLifecycle.RaiseDelivered(order);
+}
+
+/// The KEY of the delivery provider an order went with — `DeliveryMethod` is "key" or "key/option".
+///
+/// ⚠ The key, not the provider. This returned the provider object itself until BL-14 (2026-09-27), and that object is
+/// part of the app's setting: a carrier built with its API key (`new PostNordDelivery { ApiKey = Secret.X }`). Any
+/// signed-in caller could invoke a function by name and receive it — key and all — in the response. Each caller now
+/// looks the provider up where it uses it, so the object never leaves the function holding it.
+string CarrierKeyOf(Order order) {
+  var slash = order.DeliveryMethod.IndexOf("/");
+  return slash < 0 ? order.DeliveryMethod : order.DeliveryMethod.Substring(0, slash);
+}
+
+/// Whether the caller is staff, rather than a packer — what the desk asks to show money and settings.
+[Authorize(IsShopPacker)]
+public bool IsStaffMember() {
+  var me = Session.CurrentUser;
+  return me != null && ShopRoleGrant.Any(g => g.Member == me && g.Role == ShopRole.Staff);
+}
+
+/// The keys of the payment providers staff settle by hand — a bank transfer, paying on collection — for which the
+/// desk offers "Payment received".
+[Authorize(IsShopPacker)]
+public List<string> PaidByHandKeys() {
+  return App.Setting<ShopSetup>().Payments.Where(p => p.IsManual).Select(p => p.Key).ToList();
+}
+
+/// The label a carrier made for an order, as a link that expires — for printing it again. "" when there is none.
+[Authorize(IsShopPacker)]
+public string LabelLink(Order order) {
+  return order.LabelPath == null ? "" : File.SignedUrl(order.LabelPath);
+}
+
+/// A carrier's label, as the desk lists it for printing.
+public class LabelToPrint {
+  public string Reference = "";
+  /// Who it goes to.
+  public string Name = "";
+  /// The delivery the customer chose — "PostNord service point".
+  public string Delivery = "";
+  public string Tracking = "";
+  /// A link to the PDF that expires.
+  public string Link = "";
+}
+
+/// The packed orders a carrier books and labels — the day's parcels, waiting to go.
+[Authorize(IsShopPacker)]
+public List<Order> ParcelsToLabel() {
+  var carriers = App.Setting<ShopSetup>().Delivery.Where(d => d.MakesLabels()).Select(d => d.Key).ToList();
+  return Order.Where(o => o.Status == OrderStatus.Packed && o.Fulfilment == Fulfilment.Deliver && o.Tracking == null)
+    .OrderBy(o => o.PlacedAt).ToList().Where(o => carriers.Contains(CarrierKeyOf(o))).ToList();
+}
+
+/// Sends every packed parcel a carrier labels, booking each with its carrier (`MarkSent`) — the day's batch in one
+/// press. Answers what could not be sent, one sentence per order; the rest are sent, and their labels are in
+/// `TodaysLabels`. A refusal leaves that order Packed, to be tried again.
+[Authorize(IsShopPacker)]
+public List<string> SendParcels() {
+  List<string> problems = [];
+  foreach (var order in ParcelsToLabel()) {
+    try { MarkSent(order, ""); }
+    catch (Exception ex) { problems.Add($"{order.Reference}: {ex.Message}"); }
+  }
+  return problems;
+}
+
+/// The labels carriers made for parcels sent today, in the order they were sent — what a packer prints in one go.
+[Authorize(IsShopPacker)]
+public List<LabelToPrint> TodaysLabels() {
+  var today = DateTime.UtcNow.Date;
+  return Order.Include(o => o.Contact).Where(o => o.LabelPath != null && o.FulfilledAt != null && o.FulfilledAt >= today)
+    .OrderBy(o => o.FulfilledAt).ToList()
+    .Select(o => new LabelToPrint {
+      Reference = o.Reference, Name = o.Contact.FirstOrDefault()?.Name ?? "", Delivery = o.DeliveryLabel ?? "",
+      Tracking = o.Tracking ?? "", Link = File.SignedUrl(o.LabelPath!),
+    }).ToList();
+}
+
+/// Calls a reservation off and puts its goods back.
+[Authorize(IsShopStaff)]
+public void CancelOrder(Order order, string reason) {
+  if (order.Status != OrderStatus.Reserved) {
+    throw new Exception($"{order.Reference} is {order.Status.Label}, not reserved — a paid order is refunded, not cancelled.");
+  }
+  OrderLifecycle.RaiseCancel(order, reason.Trim() == "" ? "Cancelled by the shop" : reason.Trim());
+}
+
+/// Gives a paid or sent order's money back — through the provider that took it, or by hand for a payment staff
+/// marked as received — and puts the goods back in stock when `restock` says they came back. Safe to press again on an
+/// order whose refund was requested but did not reach the provider: the retry makes ONE refund, not two.
+[Authorize(IsShopStaff)]
+public void RefundOrder(Order order, string reason, bool restock) {
+  if (!IsBeingPrepared(order) && !IsSent(order) && order.Status != OrderStatus.RefundRequested) {
+    throw new Exception($"{order.Reference} is {order.Status.Label} — only a paid order can be refunded.");
+  }
+  // "All of it" through the provider would give back again what already went to store credit or to an exchange.
+  if (ReturnRequest.Any(r => r.Order == order && r.ReceivedAt != null && (r.AsCredit || r.Replacement != null))) {
+    throw new Exception($"Part of {order.Reference} already came back as store credit or an exchange — refund the rest line by line.");
+  }
+  // A gift card it sold that has been spent from cannot be taken back — refund the rest line by line.
+  if (order.GiftCardsSold > 0 && !GiftCardsUnspent(order)) {
+    throw new Exception($"A gift card from {order.Reference} has been used — refund the rest line by line.");
+  }
+  order.RestockOnRefund = restock;
+  UnitOfWork.Commit();
+  // Recorded before the provider is called — so a call that fails leaves the order saying a refund was asked for.
+  if (order.Status != OrderStatus.RefundRequested) {
+    OrderLifecycle.RaiseRequestRefund(order, reason.Trim() == "" ? "Refunded by the shop" : reason.Trim());
+  }
+
+  var provider = App.Setting<ShopSetup>().Payments.FirstOrDefault(p => p.Key == order.PaymentMethod);
+  if (order.PaymentRef == null || provider == null || provider.IsManual) {
+    // Paid by hand, so refunded by hand; recording it is the whole step.
+    OrderLifecycle.RaiseRefundUpdate(order, "", "succeeded", "");
+    return;
+  }
+  // Keyed on the order's id: a second click, or a retry after a timeout, refunds ONCE. A provider that only
+  // authorised a payment never sent cancels it instead — the customer was never charged.
+  var refund = provider.Refund(order.PaymentRef, 0, reason.Trim(), "order-" + order.Id.ToString());
+  OrderLifecycle.CorrelateRefundUpdate(order.PaymentRef, RefundStatus(refund.State), refund.RefundRef);
+}
+
+/// Makes a product a gift card, or no longer one — its sizes are then amounts, sold without VAT, never out of stock.
+[Authorize(IsShopStaff)]
+public void SetProductGiftCard(Product product, bool giftCard) {
+  if (product.IsGiftCard == giftCard) { return; }
+  if (giftCard && product.Variants.Any(v => v.IsDownload)) { throw new Exception("A product sold as a file cannot be a gift card too."); }
+  product.IsGiftCard = giftCard;
+  if (giftCard) { foreach (var v in product.Variants) { v.Unlimited = true; v.WeightGrams = 0; } }
+  UnitOfWork.Commit();
+}
+
+/// Ends an order with no money moving and puts its goods back — an order entered by mistake.
+[Authorize(IsShopStaff)]
+public void VoidOrder(Order order, string reason) {
+  OrderLifecycle.RaiseVoid(order, reason.Trim() == "" ? "Voided by the shop" : reason.Trim());
+}
+
+// ── stock ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum StockReason {
+  [Label("Delivery in")] Received,
+  [Label("Count corrected")] Correction,
+  [Label("Damaged or lost")] Damaged,
+  [Label("Returned")] Returned,
+  [Label("Sent to another location")] TransferOut,
+  [Label("Arrived from another location")] TransferIn,
+}
+
+/// Where stock came from when no person counted it in. ⚠ Appended, never inserted.
+public enum StockOrigin {
+  [Label("First stock")] FirstStock,
+  [Label("Imported from a spreadsheet")] Spreadsheet,
+}
+
+/// One change to a variant's stock, and why — so the number on the shelf can be explained later. FACTS, never a
+/// sentence the shop writes (D-RTL2 Q2): the order a return came from, the transfer it moved with, where stock came
+/// from — said in the reader's language when it is read (`StockMoveNote`).
+public entity StockMove {
+  [Required] Variant Variant;
+  /// Where it changed — null for a shop without locations (its one place).
+  StockLocation? Location;
+  int Change;
+  [Required] StockReason Reason;
+  /// What staff wrote about it, as they wrote it ("Delivery 7").
+  [MaxLength(200)] string? Note;
+  /// The order goods came back from (`Returned`), the transfer it moved with (`TransferOut`/`TransferIn`), and where
+  /// stock nobody counted in came from.
+  Order? Order;
+  StockTransfer? Transfer;
+  StockOrigin? Origin;
+  ShopAccount? By;
+  security { allow read, create when IsShopStaff; }
+}
+
+/// What a stock move says to whoever reads it — what staff wrote, as they wrote it; else said from its facts in the
+/// reader's language: "Return on GG-1043", "To the warehouse", "Transfer to the warehouse called off".
+public string StockMoveNote(StockMove m) {
+  if (m.Note != null && m.Note != "") { return m.Note!; }
+  if (m.Origin == StockOrigin.FirstStock) { return "First stock"; }
+  if (m.Origin == StockOrigin.Spreadsheet) { return "Imported from a spreadsheet"; }
+  if (m.Order != null) { return $"Return on {m.Order!.Reference}"; }
+  if (m.Transfer != null) {
+    var t = StockTransfer.Include(x => x.From).Include(x => x.To).Single(x => x.Id == m.Transfer!.Id);
+    if (m.Reason == StockReason.TransferOut) { return $"To {t.To.Name}"; }
+    if (t.Status == TransferStatus.Cancelled) { return $"Transfer to {t.To.Name} called off"; }
+    return $"From {t.From.Name}";
+  }
+  return "";
+}
+
+/// Changes a variant's stock by `change` (negative takes away), and records why. Answers the new stock. Anybody
+/// waiting for it to come back is mailed when it does.
+/// With locations, the change is at the default one — `AdjustStockAt` names another.
+[Authorize(IsShopStaff)]
+public int AdjustStock(Variant variant, int change, StockReason reason, string note) {
+  AdjustStockAt(DefaultLocation(), variant, change, reason, note);
+  return variant.Stock;
+}
+
+/// Variants at or under `threshold` in stock, among what is listed — what to reorder.
+[Authorize(IsShopStaff)]
+public List<Variant> LowStock(int threshold) {
+  return Variant.Where(v => v.Product.Status == ProductStatus.Listed && v.Stock <= threshold)
+    .OrderBy(v => v.Stock).ToList();
+}
+
+// ── the catalogue ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A new product, drafted — invisible to customers until it is listed. Answers it, with a slug made from its name.
+[Authorize(IsShopStaff)]
+public Product CreateProduct(string name, Category? category, decimal price) {
+  if (name.Trim() == "") { throw new Exception("A product needs a name."); }
+  if (price < 0) { throw new Exception("A price cannot be negative."); }
+  var slug = SlugOf(name);
+  if (Product.Any(p => p.Slug == slug)) { slug = slug + "-" + Security.RandomHex(4); }
+  var product = new Product { Name = name.Trim(), Slug = slug, Category = category, Price = price, Status = ProductStatus.Draft };
+  UnitOfWork.Commit();
+  return product;
+}
+
+/// Which VAT rate a product's price includes.
+[Authorize(IsShopStaff)]
+public void SetProductVat(Product product, VatClass vat) {
+  product.Vat = vat;
+  UnitOfWork.Commit();
+}
+
+/// What customs needs to know about a product, for parcels leaving the EU: its tariff number, what to call it, and where
+/// it was made. Empty values clear them.
+[Authorize(IsShopStaff)]
+public void SetProductCustoms(Product product, string hsCode, string description, string originCountry) {
+  var hs = hsCode.Replace(" ", "").Replace(".", "").Trim();
+  if (hs != "" && (hs.Length < 6 || !hs.ToCharArray().All(c => c >= '0' && c <= '9'))) { throw new Exception("A tariff number is six digits or more — 640399."); }
+  var origin = originCountry.Trim().ToUpper();
+  if (origin != "" && origin.Length != 2) { throw new Exception("The country it was made in as two letters — IT, CN, SE."); }
+  product.HsCode = hs == "" ? null : hs;
+  product.CustomsDescription = description.Trim() == "" ? null : description.Trim();
+  product.OriginCountry = origin == "" ? null : origin;
+  UnitOfWork.Commit();
+}
+
+/// Saves what the editor holds.
+[Authorize(IsShopStaff)]
+public void UpdateProduct(Product product, string name, string brand, string summary, string description, decimal price,
+                          ProductStatus status, Category? category) {
+  if (name.Trim() == "") { throw new Exception("A product needs a name."); }
+  if (price < 0) { throw new Exception("A price cannot be negative."); }
+  if (status == ProductStatus.Listed && product.Variants.Count() == 0) {
+    throw new Exception("Add at least one size before listing it — a product with none cannot be bought.");
+  }
+  product.Name = name.Trim();
+  product.Brand = brand.Trim() == "" ? null : brand.Trim();
+  product.Summary = summary.Trim() == "" ? null : summary.Trim();
+  product.Description = description.Trim() == "" ? null : description.Trim();
+  product.Price = price;
+  product.Status = status;
+  product.Category = category;
+  UnitOfWork.Commit();
+}
+
+/// A size (or colour) of a product, with the stock that arrived with it — recorded as a delivery.
+[Authorize(IsShopStaff)]
+public Variant AddVariant(Product product, string size, string colour, int stock, int weightGrams = 0) {
+  if (stock < 0) { throw new Exception("Stock cannot be negative."); }
+  if (weightGrams < 0) { throw new Exception("A weight cannot be negative."); }
+  var v = new Variant {
+    Product = product, Size = size.Trim() == "" ? null : size.Trim(), Colour = colour.Trim() == "" ? null : colour.Trim(),
+    Stock = stock, Rank = product.Variants.Count(), WeightGrams = weightGrams,
+  };
+  if (stock > 0) { new StockMove { Variant = v, Change = stock, Reason = StockReason.Received, Origin = StockOrigin.FirstStock, By = Session.CurrentUser }; }
+  UnitOfWork.Commit();
+  return v;
+}
+
+/// Takes a product off sale for good, keeping it for the orders that name it.
+[Authorize(IsShopStaff)]
+public void ArchiveProduct(Product product) {
+  product.Status = ProductStatus.Archived;
+  UnitOfWork.Commit();
+}
+
+/// Adds an uploaded photograph to a product: the file is copied into the public store, where the shop serves it.
+[Authorize(IsShopStaff)]
+public ProductImage AddProductPhoto(Product product, string uploadedPath, string alt) {
+  var bytes = File.ReadAllBytes(uploadedPath);
+  var dot = uploadedPath.LastIndexOf('.');
+  var ext = dot < 0 ? ".jpg" : uploadedPath.Substring(dot).ToLower();
+  var path = $"public/products/{product.Slug}-{Security.RandomHex(6)}{ext}";
+  File.WriteAllBytes(path, bytes);
+  var image = new ProductImage { Product = product, Path = path, Alt = alt.Trim() == "" ? product.Name : alt.Trim(), Rank = product.Images.Count() };
+  UnitOfWork.Commit();
+  return image;
+}
+
+/// Moves a photograph one place earlier (`-1`) or later (`+1`); the first is the cover.
+[Authorize(IsShopStaff)]
+public void MovePhoto(ProductImage image, int by) {
+  var images = image.Product.Images.OrderBy(i => i.Rank).ToList();
+  var at = images.IndexOf(image);
+  var to = at + by;
+  if (at < 0 || to < 0 || to >= images.Count) { return; }
+  images.RemoveAt(at);
+  images.Insert(to, image);
+  for (var i = 0; i < images.Count; i++) { images[i].Rank = i; }
+  UnitOfWork.Commit();
+}
+
+[Authorize(IsShopStaff)]
+public void RemovePhoto(ProductImage image) {
+  image.Delete();
+  UnitOfWork.Commit();
+}
+
+/// A name as a URL segment: "Cotton trench coat" → "cotton-trench-coat".
+public string SlugOf(string name) {
+  var s = "";
+  foreach (var c in name.Trim().ToLower()) {
+    if (char.IsLetterOrDigit(c)) { s = s + c; }
+    else if (s.Length > 0 && !s.EndsWith("-")) { s = s + "-"; }
+  }
+  return s.TrimEnd('-');
+}
+
+// ── pickups ──────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A carrier booked to come for the shop's parcels on a day.
+public entity ShopPickup {
+  /// The delivery provider's key — "postnord".
+  [Required, MaxLength(40)] string Carrier;
+  /// What staff call it, as it was when booked.
+  [MaxLength(80)] string? CarrierName;
+  DateOnly Date;
+  int Parcels = 1;
+  /// The carrier's reference, and where to see it.
+  [MaxLength(80)] string? Reference;
+  [MaxLength(500)] string? Url;
+  DateTime BookedAt;
+  /// Where the carrier comes — null: the shop (a shop without locations, or its default).
+  StockLocation? Location;
+  security { allow read, create, update when IsShopPacker; }
+}
+
+/// A carrier the desk can ask to come for parcels.
+public class PickupCarrier {
+  public string Key = "";
+  public string Name = "";
+}
+
+/// The carriers the shop sends with that can be asked to come for parcels.
+[Authorize(IsShopPacker)]
+public List<PickupCarrier> PickupCarriers() {
+  return App.Setting<ShopSetup>().Delivery.Where(d => d.IsReady() && d.BooksPickups())
+    .Select(d => new PickupCarrier { Key = d.Key, Name = d.Name }).ToList();
+}
+
+/// Parcels packed or sent today with `carrier` and not yet fetched — what a pickup is for. With locations, those picked
+/// at `location` (null: every location's).
+[Authorize(IsShopPacker)]
+public List<Order> ParcelsFor(string carrier, StockLocation? location = null) {
+  var since = DateTime.UtcNow.Date;
+  return Order.Where(o => o.Fulfilment == Fulfilment.Deliver
+                       && (o.Status == OrderStatus.Packed || (o.Status == OrderStatus.Fulfilled && o.FulfilledAt != null && o.FulfilledAt >= since)))
+              .ToList().Where(o => CarrierKeyOf(o) == carrier && (location == null || SameLocation(o.Location, location))).ToList();
+}
+
+/// Asks `carrier` to come for `parcels` parcels on `date`, from the shop's collection address — or, with locations, from
+/// `location`'s (null: the default's). Throws the sentence to show when the carrier does not come for parcels, or said no.
+[Authorize(IsShopPacker)]
+public ShopPickup BookPickup(string carrier, DateOnly date, int parcels, StockLocation? location = null) {
+  if (parcels < 1) { throw new Exception("A pickup is for one parcel or more."); }
+  if (date < DateOnly.FromDateTime(DateTime.UtcNow)) { throw new Exception("Choose today or a later day."); }
+  var provider = App.Setting<ShopSetup>().Delivery.FirstOrDefault(d => d.Key == carrier);
+  if (provider == null) { throw new Exception($"The shop does not send with {carrier}."); }
+  var shop = TheShop();
+  var sent = ParcelsFor(carrier, location);
+  var booked = provider.BookPickup(new PickupRequest {
+    SendFrom = SenderAt(location),
+    Reference = $"{shop.OrderPrefix}PICKUP-{date.ToString("yyyyMMdd")}", Date = date, Parcels = parcels,
+    WeightGrams = sent.Sum(o => o.Lines.Sum(l => l.Variant.WeightGrams * l.Quantity)),
+    TrackingNumbers = sent.Where(o => o.Tracking != null).Select(o => o.Tracking!).ToList(),
+    From = new DeliveryAddress { Name = shop.Name, Street = shop.CompanyAddress ?? shop.CollectionAddress ?? "",
+                                 Country = shop.HomeCountry, Email = shop.ContactEmail },
+  });
+  if (booked == null) { throw new Exception("That carrier does not come for parcels — take them to a drop-off point."); }
+  var p = new ShopPickup { Carrier = carrier, CarrierName = provider.Name, Date = date, Parcels = parcels, Reference = booked.Reference,
+                           Location = location,
+                           Url = booked.Url == "" ? null : booked.Url, BookedAt = DateTime.UtcNow };
+  UnitOfWork.Commit();
+  return p;
+}

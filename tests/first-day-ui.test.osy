@@ -1,0 +1,29 @@
+// The shop's first day: staff exist, and nothing else — no settings row. Staff must be able to sign in and set the shop
+// up from the desk, because nobody else may make that row.
+
+using Osysharp.Shop;
+
+[TestFixture]
+void FirstDay() {
+  var anna = new ShopAccount { Email = "anna@shop.test", PasswordHash = Security.HashPassword("desk-pass-1") };
+  new ShopRoleGrant { Member = anna, Role = ShopRole.Staff };
+}
+
+[Test(FirstDay)]
+void staff_sign_in_to_a_shop_with_no_settings_and_set_it_up_from_the_desk() {
+  Assert.NotEqual("", ShopLogin("anna@shop.test", "desk-pass-1").Ticket);
+  Ui.Visit("/account/sign-in");
+  Ui.Fill("Email", "anna@shop.test");
+  Ui.Fill("Password", "desk-pass-1");
+  Ui.Click("Sign in");
+  Ui.Visit("/desk");
+  Ui.Click("Settings");
+  Assert.Visible("This shop has not been set up yet");
+  Ui.Fill("Shop name", "First Day Shop");
+  Ui.Click("Set up the shop");
+  Assert.Visible("Contact email");
+  runas (Desk) {
+    Assert.Equal("First Day Shop", TheShop().Name);
+    Assert.Equal(1, ShopSettings.Count());
+  }
+}

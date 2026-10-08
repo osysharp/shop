@@ -1,0 +1,162 @@
+// Exchanges: goods sent back for others instead of the money — the replacement held at once by its own order's
+// workflow, sent when the parcel is in, the difference paid through a link or credited, and both orders' timelines
+// saying what happened.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// Maja buys one of `product`/`size` to collect, pays by transfer and collects it — answers the order's reference.
+string BoughtAndCollected(string visit, string product, string size) {
+  var reference = "";
+  runas (Maja) { reference = Buy(visit, product, size, 1); }
+  runas (Desk) { PayAndSend(reference); }
+  return reference;
+}
+
+[Test(Floor)]
+void a_customer_exchanges_a_size_and_the_new_one_goes_out_when_the_old_one_is_in() {
+  var reference = BoughtAndCollected("v-ex", "Loafer", "38");
+  var replacementRef = "";
+  runas (Maja) {
+    var line = OrderLine.Single(l => l.Order.Reference == reference);
+    // What it can be exchanged for: the other size first — never the one being sent back.
+    var choices = ExchangeChoices(line, "");
+    Assert.Equal(1, choices.Count);
+    Assert.Equal("Loafer (39)", choices[0].Name);
+    Assert.Equal(1, ExchangeChoices(line, "chel").Count(c => c.Name.StartsWith("Chelsea")));
+    Assert.Equal(0m, ExchangeDifference(line, 1, Pick("Loafer", "39")));
+    var ret = ExchangeItem(line, 1, Pick("Loafer", "39"), "Too small");
+    replacementRef = ret.Replacement!.Reference;
+  }
+  // The new size is held by its own order's workflow — out of stock for anybody else — and costs nothing to send.
+  Assert.Equal(0, Pick("Loafer", "39").Stock);
+  runas (Desk) {
+    var replacement = Order.Single(o => o.Reference == replacementRef);
+    Assert.Equal(OrderStatus.Reserved, replacement.Status);
+    Assert.Equal(reference, replacement.ExchangeFor!.Reference);
+    Assert.Equal(0m, replacement.Delivery);
+    Assert.Equal(120m, replacement.Total);
+    Assert.True(ShopMail.Any(m => m.Order == replacement && m.Text.Contains("This is your exchange for order " + reference)));
+
+    var ret = ReturnRequest.Single();
+    ReceiveReturn(ret, true);
+    Workflow.Settle(ret);
+    Workflow.Settle(replacement);
+    Assert.Equal(ReturnStatus.Refunded, ret.Status);
+    // Equal value: what came back pays for it all, and it is ready to go out.
+    Assert.Equal(OrderStatus.Paid, replacement.Status);
+    Assert.Equal("Exchange", replacement.PaidWith);
+    Assert.Equal(120m, replacement.ExchangeCredit);
+    Assert.Equal(0m, AmountDue(replacement));
+    Assert.Equal(0m, ret.CreditAmount);
+    Assert.Equal(2, Pick("Loafer", "38").Stock);           // the 38 is back on sale beside the one never sold
+    Assert.True(ShopMail.Any(m => m.Subject.StartsWith("Your exchange for order " + reference) && m.Text.Contains("nothing more to pay")));
+    // The books: a credit note for what came back, an invoice for what goes out.
+    Assert.Equal(1, CreditNote.Count(c => c.Invoice.Order.Reference == reference));
+    Assert.Equal(120m, Invoice.Single(i => i.Order == replacement).Total);
+    // Both timelines say so.
+    var original = Order.Single(o => o.Reference == reference);
+    var asked = OrderTimeline(original).Single(e => e.What == "Exchange asked for");
+    Assert.Contains("Loafer (39)", asked.Detail);
+    Assert.Contains(replacementRef, asked.Detail);
+    Assert.True(OrderTimeline(original).Any(e => e.What == "Exchange settled"));
+    Assert.True(OrderTimeline(replacement).Any(e => e.What == "Exchange for order " + reference));
+  }
+}
+
+[Test(Floor)]
+void an_exchange_for_something_dearer_is_paid_through_a_link_for_the_difference() {
+  var reference = BoughtAndCollected("v-up", "Loafer", "38");
+  var replacementRef = "";
+  runas (Maja) {
+    var line = OrderLine.Single(l => l.Order.Reference == reference);
+    Assert.Equal(70m, ExchangeDifference(line, 1, Pick("Chelsea", "38")));
+    replacementRef = ExchangeItem(line, 1, Pick("Chelsea", "38"), "Wanted boots").Replacement!.Reference;
+  }
+  runas (Desk) {
+    var replacement = Order.Single(o => o.Reference == replacementRef);
+    ReceiveReturn(ReturnRequest.Single(), true);
+    Workflow.Settle(replacement);
+    Assert.Equal(OrderStatus.Reserved, replacement.Status);   // not until the difference is paid
+    Assert.Equal(120m, replacement.ExchangeCredit);
+    Assert.Equal(70m, AmountDue(replacement));
+    // The customer is mailed a link to pay the difference — the order desk's own payment link.
+    Assert.Equal("Mailed to maja@example.test", OrderEvent.Single(e => e.Order == replacement && e.Kind == OrderEventKind.PayLinkSent).Text);
+    var mailed = ShopMail.Single(m => m.Order == replacement && m.Subject.Contains("ready to pay"));
+    Assert.Contains("Pay €70", mailed.Text);
+    MarkPaid(replacement, "");
+    Workflow.Settle(replacement);
+    Assert.Equal(OrderStatus.Paid, replacement.Status);
+  }
+}
+
+[Test(Floor)]
+void an_exchange_for_something_cheaper_puts_the_rest_in_store_credit() {
+  var reference = BoughtAndCollected("v-down", "Chelsea", "38");
+  var replacementRef = "";
+  runas (Maja) {
+    var line = OrderLine.Single(l => l.Order.Reference == reference);
+    Assert.Equal(-70m, ExchangeDifference(line, 1, Pick("Loafer", "39")));
+    replacementRef = ExchangeItem(line, 1, Pick("Loafer", "39"), "").Replacement!.Reference;
+  }
+  runas (Desk) {
+    var ret = ReturnRequest.Single();
+    ReceiveReturn(ret, true);
+    Workflow.Settle(ret);
+    var replacement = Order.Single(o => o.Reference == replacementRef);
+    Workflow.Settle(replacement);
+    Assert.Equal(OrderStatus.Paid, replacement.Status);
+    Assert.Equal(70m, ret.CreditAmount);
+  }
+  runas (Maja) {
+    Assert.Equal(70m, MyCreditBalance());
+    Assert.Equal("Return", MyStoreCredit().Lines[0].What);
+  }
+}
+
+[Test(Floor)]
+void an_exchange_called_off_or_declined_lets_the_new_one_go() {
+  var reference = BoughtAndCollected("v-off-ex", "Loafer", "38");
+  runas (Maja) {
+    var line = OrderLine.Single(l => l.Order.Reference == reference);
+    var ret = ExchangeItem(line, 1, Pick("Loafer", "39"), "");
+    Assert.Equal(0, Pick("Loafer", "39").Stock);
+    // "Keep it": the exchange is called off, and the size it held goes back on sale.
+    UndoReturnLine(ret.Lines.Single());
+  }
+  runas (Desk) {
+    var first = Order.Single(o => o.ExchangeFor != null && o.Status != OrderStatus.Reserved);
+    Workflow.Settle(first);
+    Assert.Equal(OrderStatus.Cancelled, first.Status);
+  }
+  Assert.Equal(1, Pick("Loafer", "39").Stock);
+  runas (Maja) { ExchangeItem(OrderLine.Single(l => l.Order.Reference == reference), 1, Pick("Loafer", "39"), ""); }
+  runas (Desk) {
+    var ret = ReturnRequest.Include(r => r.Lines).ToList().Single(r => r.Status == ReturnStatus.Requested && r.Replacement != null && r.Lines.Count() > 0);
+    DeclineReturn(ret, "It has been worn.");
+    Workflow.Settle(ret.Replacement!);
+    Assert.Equal(OrderStatus.Cancelled, ret.Replacement!.Status);
+  }
+  Assert.Equal(1, Pick("Loafer", "39").Stock);
+}
+
+[Test(Floor)]
+void staff_exchange_for_a_customer_and_nobody_else_can() {
+  var reference = BoughtAndCollected("v-desk-ex", "Loafer", "38");
+  OrderLine? hers = null;
+  runas (Desk) { hers = OrderLine.Single(l => l.Order.Reference == reference); }
+  runas (Olle) {
+    Assert.Null(OrderLine.SingleOrDefault(l => l.Order.Reference == reference));   // not his to read
+    var line = hers!;
+    // Olle cannot exchange Maja's order — neither as a customer nor through the desk's door.
+    Assert.Throws<Exception>(() => ExchangeItem(line, 1, Pick("Loafer", "39"), ""));
+    Assert.Throws<Exception>(() => ExchangeForCustomer(line, 1, Pick("Loafer", "39"), ""));
+  }
+  runas (Desk) {
+    var ret = ExchangeForCustomer(OrderLine.Single(l => l.Order.Reference == reference), 1, Pick("Loafer", "39"), "Asked at the counter");
+    Assert.Equal(OrderStatus.Reserved, ret.Replacement!.Status);
+    Assert.Equal("Maja Berg", ret.Replacement!.Account!.Name);
+    // Not what she already has.
+    Assert.Throws<Exception>(() => ExchangeForCustomer(OrderLine.Single(l => l.Order.Reference == reference), 1, Pick("Loafer", "38"), ""));
+  }
+}

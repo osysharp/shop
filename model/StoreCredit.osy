@@ -1,0 +1,286 @@
+// Store credit — money a customer holds WITH THE SHOP, in the shop's currency, to spend at its checkout. It is given
+// instead of a refund when something comes back, or by staff with a reason (a parcel that arrived late, a goodwill
+// gesture); it is spent at the checkout, in part or in full; and a refund of an order paid with it puts it back.
+//
+// ⚑ A LEDGER, NEVER A NUMBER ALONE. Every change is a `StoreCreditEntry` — how much, why, which order or return, the
+//   balance after it — and entries are only ever added. The balance on `StoreCredit` is the running total of those
+//   entries, kept beside them for one reason: it is what two spends racing for the same money MEET on. It carries
+//   `[ConcurrencyCheck]` (the second writer is refused rather than both landing, exactly as `Variant.Stock` makes two
+//   orders for the last one meet) and `invariant Balance >= 0`, so a spend larger than what is there fails at commit
+//   whatever path it came from.
+//
+// ⚑ NOBODY WRITES IT BUT THE SHOP'S OWN WORKFLOWS. A customer's checkout asks for credit on the ORDER
+//   (`Order.CreditUsed`), and the order's workflow takes it — or finds it is not there and says so — as it takes the
+//   stock. A return credited, a refund given back, an order called off: their workflows write it too. Staff GRANT
+//   through a `StoreCreditGrant`, a row whose own workflow posts it. No principal holds a create or update rule on the
+//   balance or its entries, so no function, page or API call can mint credit or bend the ledger.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Workflow;
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum StoreCreditKind {
+  /// Given for goods that came back — instead of the money, or what an exchange left over.
+  [Label("Return")] Return,
+  /// Given by staff, with their reason.
+  [Label("From the shop")] Grant,
+  /// Spent on an order.
+  [Label("Spent")] Spent,
+  /// Given back: an order paid with it was cancelled, lapsed or refunded, or part of it came back.
+  [Label("Given back")] GivenBack,
+}
+
+// SECURITY-INVARIANT(store-credit-is-its-owners-alone): a customer reads their OWN store credit and its entries and
+//   nobody else's — the `where Account == user` below; staff read every one. Nobody may create, change or delete a
+//   balance or an entry: the shop's workflows write them (as the system), so credit is minted only by a return, a
+//   grant staff made, or money given back. Guarded by store-credit.test.osy
+//   a_customer_reads_only_their_own_credit_and_nobody_can_write_it.
+public entity StoreCredit {
+  [Required, Unique] ShopAccount Account;
+  /// What the customer holds now — the balance after the last entry. See the file's head for why it is kept.
+  // SECURITY-INVARIANT(credit-never-spent-twice): two spends of the same money cannot both land — the second
+  //   writer of `Balance` is refused (`[ConcurrencyCheck]`), and a balance below nothing is refused at commit
+  //   (`invariant`). Guarded by store-credit.test.osy two_checkouts_cannot_spend_more_than_the_balance and
+  //   a_spend_against_a_balance_that_moved_is_refused.
+  [ConcurrencyCheck] decimal Balance = 0;
+  [ForeignKey(Credit)] StoreCreditEntry[] Entries;
+  invariant Balance >= 0 message "Store credit cannot go below nothing.";
+  security {
+    allow read when IsAuthenticated where Account == user;
+    allow read when IsShopStaff;
+  }
+}
+
+/// One change to a customer's store credit — added, never edited.
+public entity StoreCreditEntry {
+  [Required] StoreCredit Credit;
+  /// Signed: what was added, or (negative) taken.
+  decimal Amount;
+  /// The balance once this entry was made.
+  decimal BalanceAfter;
+  [Required] StoreCreditKind Kind;
+  /// The reason staff gave, as they gave it — never a sentence the shop writes: "Return on GG-1043" is said from the
+  /// facts below when it is read (`CreditNote`), in the reader's language.
+  [MaxLength(300)] string? Note;
+  Order? Order;
+  ReturnRequest? Return;
+  /// Why it was given back, for a `GivenBack` entry.
+  GiveBackCause? Cause;
+  /// Who gave it, for a grant — staff's to read.
+  ShopAccount? By;
+  DateTime At;
+  invariant BalanceAfter >= 0 message "Store credit cannot go below nothing.";
+  security {
+    allow read when IsAuthenticated where Credit.Account == user;
+    allow read when IsShopStaff;
+    deny read By when !IsShopStaff;
+  }
+}
+
+/// Staff give a customer store credit, with a reason. The row is the request and the record of who gave it; its
+/// workflow posts the credit.
+public entity StoreCreditGrant {
+  [Required] ShopAccount Account;
+  decimal Amount;
+  [Required, MaxLength(300)] string Reason;
+  ShopAccount? By;
+  DateTime At;
+  StoreCreditGrantStatus Status;                     // no default — StoreCreditGranting owns it
+  invariant Amount > 0 message "Give an amount above nothing.";
+  security {
+    allow read, create when IsShopStaff;
+  }
+}
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum StoreCreditGrantStatus {
+  [Label("Asked")] Asked,
+  [Label("Given")] Given,
+}
+
+public workflow StoreCreditGranting {
+  Tracks    = StoreCreditGrant.Status;
+  Autostart = true;
+  Initial   = Asked;
+
+  state Asked {
+    enter {
+      PostCredit(this.Item.Account, this.Item.Amount, StoreCreditKind.Grant, this.Item.Reason, null, null, this.Item.By);
+      TellAboutCredit(this.Item.Account, this.Item.Amount, this.Item.Reason);
+      goto Given;
+    }
+  }
+  terminal success Given { }
+}
+
+/// Changes a customer's store credit by `amount` (negative: taken) and writes the entry that says why. Refuses a change
+/// that would leave less than nothing. Called by the shop's workflows only — no principal may write either row.
+void PostCredit(ShopAccount account, decimal amount, StoreCreditKind kind, string? note, Order? order, ReturnRequest? ret,
+                ShopAccount? by, GiveBackCause? cause = null) {
+  if (amount == 0) { return; }
+  var credit = StoreCredit.FirstOrDefault(c => c.Account == account);
+  if (credit == null) { credit = new StoreCredit { Account = account, Balance = 0m }; }
+  var after = credit.Balance + amount;
+  if (after < 0) {
+    throw new Exception($"That would take {Money(-amount, TheShop())} of store credit, and there is {Money(credit.Balance, TheShop())}.");
+  }
+  credit.Balance = after;
+  new StoreCreditEntry { Credit = credit, Amount = amount, BalanceAfter = after, Kind = kind, Note = note, Order = order,
+                         Return = ret, By = by, Cause = cause, At = DateTime.UtcNow };
+}
+
+/// What `account` holds, as the caller may read it — 0 when they hold none, or may not read it.
+public decimal CreditBalanceOf(ShopAccount? account) {
+  if (account == null) { return 0m; }
+  var credit = StoreCredit.FirstOrDefault(c => c.Account == account);
+  return credit == null ? 0m : credit.Balance;
+}
+
+/// Mails a customer the store credit the shop gave them, in their account's language.
+void TellAboutCredit(ShopAccount account, decimal amount, string reason) {
+  if (!account.Email.Contains("@")) { return; }
+  Mail(account.Email, App.Setting<ShopSetup>().Mails.StoreCredit(account, amount, reason));
+}
+
+// ── the customer's side ─────────────────────────────────────────────────────────────────────────────────────────
+
+/// One change to a customer's store credit, as they read it.
+public class StoreCreditLine {
+  public DateTime At;
+  public decimal Amount = 0;
+  public decimal BalanceAfter = 0;
+  /// "From the shop", "Spent", …
+  public string What = "";
+  /// The note — "Return on GG-1043", the reason staff gave.
+  public string Note = "";
+  /// The order it was spent on or came from, when there is one.
+  public string OrderReference = "";
+}
+
+/// A customer's store credit: what they hold, and every change to it, newest first.
+public class StoreCreditView {
+  public decimal Balance = 0;
+  public List<StoreCreditLine> Lines = [];
+}
+
+/// What a credit entry says to whoever reads it — the reason staff gave, as they gave it; else said from its facts, in
+/// the reader's language: "Return on GG-1043", "Order GG-1044", "Cancelled — order GG-1045".
+public string CreditNote(StoreCreditEntry e) {
+  if (e.Note != null && e.Note != "") { return e.Note!; }
+  var order = e.Order == null ? "" : e.Order!.Reference;
+  if (order == "") { return ""; }
+  if (e.Kind == StoreCreditKind.GivenBack && e.Cause != null) { return GiveBackWords(e.Cause.Value, order); }
+  if (e.Kind == StoreCreditKind.Return) { return $"Return on {order}"; }
+  if (e.Kind == StoreCreditKind.Spent) { return $"Order {order}"; }
+  return "";
+}
+
+StoreCreditView CreditViewOf(ShopAccount account) {
+  var view = new StoreCreditView();
+  var credit = StoreCredit.FirstOrDefault(c => c.Account == account);
+  if (credit == null) { return view; }
+  view.Balance = credit.Balance;
+  foreach (var e in StoreCreditEntry.Include(x => x.Order).Where(x => x.Credit == credit).OrderByDescending(x => x.At).ToList()) {
+    view.Lines.Add(new StoreCreditLine { At = e.At, Amount = e.Amount, BalanceAfter = e.BalanceAfter, What = e.Kind.Label,
+                                         Note = CreditNote(e), OrderReference = e.Order == null ? "" : e.Order.Reference });
+  }
+  return view;
+}
+
+/// The signed-in customer's store credit — nothing for a visitor.
+public StoreCreditView MyStoreCredit() {
+  var me = Session.CurrentUser;
+  return me == null ? new StoreCreditView() : CreditViewOf(me);
+}
+
+/// What the signed-in customer holds — 0 for a visitor.
+[AllowAnonymous]
+public decimal MyCreditBalance() {
+  return CreditBalanceOf(Session.CurrentUser);
+}
+
+// ── the desk's side ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A customer's store credit, for the desk.
+[Authorize(IsShopStaff)]
+public StoreCreditView CreditOf(ShopAccount account) {
+  return CreditViewOf(account);
+}
+
+/// Gives a customer store credit, with the reason they are mailed. Answers what they hold now.
+[Authorize(IsShopStaff)]
+public decimal GrantCredit(ShopAccount account, decimal amount, string reason) {
+  if (amount <= 0) { throw new Exception("Give an amount above nothing."); }
+  if (amount > 100000m) { throw new Exception("That is more store credit than the desk gives in one go."); }
+  if (reason.Trim() == "") { throw new Exception("Say why — the customer is mailed the reason."); }
+  new StoreCreditGrant { Account = account, Amount = Math.Round(amount, 2, MidpointRounding.AwayFromZero), Reason = reason.Trim(), By = Session.CurrentUser,
+                         At = DateTime.UtcNow };
+  UnitOfWork.Commit();
+  return CreditBalanceOf(account);
+}
+
+// ── the order's side ────────────────────────────────────────────────────────────────────────────────────────────
+
+/// What is still to pay for an order once its store credit and any goods sent back in exchange are set against it —
+/// what a payment provider is asked for, and checked against.
+public decimal AmountDue(Order order) {
+  return Math.Max(order.Total - order.CreditUsed - order.GiftCardUsed - order.ExchangeCredit, 0m);
+}
+
+/// The key an order paid entirely from store credit is recorded with — no provider takes anything.
+public string StoreCreditKey() { return "storecredit"; }
+
+/// Takes the store credit an order asked for — called by the order's workflow as it takes the stock. Answers "" when
+/// taken, or the sentence that says why not (the balance moved since the checkout).
+string TakeCredit(Order order) {
+  if (order.CreditUsed <= 0) { return ""; }
+  var owner = order.Account;
+  if (owner == null) { return "Store credit belongs to an account — sign in to use it."; }
+  if (order.CreditUsed > order.Total) { return "An order cannot take more store credit than it costs."; }
+  if (OrderCurrency(order) != TheShop().Currency) { return $"Store credit is in {TheShop().Currency} and pays for an order in {TheShop().Currency} only."; }
+  var has = CreditBalanceOf(owner);
+  if (has < order.CreditUsed) {
+    return $"Your store credit is {Money(has, TheShop())} now, less than the {OrderMoney(order.CreditUsed, order)} this order would take";
+  }
+  PostCredit(owner!, -order.CreditUsed, StoreCreditKind.Spent, null, order, null, null);
+  order.CreditTaken = true;
+  return "";
+}
+
+/// Gives back the store credit an order took and has not yet given back — the order was called off, or all of it
+/// refunded. Called by the order's workflow. Answers what was given back.
+decimal GiveCreditBack(Order order, GiveBackCause why) {
+  if (!order.CreditTaken || order.Account == null) { return 0m; }
+  var left = order.CreditUsed - order.CreditReturned;
+  if (left <= 0) { return 0m; }
+  PostCredit(order.Account!, left, StoreCreditKind.GivenBack, null, order, null, null, why);
+  order.CreditReturned = order.CreditUsed;
+  return left;
+}
+
+/// The customer chooses (or stops choosing) to pay with their store credit at this checkout.
+[AllowAnonymous]
+public void UseStoreCredit(bool use) {
+  var bag = BagFor(true);
+  bag.UseCredit = use && Session.CurrentUser != null;
+  UnitOfWork.Commit();
+}
+
+/// Whether this checkout pays with store credit — the customer chose to, and holds some.
+[AllowAnonymous]
+public bool UsingStoreCredit() {
+  var bag = BagFor(false);
+  return bag != null && bag.UseCredit && Session.CurrentUser != null && MyCreditBalance() > 0;
+}
+
+/// What store credit a total takes, for the signed-in customer who chose to use it — never more than they hold or
+/// than it costs.
+decimal CreditFor(Bag bag, decimal total) {
+  var me = Session.CurrentUser;
+  if (!bag.UseCredit || me == null || total <= 0) { return 0m; }
+  // Store credit is held in the shop's own currency and is a debt in its books in that currency: it pays an order in
+  // it, never one bought in another (D-SELLCURRENCY1) — two balances in two currencies would be two debts to revalue.
+  if (BagCurrency(bag) != TheShop().Currency) { return 0m; }
+  return Math.Min(CreditBalanceOf(me), total);
+}

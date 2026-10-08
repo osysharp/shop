@@ -1,0 +1,79 @@
+// Return labels: staff accept a return, the shop books the parcel back through the carrier that brought it, and the
+// customer is mailed the label (inside the mail) with its tracking — or, when no label can be had, where to post it.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// Maja's order of one Loafer (39) to `delivery` ("courier/locker", "flat"), paid, sent and delivered — its reference.
+string SentTo(string visit, string delivery) {
+  runas (new Visitor { Id = visit }) {
+    var reference = "";
+    runas (Maja) {
+      Bag(visit, "Loafer", "39", 1);
+      if (delivery == "courier/locker") {
+        ChoosePickupPoint(delivery, "LK-11122-1", "Storgatan 1", "11122", "Stockholm", "SE");
+      }
+      reference = PlaceOrder("Maja Berg", "maja@example.test", "", delivery, "banktransfer",
+                             "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+    }
+    runas (Desk) { PayAndSend(reference); }
+    runas (Maja) { ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, "Too big"); }
+    return reference;
+  }
+}
+
+[Test(Floor)]
+void staff_accept_a_return_and_the_customer_is_mailed_the_carriers_label_with_its_tracking() {
+  var reference = SentTo("v-label", "courier/locker");
+  runas (Maja) { Assert.Throws<Exception>(() => AcceptReturn(ReturnRequest.Single())); }   // the desk's, not hers
+  runas (Desk) {
+    var ret = ReturnRequest.Single();
+    Assert.Equal("Label booked with Courier, tracking RET-" + Order.Single(o => o.Reference == reference).Tracking, AcceptReturn(ret));
+    Workflow.Settle(ret);
+    Assert.NotNull(ret.AcceptedAt);
+    Assert.NotNull(ret.ReturnLabelPath);
+    // The mail carries the label inside it — a PDF to print — and the tracking.
+    var mail = ShopMail.Include(m => m.Images).Single(m => m.Subject.StartsWith("Sending back your return") && m.Order!.Reference == reference);
+    var label = mail.Images.Single(i => i.Attachment);
+    Assert.Equal("application/pdf", label.ContentType);
+    Assert.Equal("return-" + reference + ".pdf", label.FileName);
+    Assert.Contains("The return label is attached", mail.Text);
+    Assert.Contains("RET-", mail.Text);
+    // What the mail provider is handed: the label's bytes as an ordinary attachment — no content id, so a client shows
+    // it as a file to open and print rather than looking for it inside the HTML.
+    var files = InlineAttachments(mail);
+    Assert.Equal(1, files.Count);
+    Assert.Equal("", files[0].ContentId);
+    Assert.Equal("return-" + reference + ".pdf", files[0].Filename);
+    Assert.StartsWith("%PDF", Text.FromBytes(files[0].Content));
+    // The desk sees where it stands, and where the parcel is when it asks the carrier.
+    var view = ReturnLabelOf(ret, true);
+    Assert.Equal("booked", view.Kind);
+    Assert.NotEqual("", view.LabelLink);
+    Assert.Equal("On its way", view.Where);
+    // Accepted again, nothing is booked twice.
+    AcceptReturn(ret);
+    Assert.Equal(1, ShopMail.Count(m => m.Subject.StartsWith("Sending back your return") && m.Order!.Reference == reference));
+    Assert.True(OrderTimeline(Order.Single(o => o.Reference == reference)).Any(e => e.What == "Return label booked"));
+  }
+}
+
+[Test(Floor)]
+void a_carrier_that_does_not_book_returns_says_so_and_the_customer_is_told_where_to_post_it() {
+  var reference = SentTo("v-nolabel", "flat");
+  runas (Desk) {
+    var ret = ReturnRequest.Single();
+    var state = AcceptReturn(ret);
+    Assert.Contains("Flat rate does not book return parcels.", state);
+    Assert.Contains("The customer was mailed where to post it.", state);
+    var view = ReturnLabelOf(ret, false);
+    Assert.Equal("instructions", view.Kind);
+    var mail = ShopMail.Single(m => m.Subject.StartsWith("Sending back your return") && m.Order!.Reference == reference);
+    Assert.Contains("Please post the parcel to", mail.Text);
+    Assert.Contains("Storgatan 1", mail.Text);                // the shop's address (its collection address here)
+    Assert.Contains(reference, mail.Text);
+    // Pressed again, the customer is not mailed the instructions twice.
+    AcceptReturn(ret);
+    Assert.Equal(1, ShopMail.Count(m => m.Subject.StartsWith("Sending back your return") && m.Order!.Reference == reference));
+  }
+}

@@ -1,0 +1,196 @@
+// Clearance. Staff mark a product down by a percentage until a date; its price drops everywhere at once, the regular
+// price shows struck through beside it, and on the end date it goes back by itself.
+//
+// ⚑ THE MARKDOWN WRITES THE PRICE, it does not add a second one. Every page, the bag and the checkout already read
+//   `Price` (and `WasPrice` for the struck-through one), so a sale that lived in another field would have to be taught
+//   to each of them — and the one that was missed would charge the regular price. What the markdown keeps is the
+//   REGULAR price, so ending it is exact.
+//
+// ⭐ A SALE IS DATED CONTENT (D-BLOCKS1): it may be SCHEDULED — from one date until another — and whether it is on at a
+//   date is the platform's one rule for dated content, `ShowsAt` (Osysharp.Blocks), the same one a dated block and a
+//   version of the site obey. So a member of staff previewing the site as of a date (`SiteDate()`) sees the sales that
+//   will be on then — the prices, the struck-through ones, the sale shelf — and a customer never sees a sale before it
+//   starts. The markdown still WRITES the price when it starts; a preview only shows what that price will be.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Workflow;
+using Osysharp.Blocks;
+
+public enum SaleState {
+  [Label("On sale")] Live,
+  [Label("Ended")] Ended,
+  [Label("Scheduled")] Scheduled,
+}
+
+public entity Sale {
+  [Required] Product Product;
+  /// How much off, in percent.
+  int Percent;
+  /// The product's price before the markdown — what it goes back to.
+  decimal RegularPrice;
+  /// When it starts (UTC) — null: when it was made. A sale that has not started is the staff's alone.
+  DateTime? StartsAt;
+  DateTime EndsAt;
+  SaleState State;                               // no default — SaleLife owns it
+  [ForeignKey(Sale)] SaleSize[] Sizes;
+  security {
+    // The sale shelf is public — from the moment a sale starts, never before.
+    allow read when IsAnonymous || IsAuthenticated where StartsAt == null || StartsAt <= DateTime.UtcNow;
+    allow read when IsShopStaff;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// A size with a price of its own, marked down alongside — with its regular price, to go back to.
+public entity SaleSize {
+  [Required] Sale Sale;
+  [Required] Variant Variant;
+  decimal RegularPrice;
+  security {
+    allow read when IsAnonymous || IsAuthenticated where Sale.StartsAt == null || Sale.StartsAt <= DateTime.UtcNow;
+    allow read when IsShopStaff;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+public workflow SaleLife {
+  Tracks    = Sale.State;
+  Autostart = true;
+  Initial   = Scheduled;
+
+  /// Staff end the sale before its date.
+  event EndNow();
+
+  /// Waiting for its first date — at once for a sale made to start now.
+  state Scheduled {
+    subscribe EndNow() as Cancel {
+      Finished {
+        Within = (this.Item.StartsAt ?? DateTime.UtcNow) - DateTime.UtcNow;
+        Unfinished { goto Live; }
+      }
+    }
+    on Cancel() { goto Ended; }
+  }
+
+  state Live {
+    enter {
+      var m = this.Item;
+      // The price it goes back to is the price when it STARTS — a scheduled sale may start weeks after it was made.
+      m.RegularPrice = m.Product.Price;
+      foreach (var s in m.Sizes) { if (s.Variant.Price != null) { s.RegularPrice = s.Variant.Price.Value; } }
+      m.Product.WasPrice = m.RegularPrice;
+      m.Product.Price = Reduced(m.RegularPrice, m.Percent);
+      foreach (var s in m.Sizes) { s.Variant.Price = Reduced(s.RegularPrice, m.Percent); }
+    }
+    subscribe EndNow() as Stop {
+      Finished {
+        Within = this.Item.EndsAt - DateTime.UtcNow;
+        Unfinished { goto Ended; }
+      }
+    }
+    on Stop() { goto Ended; }
+  }
+
+  terminal success Ended {
+    enter {
+      var m = this.Item;
+      // Called off before it started: nothing was marked down, so nothing goes back.
+      if (m.Product.WasPrice == null) { return; }
+      m.Product.Price = m.RegularPrice;
+      m.Product.WasPrice = null;
+      foreach (var s in m.Sizes) { s.Variant.Price = s.RegularPrice; }
+    }
+  }
+}
+
+/// A price less `percent`, to whole units — a sale price reads "€84", not "€83.97".
+decimal Reduced(decimal price, int percent) {
+  return Math.Round(price * (100 - percent) / 100, 0, MidpointRounding.AwayFromZero);
+}
+
+/// Marks a product down by `percent` for `days`. Refuses a second markdown on a product already on sale.
+[Authorize(IsShopStaff)]
+public Sale MarkDown(Product product, int percent, int days) {
+  if (percent < 5 || percent > 90) { throw new Exception("A markdown is between 5 and 90 percent."); }
+  if (days < 1) { throw new Exception("A sale runs for at least a day."); }
+  if (Sale.Any(m => m.Product == product && m.State == SaleState.Live)) {
+    throw new Exception($"{product.Name} is already on sale — end that one first.");
+  }
+  if (Sale.ToList().Any(m => m.Product == product && m.State != SaleState.Ended
+      && Overlap(m.StartsAt ?? DateTime.MinValue, m.EndsAt, DateTime.UtcNow, DateTime.UtcNow.AddDays(days)))) {
+    throw new Exception($"{product.Name} has a sale scheduled in those days — move or end that one first.");
+  }
+  if (product.WasPrice != null) { throw new Exception($"{product.Name} already shows a struck-through price — clear it first."); }
+  var m = new Sale { Product = product, Percent = percent, RegularPrice = product.Price, EndsAt = DateTime.UtcNow.AddDays(days) };
+  foreach (var v in product.Variants.ToList().Where(v => v.Price != null)) {
+    new SaleSize { Sale = m, Variant = v, RegularPrice = v.Price.Value };
+  }
+  UnitOfWork.Commit();
+  return m;
+}
+
+/// Schedules a markdown of `percent` from `from` until `until` (UTC, `until` exclusive): nobody but staff sees it until
+/// it starts, and a preview of the site as of a date inside it shows its prices. Refused when it overlaps another sale of
+/// the product.
+[Authorize(IsShopStaff)]
+public Sale ScheduleMarkDown(Product product, int percent, DateTime from, DateTime until) {
+  if (percent < 5 || percent > 90) { throw new Exception("A markdown is between 5 and 90 percent."); }
+  if (until <= from) { throw new Exception("A sale ends after it starts."); }
+  if (Sale.ToList().Any(m => m.Product == product && m.State != SaleState.Ended
+      && Overlap(m.StartsAt ?? DateTime.MinValue, m.EndsAt, from, until))) {
+    throw new Exception($"{product.Name} has a sale in those days — move or end that one first.");
+  }
+  var m = new Sale { Product = product, Percent = percent, RegularPrice = product.Price, StartsAt = from, EndsAt = until };
+  foreach (var v in product.Variants.ToList().Where(v => v.Price != null)) {
+    new SaleSize { Sale = m, Variant = v, RegularPrice = v.Price.Value };
+  }
+  UnitOfWork.Commit();
+  return m;
+}
+
+bool Overlap(DateTime aFrom, DateTime aUntil, DateTime bFrom, DateTime bUntil) {
+  return aFrom < bUntil && bFrom < aUntil;
+}
+
+/// Ends a product's sale now, and its price goes back — or calls off one that has not started.
+[Authorize(IsShopStaff)]
+public void EndMarkdown(Product product) {
+  var m = Sale.Where(x => x.Product == product && x.State != SaleState.Ended).OrderBy(x => x.EndsAt).FirstOrDefault();
+  if (m == null) { throw new Exception($"{product.Name} is not on sale."); }
+  SaleLife.RaiseEndNow(m);
+}
+
+/// Is `sale` on at `at`? The platform's one rule for dated content (`ShowsAt`), over the sale's dates.
+public bool SaleOn(Sale sale, DateTime at) {
+  return sale.State != SaleState.Ended && ShowsAt(sale.StartsAt, sale.EndsAt, at);
+}
+
+/// What the site is selling on — now, or on the date a member of staff is previewing it as of.
+[AllowAnonymous]
+public List<Product> OnSale() {
+  var at = SiteDate();
+  return Sale.ToList().Where(m => SaleOn(m, at)).OrderByDescending(m => m.Percent).Select(m => m.Product).ToList();
+}
+
+/// A product's price, and the struck-through one, as they are on a date.
+public class PriceOnDate {
+  public decimal Price;
+  public decimal? WasPrice;
+}
+
+/// A product's price at `at` over the sales the reader may read: marked down by the sale on then, back to its regular
+/// price once the sale it is in has ended — and otherwise as stored. At the real date this is the stored price (the
+/// markdown wrote it); in a staff preview as of another date it is the price that date will have. Pure, so a page runs
+/// it over its own live reads.
+public PriceOnDate PriceAt(Product product, List<Sale> sales, DateTime at) {
+  var on = sales.Where(s => s.Product.Id == product.Id && SaleOn(s, at)).FirstOrDefault();
+  if (on != null) {
+    // A running sale wrote its regular price when it started; one yet to start marks down the price as it is.
+    var regular = on.State == SaleState.Live ? on.RegularPrice : product.Price;
+    return new PriceOnDate { Price = Reduced(regular, on.Percent), WasPrice = regular };
+  }
+  var running = sales.Where(s => s.Product.Id == product.Id && s.State == SaleState.Live).FirstOrDefault();
+  if (running != null) { return new PriceOnDate { Price = running.RegularPrice, WasPrice = null }; }
+  return new PriceOnDate { Price = product.Price, WasPrice = product.WasPrice };
+}

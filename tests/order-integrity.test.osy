@@ -1,0 +1,55 @@
+// An order's lines, contact, adjustments and VAT are written WITH the order, never after it — by nobody but staff.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Floor)]
+void a_customer_cannot_add_a_line_to_their_own_order_after_it_is_placed() {
+  runas (new Visitor { Id = "v-integrity" }) {
+    Bag("v-integrity", "Loafer", "38", 1);
+    var reference = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                               "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+    var order = Order.FirstOrDefault(o => o.Reference == reference);
+    runas (Desk) { order = Order.Single(o => o.Reference == reference); }
+    Assert.Throws<Exception>(() => {
+      new OrderLine { Order = order, Variant = Variant.First(), ProductName = "Free boots", Quantity = 5, Price = 0m, VatPercent = 0m };
+      UnitOfWork.Commit();
+    });
+    Assert.Throws<Exception>(() => {
+      new OrderVat { Order = order, Percent = 25m, Gross = -1000m, Vat = -200m };
+      UnitOfWork.Commit();
+    });
+    Assert.Throws<Exception>(() => {
+      new OrderContact { Order = order, Name = "Someone else", Email = "x@example.test", Street = "Elsewhere 1" };
+      UnitOfWork.Commit();
+    });
+    Assert.Throws<Exception>(() => {
+      new OrderAdjustment { Order = order, Source = "forged", Label = "Everything free", Amount = 1000m };
+      UnitOfWork.Commit();
+    });
+    runas (Desk) { Assert.Equal(1, OrderLine.Count(l => l.Order.Reference == reference)); }
+  }
+}
+
+[Test(Floor)]
+void a_customer_cannot_agree_their_own_price() {
+  runas (new Visitor { Id = "v-agree" }) {
+    Bag("v-agree", "Loafer", "38", 1);
+    var line = BagFor(false)!.Lines.Single();
+    Assert.Throws<Exception>(() => {
+      new AgreedLinePrice { Line = line, Price = 0m };
+      UnitOfWork.Commit();
+    });
+    Assert.Equal(120m, CheckoutQuote("courier", "SE").Goods);
+  }
+}
+
+// An account's API key hash is masked like its password hash: the principal row rides to the browser minus its masked
+// columns, so an unmasked hash would reach every signed-in page.
+[Test(Floor)]
+void an_api_key_hash_is_never_read_back() {
+  var key = Api.KeyFor(Maja);
+  Assert.StartsWith("pk_", key);
+  runas (Maja) { Assert.Null(ShopAccount.Single(a => a.Email == "maja@example.test").ApiKeyHash); }
+  runas (Desk) { Assert.Null(ShopAccount.Single(a => a.Email == "maja@example.test").ApiKeyHash); }
+}

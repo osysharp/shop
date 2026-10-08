@@ -1,0 +1,305 @@
+// A customer's rights over their data (GDPR): to have a copy of it, and to have it erased.
+//
+// ⚑ ERASURE REMOVES THE PERSON — EXCEPT WHAT THE BOOKS MUST KEEP (owner, 2026-09-27: *"if you are a customer, ie have
+//   paid i think the business can keep the information around, but it can be made so you can't log in and you don't
+//   get email"*). GDPR's erasure right does not reach data kept to meet a legal obligation (art. 17(3)(b)), and an
+//   issued invoice must be kept AS ISSUED — the buyer's name and address on it — for the bookkeeping period. So:
+//   · an order that was INVOICED keeps its contact's name and address until that period ends (`RetainedUntil`: seven
+//     years after the end of the invoice's year); its email and phone go at once — nobody can reach them;
+//   · an order never invoiced (never paid, called off) keeps nothing of the person;
+//   · the account can no longer sign in, and no mail is sent to an erased contact;
+//   · when a retention period ends, `PurgeExpiredRetention` takes the name and address too.
+//   The erasure itself is recorded (when, and for which account row), which is what an auditor asks to see.
+//
+// ⚑ IT RUNS AS A WORKFLOW, on the shop's authority: erasing the person from an order's contact, a waiting restock
+//   alert and the shop's own outbox are writes a customer may not make, and a request they may.
+
+namespace Osysharp.Shop;
+
+using Osysharp.MailingLists;
+
+using Osysharp.Storage;
+using Osysharp.Workflow;
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum ErasureStatus {
+  [Label("Requested")] Requested,
+  [Label("Erased")] Erased,
+  /// Did not run: something that keeps a copy of the customer (an add-on) could not erase it. Nothing is erased, the
+  /// reason is in `Problem`, and asking again retries it.
+  [Label("Could not run")] Failed,
+}
+
+/// A request to erase a customer — kept after it is done, as the record that it was.
+public entity ShopErasure {
+  [Required] ShopAccount Account;
+  DateTime RequestedAt;
+  DateTime? ErasedAt;
+  /// Who asked: the customer themselves, or staff acting on a request.
+  bool BySelf;
+  /// Why it could not run, while it is `Failed` — the sentence the customer and the desk are shown.
+  [MaxLength(1000)] string Problem = "";
+  ErasureStatus Status;                              // no default — ErasureRun owns it
+  security {
+    allow create when IsAuthenticated where Account == user;
+    allow create when IsShopStaff;
+    // The customer reads their own — whether it ran, and why not when it did not.
+    allow read when IsAuthenticated where Account == user;
+    allow read when IsShopStaff;
+  }
+}
+
+public workflow ErasureRun {
+  Tracks    = ShopErasure.Status;
+  Autostart = true;
+  Initial   = Requested;
+
+  // ⚑ THE PERSON IS ERASED IN `enter`; THE PAYMENT PROVIDER IS TOLD ON A CLOCK DUE AT ONCE. The request row is written by
+  //   the customer's own "Erase my account" (or the desk's), and an autostarted run's `enter` is part of that commit —
+  //   so everything local happens there, and the caller's next read finds the account unable to sign in. Forgetting a
+  //   saved card is a call to the provider (Stripe, over the network): in `enter` the commit would wait on it, and past
+  //   five seconds stop waiting (`workflow-first-step-waits-on-a-slow-call`, D-AUTOSTART1). It runs after the commit,
+  //   and the erasure is recorded as done once it has.
+  event Retry();
+
+  state Requested {
+    // An autostarted `enter` cannot refuse the row (workflow/tracks#enter-cannot-refuse): a throw here would be retried
+    // later, in silence, with the customer told their account was erased. So a failure is a STATE the caller reads.
+    enter {
+      try { Erase(this.Item.Account); }
+      catch (Exception ex) { this.Item.Problem = ex.Message; goto Failed; }
+      this.Item.Problem = "";
+    }
+    Expire { Within = TimeSpan.Zero; Accrues = false; }
+    on Expire {
+      ForgetSavedMethods(this.Item.Account);
+      this.Item.ErasedAt = DateTime.UtcNow;
+      goto Erased;
+    }
+  }
+  state Failed {
+    on Retry() { goto Requested; }
+  }
+  terminal success Erased { }
+}
+
+/// Why an account cannot be erased yet — "" when it can. An order on its way or a return in progress still needs the
+/// customer's address.
+public string ErasureBlockedBy(ShopAccount account) {
+  var open = Order.Where(o => o.Account == account && (o.Status == OrderStatus.Reserved || o.Status == OrderStatus.Paid
+    || o.Status == OrderStatus.Picking || o.Status == OrderStatus.Packed || o.Status == OrderStatus.Fulfilled
+    || o.Status == OrderStatus.RefundRequested || o.Status == OrderStatus.RefundProcessing)).FirstOrDefault();
+  if (open != null) { return $"Order {open.Reference} is {open.Status.Label} — it can be erased once it has arrived or been called off."; }
+  var ret = ReturnRequest.Where(r => r.Order.Account == account && (r.Status == ReturnStatus.Requested || r.Status == ReturnStatus.Refunding)).FirstOrDefault();
+  if (ret != null) { return $"A return on {ret.Order.Reference} is still under way."; }
+  return "";
+}
+
+/// The signed-in customer asks to be erased. Throws the sentence to show when it cannot be done yet. The page signs
+/// them out once it has answered.
+public void EraseMyAccount() {
+  var me = Session.CurrentUser;
+  if (me == null) { throw new Exception("Sign in to erase your account."); }
+  var blocked = ErasureBlockedBy(me);
+  if (blocked != "") { throw new Exception(blocked); }
+  Ask(me, true);
+}
+
+/// Record the request — or ask a failed one again — and answer the sentence to show when it could not run. Nothing is
+/// ever reported as erased that was not.
+void Ask(ShopAccount account, bool bySelf) {
+  var failed = ShopErasure.FirstOrDefault(e => e.Account == account && e.Status == ErasureStatus.Failed);
+  ShopErasure erasure;
+  if (failed != null) {
+    erasure = failed!;
+    ErasureRun.RaiseRetry(erasure);
+  } else {
+    erasure = new ShopErasure { Account = account, RequestedAt = DateTime.UtcNow, BySelf = bySelf };
+  }
+  UnitOfWork.Commit();
+  var now = ShopErasure.Single(e => e.Id == erasure.Id);
+  if (now.Status == ErasureStatus.Failed) { throw new Exception(now.Problem); }
+}
+
+/// Staff erase a customer who asked them to.
+[Authorize(IsShopStaff)]
+public void EraseCustomer(ShopAccount account) {
+  var blocked = ErasureBlockedBy(account);
+  if (blocked != "") { throw new Exception(blocked); }
+  Ask(account, false);
+}
+
+/// Removes the person: from the account, every order's contact (a guest order placed with the same address included),
+/// waiting restock alerts, password resets and the shop's outbox. Amounts, lines and documents stay. Their saved ways
+/// to pay go just after, with the provider (`ForgetSavedMethods`).
+void Erase(ShopAccount account) {
+  // The add-ons first, while the account still says who it is: one that cannot erase stops the erasure before the
+  // shop has blanked anything (SECURITY-INVARIANT shop-an-add-on-that-cannot-erase-fails-the-erasure).
+  TellErased(account);
+  var email = account.Email;
+  List<Guid> theirs = [];
+  foreach (var c in OrderContact.Where(c => c.Order.Account == account || c.Email == email).ToList()) {
+    theirs.Add(c.Order.Id);
+    c.Email = "erased";                                        // nobody can reach them — and no mail is sent
+    c.Phone = null;
+    c.BornOn = null;                                           // the books never needed it
+    var invoice = Invoice.FirstOrDefault(i => i.Order == c.Order);
+    if (invoice != null) {
+      // The books keep the buyer as invoiced, until the bookkeeping period ends.
+      c.RetainedUntil = BooksKeepUntil(invoice.IssuedAt);
+    } else {
+      ForgetContact(c);
+    }
+  }
+  PurgeExpiredRetention();
+  // What the desk wrote about their orders, the addresses a change moved between, and where a payment link went: all
+  // of it about the person, none of it what the books keep (an invoice keeps the address it was issued with).
+  foreach (var n in OrderNote.Where(n => theirs.Contains(n.Order.Id)).ToList()) { n.Text = "(erased at the customer's request)"; }
+  foreach (var e in OrderEvent.Where(e => theirs.Contains(e.Order.Id) && e.Kind == OrderEventKind.AddressChanged).ToList()) { e.Text = null; }
+  foreach (var e in OrderEvent.Where(e => e.Kind == OrderEventKind.PayLinkSent && (theirs.Contains(e.Order.Id) || e.Text == $"Mailed to {email}")).ToList()) {
+    e.Text = null;
+  }
+  foreach (var a in StockAlert.Where(a => a.Email == email).ToList()) { a.Delete(); }
+  // …and off every mailing list: the address, the lists, the consents and what was sent (Osysharp.MailingLists).
+  EraseReader(email);
+  foreach (var m in ShopMail.Where(m => m.To == email).ToList()) {
+    m.To = "erased";
+    m.Text = "(erased at the customer's request)";
+    // The HTML is the same mail — it carries the name, the address and the order as much as the text does.
+    m.Html = null;
+    foreach (var image in m.Images.ToList()) { image.Delete(); }
+  }
+  foreach (var r in ShopPasswordReset.Where(r => r.Account == account).ToList()) { r.Delete(); }
+  foreach (var g in ShopRoleGrant.Where(g => g.Member == account).ToList()) { g.Delete(); }
+  foreach (var b in Bag.Where(b => b.Owner == account).ToList()) {
+    foreach (var l in b.Lines.ToList()) { l.Delete(); }
+  }
+  account.Email = $"erased-{account.Id}@erased.invalid";
+  account.PasswordHash = Security.RandomHex(32);                 // no password hashes to it: it cannot sign in
+  account.Name = null;
+  account.Phone = null;
+  account.Street = null;
+  account.PostCode = null;
+  account.City = null;
+  account.Country = null;
+}
+
+/// The customer's saved ways to pay, forgotten — at the provider too, which is a call over the network, and so made on
+/// the erasure's clock rather than in the commit that asked for it (`ErasureRun`).
+void ForgetSavedMethods(ShopAccount account) {
+  foreach (var m in SavedPaymentMethod.Where(m => m.Account == account).ToList()) { ForgetMethodAtProvider(m); m.Delete(); }
+}
+
+/// What is left of a person on an order once nothing requires it: their name and address.
+void ForgetContact(OrderContact c) {
+  c.Name = "Erased customer";
+  c.Email = "erased";
+  c.Phone = null;
+  c.Street = null;
+  c.PostCode = null;
+  c.City = null;
+  c.Country = null;
+  c.RetainedUntil = null;
+}
+
+/// The first instant AFTER an invoice issued at `issuedAt` stops being kept for the books — it is kept through the whole
+/// of the day before. Bokföringslagen 7 kap. 2 §: seven years from the end of the CALENDAR year in which the invoice's
+/// FISCAL year ended (`ShopSetup.FiscalYearEndMonth/Day`). An invoice issued in August 2025, in a July–June fiscal year,
+/// belongs to the year ending June 2026, so it is kept through 31 Dec 2033 and this answers 1 Jan 2034 00:00.
+/// ⚑ An exclusive end, so the purge (`RetainedUntil < now`) never takes the last kept day — a date at midnight at the
+///   START of 31 Dec purged that whole day early.
+public DateTime BooksKeepUntil(DateTime issuedAt) {
+  var setup = App.Setting<ShopSetup>();
+  var day = new DateTime(issuedAt.Year, issuedAt.Month, issuedAt.Day);
+  // The fiscal year holding the invoice ends on the first fiscal-year end on or after its day.
+  var fyEnd = new DateTime(issuedAt.Year, setup.FiscalYearEndMonth, setup.FiscalYearEndDay);
+  if (fyEnd < day) { fyEnd = new DateTime(issuedAt.Year + 1, setup.FiscalYearEndMonth, setup.FiscalYearEndDay); }
+  return new DateTime(fyEnd.Year + 8, 1, 1);
+}
+
+/// Erased customers kept on invoiced orders whose bookkeeping period has ended — forgotten now. Runs with every
+/// erasure, and staff may run it.
+public void PurgeExpiredRetention() {
+  var now = DateTime.UtcNow;
+  foreach (var c in OrderContact.Where(c => c.RetainedUntil != null && c.RetainedUntil < now).ToList()) { ForgetContact(c); }
+}
+
+// ── the copy ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+public class DataExport {
+  public string Email = "";
+  public string? Name;
+  public string? Phone;
+  public string? Street;
+  public string? PostCode;
+  public string? City;
+  public string? Country;
+  public List<DataExportOrder> Orders = [];
+  public List<DataExportReturn> Returns = [];
+  public List<string> RestockAlerts = [];
+  public List<DataExportMail> Mails = [];
+}
+
+public class DataExportOrder {
+  public string Reference = "";
+  public DateTime PlacedAt;
+  public string Status = "";
+  public decimal Total = 0;
+  public string Currency = "";
+  public List<string> Lines = [];
+  public string DeliveredTo = "";
+  /// What the shop wrote to them about the order (`MessageCustomer`).
+  public List<string> Messages = [];
+}
+
+public class DataExportReturn {
+  public string Order = "";
+  public DateTime RequestedAt;
+  public string Status = "";
+  public decimal Amount = 0;
+}
+
+public class DataExportMail {
+  public DateTime At;
+  public string Subject = "";
+}
+
+/// Everything the shop holds about an account, as JSON.
+public string PersonalData(ShopAccount account) {
+  var shop = TheShop();
+  var export = new DataExport { Email = account.Email, Name = account.Name, Phone = account.Phone, Street = account.Street,
+                                PostCode = account.PostCode, City = account.City, Country = account.Country };
+  foreach (var o in Order.Where(o => o.Account == account).Include(o => o.Lines).Include(o => o.Contact).OrderBy(o => o.PlacedAt).ToList()) {
+    var c = o.Contact.FirstOrDefault();
+    export.Orders.Add(new DataExportOrder {
+      Reference = o.Reference, PlacedAt = o.PlacedAt, Status = o.Status.Label, Total = o.Total, Currency = OrderCurrency(o),
+      Lines = o.Lines.ToList().Select(l => $"{l.Quantity} × {l.ProductName}{(l.VariantLabel == null ? "" : " (" + l.VariantLabel + ")")}").ToList(),
+      DeliveredTo = c == null ? "" : string.Join(", ", new List<string> { c.Name, c.Street ?? "", c.PostCode ?? "", c.City ?? "", c.Country ?? "" }.Where(x => x != "")),
+      Messages = OrderNote.Where(n => n.Order == o && n.ToCustomer).OrderBy(n => n.At).ToList().Select(n => n.Text).ToList(),
+    });
+  }
+  foreach (var r in ReturnRequest.Where(r => r.Order.Account == account).ToList()) {
+    export.Returns.Add(new DataExportReturn { Order = r.Order.Reference, RequestedAt = r.RequestedAt, Status = r.Status.Label, Amount = r.Amount });
+  }
+  var email = account.Email;
+  export.RestockAlerts = StockAlert.Where(a => a.Email == email).ToList().Select(a => $"{a.Variant.Product.Name} {VariantLabel(a.Variant)}".Trim()).ToList();
+  export.Mails = ShopMail.Where(m => m.To == email).OrderBy(m => m.CreatedAt).ToList().Select(m => new DataExportMail { At = m.CreatedAt, Subject = m.Subject }).ToList();
+  return JsonSerializer.Serialize(export);
+}
+
+/// The signed-in customer's copy of their data — a link that expires.
+public string MyDataLink() {
+  var me = Session.CurrentUser;
+  if (me == null) { throw new Exception("Sign in to download your data."); }
+  return DataLink(me);
+}
+
+/// A customer's data for staff, answering a request made to the shop.
+[Authorize(IsShopStaff)]
+public string CustomerDataLink(ShopAccount account) { return DataLink(account); }
+
+string DataLink(ShopAccount account) {
+  var path = $"personal-data/{account.Id}.json";
+  File.WriteAllBytes(path, Text.ToBytes(PersonalData(account)));
+  return File.SignedUrl(path);
+}

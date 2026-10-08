@@ -1,0 +1,136 @@
+// Single-purpose gift cards (D-GIFTCARD-SPV1): the desk setting `GiftCardsAreSinglePurpose` makes a card sold from then
+// on a single-purpose voucher — VAT at the standard rate on the SALE, none on what it pays for (EU VAT Directive
+// 2006/112/EC art. 30a(2), 30b(1)). The checkout, the order, the receipt and the desk say which it is; the desk warns
+// when the shop is not the kind of shop such a card is right for. The books are the bookkeeping kit's tests.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// The shop charges 25 % (12 % reduced) and sells single-purpose cards when `single`.
+void CardVat(bool single) {
+  runas (Desk) {
+    var shop = TheShop();
+    shop.VatPercent = 25m;
+    shop.VatReducedPercent = 12m;
+    shop.GiftCardsAreSinglePurpose = single;
+    UnitOfWork.Commit();
+  }
+}
+
+[Test(Floor)]
+void a_single_purpose_card_carries_its_vat_when_sold_and_what_it_pays_for_carries_none() {
+  GiftShelf();
+  CardVat(true);
+  var sale = MajaBuysACard("v-spv-buy", CardOf("€50"), 0m, "", "", null);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == sale);
+    Assert.True(order.GiftCardsSinglePurpose);
+    Assert.Equal(10m, order.Vat);                                                   // €50 incl. 25 %
+    Assert.Equal(25m, order.Lines.Single().VatPercent);
+    Assert.Equal(50m, order.VatRates.Single().Gross);
+    Assert.Contains("single-purpose voucher — its VAT, €10, is paid now", string.Join(" ", GiftCardVatSentences(order, true)));
+    Assert.Contains("articles 30a(2) and 30b(1)", string.Join(" ", GiftCardVatSentences(order, true)));
+    var card = GiftCard.Single(c => c.SoldWith == order);
+    Assert.True(card.SinglePurpose);
+    Assert.Equal(25m, card.VatPercent);
+  }
+  var code = CodeMailedTo("maja@example.test");
+  var reference = "";
+  runas (Maja) {
+    Bag("v-spv-spend", "Loafer", "38", 1);
+    ApplyGiftCard(code);
+    // €120, €50 of it by a card whose VAT is paid: VAT on the €70 only.
+    var quote = CheckoutQuote("collect", "");
+    Assert.Equal(50m, quote.GiftCards);
+    Assert.Equal(50m, quote.SinglePurposePaid);
+    Assert.Equal(14m, quote.Vat);
+    Assert.Contains("€50 is paid with a gift card whose VAT was paid when it was bought", quote.GiftCardVatNote);
+    reference = Checkout("v-spv-spend").Reference;
+  }
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Assert.Equal(50m, order.SinglePurposeUsed);
+    Assert.Equal(10m, order.VoucherVat);
+    Assert.Equal(14m, order.Vat);
+    Assert.Equal(70m, order.VatRates.Single().Gross);
+    Assert.Contains("its VAT, €10, was paid when the card was bought", string.Join(" ", GiftCardVatSentences(order, false)));
+  }
+}
+
+[Test(Floor)]
+void a_multi_purpose_card_carries_no_vat_when_sold_and_its_goods_carry_theirs() {
+  GiftShelf();
+  CardVat(false);
+  var sale = MajaBuysACard("v-mpv-buy", CardOf("€50"), 0m, "", "", null);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == sale);
+    Assert.False(order.GiftCardsSinglePurpose);
+    Assert.Equal(0m, order.Vat);
+    Assert.Empty(order.VatRates.ToList().Where(r => r.Vat > 0).ToList());
+    Assert.Contains("multi-purpose voucher, sold without VAT", string.Join(" ", GiftCardVatSentences(order, true)));
+    Assert.False(GiftCard.Single(c => c.SoldWith == order).SinglePurpose);
+  }
+  var code = CodeMailedTo("maja@example.test");
+  runas (Maja) {
+    Bag("v-mpv-spend", "Loafer", "38", 1);
+    ApplyGiftCard(code);
+    var quote = CheckoutQuote("collect", "");
+    Assert.Equal(0m, quote.SinglePurposePaid);
+    Assert.Equal(24m, quote.Vat);                                                   // the whole €120 carries its VAT
+    Assert.Equal("", quote.GiftCardVatNote);
+  }
+}
+
+[Test(Floor)]
+void a_card_staff_give_is_multi_purpose_and_a_single_purpose_one_takes_nothing_added() {
+  GiftShelf();
+  CardVat(true);
+  // Given, never sold: nothing was paid, so no VAT fell due — a multi-purpose card whatever the setting.
+  IssueTo("olle@example.test", 40m);
+  MajaBuysACard("v-spv-add", CardOf("€50"), 0m, "", "", null);
+  runas (Desk) {
+    var given = GiftCard.Single(c => c.SoldWith == null);
+    Assert.False(given.SinglePurpose);
+    AdjustGiftCard(given, 10m, "Made up for a late parcel");
+    Assert.Equal(50m, given.Balance);
+    var sold = GiftCard.Single(c => c.SoldWith != null);
+    var refused = Assert.Throws<Exception>(() => AdjustGiftCard(sold, 10m, "A little extra"));
+    Assert.Contains("single-purpose voucher", refused.Message);
+    AdjustGiftCard(sold, -5m, "Part of it was refunded by hand");
+    Assert.Equal(45m, sold.Balance);
+    Assert.Contains("Single-purpose, VAT 25 % paid when sold", DeskGiftCardRows("").Single(r => r.Card!.Id == sold.Id).Kind);
+  }
+}
+
+[Test(Floor)]
+void the_desk_warns_when_single_purpose_cards_meet_two_rates_or_another_country() {
+  GiftShelf();
+  CardVat(false);
+  runas (Desk) {
+    // Off: nothing to warn about.
+    Assert.Empty(GiftCardKindWarnings());
+    var shop = TheShop();
+    shop.GiftCardsAreSinglePurpose = true;
+    UnitOfWork.Commit();
+    // One rate — but this shop lists a VAT-number check, so it sells VAT-free to businesses in other EU countries: a
+    // card may be spent abroad, and whose VAT is due is not known until it is.
+    var one = GiftCardKindWarnings();
+    Assert.Single(one);
+    Assert.Contains("sells to other countries — it sells VAT-free to businesses in other EU countries", one[0]);
+    Assert.Contains("multi-purpose voucher (VAT Directive, article 30a(3))", one[0]);
+    // A shoe at the reduced rate: a card may pay for goods at two rates, so its VAT is not known when it is sold.
+    var loafer = Product.Single(p => p.Slug == "loafer");
+    loafer.Vat = VatClass.Reduced;
+    UnitOfWork.Commit();
+    var two = GiftCardKindWarnings();
+    Assert.Equal(2, two.Count);
+    Assert.Contains("2 VAT rates (25 %, 12 %)", two[0]);
+    loafer.Vat = VatClass.Standard;
+    // Registered for the One-Stop Shop too: said with the other reason.
+    shop.OssRegistered = true;
+    UnitOfWork.Commit();
+    var abroad = GiftCardKindWarnings();
+    Assert.Single(abroad);
+    Assert.Contains("registered for the One-Stop Shop", abroad[0]);
+  }
+}

@@ -1,0 +1,82 @@
+// What an app on the kit writes itself: how staff sign in, which providers it offers, and where they post events.
+
+
+
+using Osysharp.Delivery;
+using Osysharp.Payments.Klarna;
+using Osysharp.Payments;
+using Osysharp.Shop;
+using Osysharp.Payments.Stripe;
+using Osysharp.Analytics;
+
+
+// The kit ships the identity — `ShopRole`, `ShopAccount` and its sign-in functions — and the app wires them. A PasswordAuth field is
+// named by its bare property name on the `[Principal]`, wherever that principal was declared.
+app.Auth = new PasswordAuth { LoginField = Email, PasswordField = PasswordHash };
+app.AuthBootstrap = new AuthBootstrap {
+  Role = ShopRole.Authenticator,
+  Login = ShopLogin, Signup = ShopSignup,
+  PasswordResetRequest = ShopRequestPasswordReset, PasswordReset = ShopResetPassword,
+  PasswordChange = ShopChangePassword, EmailChange = ShopChangeEmail,
+  EmailVerify = ShopConfirmEmail, EmailVerifyCode = ShopConfirmEmailCode,
+};
+
+// Analytics on, so an order notes its sale for the store's frame to report (analytics.test.osy).
+app.Analytics = new AnalyticsSetup { Provider = AnalyticsProvider.Plausible, Domain = "kit-test-shop.example" };
+
+// The shop's providers, as an app lists them. Test credentials are plain strings here — every call is stubbed. The setup
+// is configuration and reads no data: the bank details, the delivery fee, the free-from and the collection address are
+// the desk's (fixture.test.osy), which the shop reads where it uses them.
+app.Shop = new ShopSetup {
+  Payments = [
+    new ManualPayment { Key = "banktransfer", Label = "Bank transfer" },
+    new ManualPayment { Key = "oncollection", Label = "Pay on collection", Description = "Pay when you collect." },
+    // An invoice with the price list's terms — offered to a wholesale account alone (wholesale.test.osy).
+    new ManualPayment { Key = "invoice", Label = "Invoice", Description = "Pay by the day on the invoice." },
+    new StripePayments { ApiKey = "sk_test_x", WebhookSecret = "whsec_demo" },
+    // Its market is Germany, which Klarna pairs with the euros this shop sells in — Sweden would want kronor.
+    new KlarnaPayments { Username = "u", Password = "p", Playground = true, Country = "DE", Locale = "de-DE" },
+    // Kronor only, in a shop that sells in euros: listed, set up, and never offered (orders.test.osy).
+    new KronorOnly(),
+  ],
+  // The counter (counter.test.osy): a card on the shop's own terminal, and a Stripe reader — every call stubbed.
+  CounterPayments = [ new StripeTerminal { ApiKey = "sk_test_x", ReaderId = "tmr_counter", Currencies = ["EUR"] } ],
+  OnlyWhenCollecting = ["oncollection"],
+  OnlyForWholesale = ["invoice"],
+  Delivery = [
+    new FlatRateDelivery(),
+    new CollectInStore(),
+    new ZoneRateDelivery { Key = "parcel", Label = "Parcel by weight", Zones = [
+      new DeliveryZone { Name = "Sweden", Countries = ["SE"], Rates = [ new WeightRate { UpToGrams = 1000, Price = 4900 } ] },
+      new DeliveryZone { Name = "Abroad", Rates = [ new WeightRate { UpToGrams = 5000, Price = 9900 } ] },
+    ] },
+    new FakeCarrier(),
+  ],
+  // A July–June fiscal year, so a kept buyer's end date is checked against a fiscal year that is not the calendar's.
+  FiscalYearEndMonth = 6, FiscalYearEndDay = 30,
+  VatNumbers = new FakeVatRegister(),
+  // An identity provider that proves a buyer's age (model/identity.osy) — offered only when a test says so.
+  AgeVerifier = new FakeId(),
+  AgeMustBeVerified = FakeIdRequired(),
+  // Off, as a store starts — a test stubs it on to see an account that must prove its address (confirm-email.test.osy).
+  RequireConfirmedEmail = AddressProofRequired(),
+  // Prices shown in a visitor's own currency (currencies.test.osy) — rates from a stubbed sheet.
+  ExchangeRates = new FakeRates(),
+  DisplayCurrencies = ["EUR", "SEK", "USD", "JPY", "NOK"],
+  // Back-in-stock is this store's own template (model/mails.osy); the rest are the kit's.
+  Mails = new KitTestMails(),
+  // The letter at the checkout and on the account, and one reminder about a bag left behind to its readers.
+  NewsletterList = "letter",
+  BagReminderList = "letter",
+};
+
+app.Apis = [
+  new RestApi("Payments") {
+    Route = "payments",
+    // Open, because a provider has no account here to sign in with. Each provider verifies its own events.
+    Auth  = new ApiAuth { Anonymous = true },
+    Endpoints = [
+      new Endpoint(ShopPaymentEvents) { Method = HttpMethod.Post, Path = "/{provider}/events", Raw = true, Headers = ["Stripe-Signature"] },
+    ],
+  },
+];

@@ -1,0 +1,879 @@
+// The counter — a sale rung up in the shop, with the customer standing there: goods scanned or found into a sale at
+// the clerk's own counter, the customer optional (a code mailed to them brings in their store credit and their price
+// list), paid by card on the terminal, by Swish's QR code or a card reader, with a gift card, store credit or a discount
+// code — and handed over there and then, with a printed or mailed receipt. Returns come back over the same counter.
+//
+// ⚑ A COUNTER SALE IS AN ORDER. It is placed through the checkout's own path (`PlaceBag`) and priced AGAIN by the
+//   order's workflow like any customer's; its stock is taken at the counter's location; paid, it is issued an invoice
+//   and credit notes like any other, so the VAT report, the SIE file and the CSV count it with the web's. What differs
+//   is that nothing is started on a payment page, and paid is handed over (`HandOverAtCounter`).
+//
+// ⚑ A CLERK IS BOUNDED TWO WAYS (`ShopRole.Counter`). They sell at ONE counter when their grant names one
+//   (`SellsAt`, SECURITY-INVARIANT(a-counter-sells-only-at-its-location)), and read only what that counter hands over
+//   (SECURITY-INVARIANT(a-counter-sees-only-its-own-counters-collections)). And they see no money beyond the sale in
+//   front of them: no desk, no figures, no invoices, no books — those stay `IsShopStaff`.
+//
+// ⚑ A CUSTOMER JOINS A SALE ONLY WITH THEIR OWN CODE (SECURITY-INVARIANT(a-customer-joins-a-counter-sale-only-by-their-code)).
+//   A clerk types the customer's email; the shop mails the account a six-letter code; the customer reads it out. Only
+//   then does the sale carry their account — their store credit to spend, their wholesale prices — and it is the
+//   order's workflow, as the shop, that puts the account on the order. A clerk cannot name an account and spend it.
+//
+// ⛔ THIS IS NOT A CERTIFIED CASH REGISTER. Swedish law (skatteförfarandelagen 39 kap. 4–10 §§, "kassaregisterlagen")
+//    requires a business selling for cash — and card and Swish ARE cash here: "kontant betalning" means paid at the
+//    sale — to use a manufacturer-declared cash register with a certified control unit, unless its cash sales are at
+//    most four price base amounts a year (236 800 kr in 2026) or they are invoiced. This counter keeps every sale as an
+//    order with an invoice number, which satisfies the bookkeeping law; it has no control unit and is not declared,
+//    and must not be sold as a cash register in Sweden above that threshold. Cash itself is not offered: see ledger
+//    D-COUNTERCASH1. The README says the same.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Payments;
+using Osysharp.Workflow;
+using Osysharp.Delivery;
+using Osysharp.Storage;
+
+// ── where a clerk sells ──────────────────────────────────────────────────────────────────────────────────────────
+
+/// The counters the caller sells at — every active location for staff and an unlimited clerk, one for a clerk whose
+/// grant names it. Empty for a shop without locations (it has one counter, which needs no name).
+[Authorize(IsShopCounter)]
+public List<StockLocation> MyCounters() {
+  var me = Session.CurrentUser;
+  var grants = ShopRoleGrant.Include(g => g.Location).Where(g => g.Member == me && (g.Role == ShopRole.Counter || g.Role == ShopRole.Staff)).ToList();
+  var all = ShopLocations().Where(l => l.Active).ToList();
+  if (grants.Any(g => g.Role == ShopRole.Staff || g.Location == null)) { return all; }
+  return all.Where(l => grants.Any(g => g.Location != null && g.Location.Id == l.Id)).ToList();
+}
+
+/// Whether the caller may sell at `at` (null: a shop without locations) — what `SellsAt` says in a rule.
+bool CanSellAt(StockLocation? at) {
+  if (at == null) { return !ShopLocations().Any(); }
+  return MyCounters().Any(l => l.Id == at!.Id);
+}
+
+/// Limits a counter clerk to one location's counter — or, with none, lets them sell at every one. Staff are never limited.
+[Authorize(IsShopStaff)]
+public void LimitCounter(ShopAccount clerk, StockLocation? location) {
+  var grant = ShopRoleGrant.FirstOrDefault(g => g.Member == clerk && g.Role == ShopRole.Counter);
+  if (grant == null) { throw new Exception($"{clerk.Name ?? clerk.Email} does not sell at the counter."); }
+  grant.Location = location;
+  UnitOfWork.Commit();
+}
+
+// ── the sale being rung up ───────────────────────────────────────────────────────────────────────────────────────
+
+/// How a counter sale is "delivered": over the counter of `at`, for no price and to no address — a collection, taxed
+/// as the shop's own sale. Its id names the location (`counter@hornsgatan`), so the order is picked there.
+public DeliveryChoice CounterWay(StockLocation? at) {
+  return new DeliveryChoice { Id = at == null ? "counter" : $"counter@{at!.Code}", Label = "Sold at the counter",
+                              Price = 0m, NeedsAddress = false };
+}
+
+/// A fresh sale at the counter of `at` — null only in a shop without locations. Answers its bag.
+[Authorize(IsShopCounter)]
+public Bag StartCounterSale(StockLocation? at) {
+  if (at == null && ShopLocations().Any()) { throw new Exception("Choose which counter you are selling at."); }
+  if (!CanSellAt(at)) { throw new Exception($"You do not sell at {LocationName(at)}."); }
+  var bag = new Bag { AtCounter = true, SoldAt = at };
+  UnitOfWork.Commit();
+  return bag;
+}
+
+void CheckCounterBag(Bag bag) {
+  if (!bag.AtCounter) { throw new Exception("That is not a sale at the counter."); }
+}
+
+/// A size of a product as the counter finds it — with what the counter's location has on the shelf.
+public class CounterPick {
+  public Variant? Variant;
+  public string Name = "";
+  public decimal Price = 0;
+  /// On the shelf at this counter — what can be sold here now.
+  public int HereStock = 0;
+  public bool Unlimited = false;
+  public string Sku = "";
+  public string Barcode = "";
+}
+
+/// Listed sizes whose product's name holds `search`, or whose SKU or barcode is it — at most twelve, with what the
+/// counter of `bag` has of each.
+[Authorize(IsShopCounter)]
+public List<CounterPick> CounterFind(Bag bag, string search) {
+  CheckCounterBag(bag);
+  var s = search.Trim().ToLower();
+  if (s == "") { return []; }
+  var found = Variant.Include(v => v.Product).Where(v => v.Product.Status == ProductStatus.Listed).ToList()
+    .Where(v => v.Product.Name.ToLower().Contains(s) || (v.Sku ?? "").ToLower() == s || (v.Barcode ?? "") == s).Take(12).ToList();
+  var here = StockOf(found.Where(v => !v.Unlimited).ToList()).FirstOrDefault(x => SameLocation(x.Location, bag.SoldAt));
+  return found.Select(v => new CounterPick {
+    Variant = v, Name = VariantName(v), Price = PriceOf(v), Unlimited = v.Unlimited, Sku = v.Sku ?? "", Barcode = v.Barcode ?? "",
+    HereStock = v.Unlimited || here == null || !here.Stock.ContainsKey(v.Id) ? 0 : here.Stock[v.Id],
+  }).ToList();
+}
+
+/// Puts `quantity` of a variant in the sale — more of it when it is there already. Refuses what is not for sale, or
+/// not on the shelf at this counter.
+[Authorize(IsShopCounter)]
+public void AddToCounterSale(Bag bag, Variant variant, int quantity) {
+  CheckCounterBag(bag);
+  if (quantity < 1) { throw new Exception("Add one or more."); }
+  if (variant.Product.Status != ProductStatus.Listed) { throw new Exception($"{variant.Product.Name} is not for sale."); }
+  if (variant.IsDownload) { throw new Exception($"{VariantName(variant)} is a download — it is bought on the web shop."); }
+  var line = bag.Lines.FirstOrDefault(l => l.Variant == variant);
+  var want = (line == null ? 0 : line.Quantity) + quantity;
+  var have = variant.Unlimited ? want : StockAt(bag.SoldAt, variant);
+  if (!variant.Unlimited && want > have) {
+    throw new Exception(have <= 0 ? $"{VariantName(variant)} is not on the shelf here." : $"There are only {have} of {VariantName(variant)} here.");
+  }
+  if (line == null) { new BagLine { Bag = bag, Variant = variant, Quantity = quantity, PriceWhenAdded = PriceOf(variant) }; }
+  else { line.Quantity = want; }
+  UnitOfWork.Commit();
+}
+
+/// A barcode or SKU read by a scanner (a scanner types the code and Enter) — one of that variant into the sale.
+/// Answers what went in; throws the sentence to show when no one variant has that code.
+[Authorize(IsShopCounter)]
+public string ScanIntoCounterSale(Bag bag, string code) {
+  CheckCounterBag(bag);
+  var c = code.Trim();
+  if (c == "") { throw new Exception("Scan or type a barcode."); }
+  var matches = Variant.Include(v => v.Product).Where(v => v.Barcode == c || v.Sku == c).ToList()
+    .Where(v => v.Product.Status == ProductStatus.Listed).ToList();
+  if (matches.Count == 0) { throw new Exception($"Nothing on sale has the code {c}."); }
+  if (matches.Count > 1) { throw new Exception($"{matches.Count} sizes have the code {c} — find it by name instead."); }
+  AddToCounterSale(bag, matches[0], 1);
+  return VariantName(matches[0]);
+}
+
+/// Sets how many of a line the sale holds — 0 takes it out.
+[Authorize(IsShopCounter)]
+public void SetCounterQuantity(BagLine line, int quantity) {
+  CheckCounterBag(line.Bag);
+  if (quantity <= 0) { line.Delete(); UnitOfWork.Commit(); return; }
+  var v = line.Variant;
+  if (!v.Unlimited && quantity > StockAt(line.Bag.SoldAt, v)) {
+    throw new Exception($"There are only {StockAt(line.Bag.SoldAt, v)} of {VariantName(v)} here.");
+  }
+  line.Quantity = quantity;
+  UnitOfWork.Commit();
+}
+
+/// A code typed or scanned at the counter that is not a product: a gift card (16 letters and digits), else a code an
+/// add-on takes (a discount code). Answers what it gives; throws the sentence to show.
+[Authorize(IsShopCounter)]
+public string CounterCode(Bag bag, string code) {
+  CheckCounterBag(bag);
+  if (code.Trim() == "") { throw new Exception("Type the code first."); }
+  if (NormalCardCode(code).Length == 16) {
+    // Checked by the shop from the code's fingerprint, as at the checkout (SECURITY-INVARIANT(a-gift-card-is-found-only-by-its-code)).
+    var check = AskAboutCard(code, bag);
+    var problem = check.Problem ?? "";
+    var said = $"Gift card ending {check.Last4 ?? ""}, {MoneyIn(check.Balance, check.Currency, TheShop())} to spend";
+    check.Delete();
+    UnitOfWork.Commit();
+    if (problem != "") { throw new Exception(problem); }
+    return said;
+  }
+  foreach (var addOn in ShopAddOns()) {
+    var took = addOn.CounterCode(bag, code);
+    if (took != "") { return took; }
+  }
+  throw new Exception("That is not a gift card or a code the shop knows.");
+}
+
+/// Takes a gift card off the sale.
+[Authorize(IsShopCounter)]
+public void RemoveCounterGiftCard(BagGiftCard card) {
+  CheckCounterBag(card.Bag);
+  card.Delete();
+  UnitOfWork.Commit();
+}
+
+/// One line of a counter sale, as the counter shows it.
+public class CounterLine {
+  public BagLine? Line;
+  public string Name = "";
+  public int Quantity = 1;
+  public decimal Unit = 0;
+  public decimal Amount = 0;
+  /// The age the goods need — the counter asks for the ID it checked when any line has one.
+  public int MinimumAge = 0;
+}
+
+/// A counter sale as it stands: its lines, what comes off and what pays before the customer's way — gift cards, then
+/// store credit — and what is left to pay.
+public class CounterSaleView {
+  public string Currency = "";
+  public List<CounterLine> Lines = [];
+  public CheckoutTotals Totals = new CheckoutTotals();
+  public List<BagGiftCard> GiftCards = [];
+  /// The customer who proved themselves with their code — "" for none — and what they hold.
+  public string Customer = "";
+  public decimal CreditAvailable = 0;
+  /// What the customer's store credit pays of this sale, when the clerk asks for it.
+  public decimal CreditUsed = 0;
+  public int AgeNeeded = 0;
+}
+
+/// The sale on `bag`, priced as its order will be: its customer's price list, the codes on it, the gift cards, and
+/// their store credit when `useCredit`.
+[Authorize(IsShopCounter)]
+public CounterSaleView CounterSale(Bag bag, bool useCredit) {
+  CheckCounterBag(bag);
+  var shop = TheShop();
+  var view = new CounterSaleView { Currency = BagCurrency(bag), AgeNeeded = AgeNeeded(bag) };
+  foreach (var l in bag.Lines.ToList()) {
+    var unit = LinePrice(l);
+    view.Lines.Add(new CounterLine { Line = l, Name = VariantName(l.Variant), Quantity = l.Quantity, Unit = unit,
+                                     Amount = unit * l.Quantity, MinimumAge = l.Variant.Product.MinimumAge });
+  }
+  var totals = new CheckoutTotals { Currency = view.Currency, Goods = BagSubtotal(bag), Problem = WholesaleProblem(bag) };
+  var trade = WholesaleOf(BagCustomer(bag));
+  totals.PriceList = trade == null ? "" : trade.PriceList.Name;
+  totals.Adjustments = AdjustmentsFor(BasketOf(bag, ""));
+  totals.Discount = totals.Adjustments.Sum(a => a.Amount);
+  totals.DeliveryLabel = "Sold at the counter";
+  totals.Total = totals.Goods - totals.Discount;
+  totals.GiftCardsSold = bag.Lines.ToList().Where(l => l.Variant.Product.IsGiftCard).Sum(l => LinePrice(l) * l.Quantity);
+  var payable = totals.Total - totals.GiftCardsSold;
+  totals.GiftCardUses = GiftCardUses(bag, payable);
+  totals.GiftCards = totals.GiftCardUses.Sum(u => u.Amount);
+  totals.SinglePurposePaid = SinglePurposePaid(totals.GiftCardUses);
+  var customer = ConfirmedCounterCustomer(bag);
+  if (customer != null) {
+    view.Customer = customer.Name ?? customer.Email;
+    view.CreditAvailable = customer.CreditBalance;
+    if (useCredit) { view.CreditUsed = Math.Min(customer.CreditBalance, Math.Max(payable - totals.GiftCards, 0m)); }
+  }
+  totals.Credit = view.CreditUsed;
+  totals.ToPay = Math.Max(totals.Total - totals.GiftCards - totals.Credit, 0m);
+  totals.Vat = VatDue(bag, 0m, totals.Discount, shop, "", totals.SinglePurposePaid).Sum(r => r.Vat);
+  totals.Net = totals.Total - totals.Vat;
+  var now = DateTime.UtcNow;
+  view.GiftCards = BagGiftCard.Where(b => b.Bag == bag && b.ExpiresAt > now).OrderBy(b => b.ExpiresAt).ToList();
+  view.Totals = totals;
+  return view;
+}
+
+// ── the customer, by their code ──────────────────────────────────────────────────────────────────────────────────
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum CounterCustomerStatus {
+  [Label("Asked")] Asked,
+  [Label("Code sent")] CodeSent,
+  [Label("Confirmed")] Confirmed,
+  [Label("Closed")] Closed,
+}
+
+/// A clerk asks to bring a customer's account into a sale: the row is the question, and the shop's workflow answers it
+/// — it mails the account a code, checks what the customer reads out, and only then fills in who they are, what store
+/// credit they hold and the price list they buy on.
+// SECURITY-INVARIANT(a-customer-joins-a-counter-sale-only-by-their-code): a counter sale carries an account — its
+//   store credit to spend, its wholesale prices to read — only after the customer has read out the code the shop
+//   mailed to THAT account; everything that says so (`Account`, `Status`, the balance, the list) is written by the
+//   shop's workflow, never by the clerk, and the order's workflow is what puts the account on the order. Failure mode:
+//   a clerk types a regular's email and spends their store credit, or rings up their own purchase at a café's trade
+//   prices. Guarded by counter.test.osy a_customer_joins_a_sale_only_with_the_code_mailed_to_them.
+public entity CounterCustomer {
+  [Required] Bag Bag;
+  [Required, MaxLength(255)] string Email;
+  /// The clerk who asked — the only clerk who reads the answer.
+  [Required] ShopAccount ServedBy;
+  CounterCustomerStatus Status;                      // no default — CounterCustomerLife owns it
+  // Written by the shop:
+  ShopAccount? Account;
+  [MaxLength(64)] string? CodeHash;
+  DateTime? CodeSentAt;
+  int Tries = 0;
+  DateTime? ConfirmedAt;
+  [MaxLength(120)] string? Name;
+  decimal CreditBalance = 0;
+  PriceList? PriceList;
+  [MaxLength(300)] string? Problem;
+  security {
+    allow create when IsShopCounter
+      where ServedBy == user && Bag.AtCounter && Bag.Owner == null && SellsAt(Bag.SoldAt) && Account == null
+            && CodeHash == null && ConfirmedAt == null && PriceList == null;
+    allow read when IsAuthenticated where ServedBy == user;
+    allow read when IsShopStaff;
+    deny read CodeHash when !IsShopStaff;
+  }
+}
+
+public workflow CounterCustomerLife {
+  Tracks    = CounterCustomer.Status;
+  Autostart = true;
+  Initial   = Asked;
+
+  /// The code the customer read out.
+  event Confirm(string code);
+  /// The sale was placed, or the clerk took the customer off it.
+  event Close();
+
+  state Asked {
+    enter {
+      SendCounterCode(this.Item);
+      if (this.Item.Problem != null) { goto Closed; }
+      goto CodeSent;
+    }
+  }
+  state CodeSent {
+    subscribe Confirm() as Tried;
+    subscribe Close() as Dropped;
+    on Tried(string code) {
+      if (CounterCodeFits(this.Item, code)) { ConfirmCounterCustomer(this.Item); goto Confirmed; }
+      if (this.Item.Tries >= 5) { this.Item.Problem = "That was the fifth wrong code — ask for a new one."; goto Closed; }
+    }
+    on Dropped() { goto Closed; }
+  }
+  // Confirmed for the sale in front of the clerk — and for no longer than it takes to ring one up.
+  state Confirmed {
+    subscribe Close() as Done {
+      Finished {
+        Within = TimeSpan.FromHours(2);
+        Unfinished { goto Closed; }
+      }
+    }
+    on Done() { goto Closed; }
+  }
+  terminal success Closed { }
+}
+
+/// The shop answers a clerk's question: it finds the account by the email the clerk typed and mails it a code — as the
+/// shop, which may read accounts. Whatever the clerk wrote of the answer is wiped first.
+void SendCounterCode(CounterCustomer c) {
+  c.Account = null;
+  c.ConfirmedAt = null;
+  c.CreditBalance = 0m;
+  c.PriceList = null;
+  c.Name = null;
+  c.Problem = null;
+  c.Tries = 0;
+  var email = c.Email.Trim().ToLower();
+  var account = ShopAccount.FirstOrDefault(a => a.Email == email);
+  if (account == null) { c.Problem = $"No customer account has the address {email}."; return; }
+  var code = CounterCodeText();
+  c.CodeHash = Security.Fingerprint($"counter|{c.Id}|{code}");
+  c.CodeSentAt = DateTime.UtcNow;
+  var shop = TheShop();
+  Mail(account.Email, App.Setting<ShopSetup>().Mails.Notice($"Your code at {shop.Name}: {code}", $"Your code is {code}",
+    $"Read this code to the person at the counter of {shop.Name} to bring your account into the sale — your store credit and your prices. "
+    + "It works for fifteen minutes. If you are not at our counter now, ignore this mail: nothing happens without the code."));
+}
+
+/// Six letters and digits with no look-alikes — easy to read out across a counter.
+string CounterCodeText() {
+  var alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  var hex = Security.RandomHex(12).ToLower();
+  var code = "";
+  for (var i = 0; i < 6; i = i + 1) {
+    var n = "0123456789abcdef".IndexOf(hex.Substring(i * 2, 1)) * 16 + "0123456789abcdef".IndexOf(hex.Substring(i * 2 + 1, 1));
+    code = code + alphabet.Substring(n % alphabet.Length, 1);
+  }
+  return code;
+}
+
+/// Whether `code` is the one mailed for `c`, and still in time. A wrong one counts against it.
+bool CounterCodeFits(CounterCustomer c, string code) {
+  var typed = code.Trim().ToUpper().Replace(" ", "");
+  if (c.CodeHash == null || c.CodeSentAt == null) { return false; }
+  if (c.CodeSentAt!.Value.AddMinutes(15) < DateTime.UtcNow) { c.Tries = c.Tries + 1; c.Problem = "The code has run out — ask for a new one."; return false; }
+  if (Security.Fingerprint($"counter|{c.Id}|{typed}") != c.CodeHash) { c.Tries = c.Tries + 1; c.Problem = "That is not the code we mailed."; return false; }
+  return true;
+}
+
+/// The customer read out the right code: who they are, what store credit they hold and the list they buy on — as the
+/// shop, onto the question the clerk reads.
+void ConfirmCounterCustomer(CounterCustomer c) {
+  var email = c.Email.Trim().ToLower();
+  var account = ShopAccount.First(a => a.Email == email);
+  c.Account = account;
+  c.ConfirmedAt = DateTime.UtcNow;
+  c.Name = account.Name ?? account.Email;
+  c.Problem = null;
+  c.CreditBalance = CreditBalanceOf(account);
+  var trade = WholesaleOf(account);
+  c.PriceList = trade == null ? null : trade.PriceList;
+}
+
+/// The customer confirmed on `bag` for the sale being rung up — null for none.
+public CounterCustomer? ConfirmedCounterCustomer(Bag bag) {
+  return CounterCustomer.Where(c => c.Bag == bag && c.Status == CounterCustomerStatus.Confirmed).OrderByDescending(c => c.ConfirmedAt).FirstOrDefault();
+}
+
+/// Whose prices a bag is priced at — its owner's, or, for a counter's sale, the customer who proved themselves with
+/// their code (`CounterCustomer`). Null for a guest and for a walk-in.
+public ShopAccount? BagCustomer(Bag bag) {
+  if (bag.Owner != null || !bag.AtCounter) { return bag.Owner; }
+  var c = ConfirmedCounterCustomer(bag);
+  return c == null ? null : c.Account;
+}
+
+/// What the clerk sees of a customer being brought in.
+public class CounterCustomerView {
+  public CounterCustomer? Ask;
+  /// "code-sent", "confirmed", "closed" (with `Problem`).
+  public string State = "";
+  public string Name = "";
+  public decimal CreditBalance = 0;
+  public string PriceList = "";
+  public string Problem = "";
+}
+
+CounterCustomerView CustomerViewOf(CounterCustomer c) {
+  return new CounterCustomerView {
+    Ask = c, State = c.Status == CounterCustomerStatus.Confirmed ? "confirmed" : c.Status == CounterCustomerStatus.CodeSent ? "code-sent" : "closed",
+    Name = c.Name ?? "", CreditBalance = c.CreditBalance, PriceList = c.PriceList == null ? "" : c.PriceList!.Name, Problem = c.Problem ?? "",
+  };
+}
+
+/// Asks the shop to mail a code to the customer whose email is `email`, to bring their account into the sale on `bag`.
+[Authorize(IsShopCounter)]
+public CounterCustomerView AskForCustomer(Bag bag, string email) {
+  CheckCounterBag(bag);
+  if (!email.Contains("@")) { throw new Exception("Type the email address their account is under."); }
+  foreach (var open in CounterCustomer.Where(c => c.Bag == bag && (c.Status == CounterCustomerStatus.CodeSent || c.Status == CounterCustomerStatus.Confirmed)).ToList()) {
+    CounterCustomerLife.RaiseClose(open);
+  }
+  var ask = new CounterCustomer { Bag = bag, Email = email.Trim().ToLower(), ServedBy = Session.CurrentUser! };
+  UnitOfWork.Commit();
+  // Answered by the shop's workflow by now.
+  return CustomerViewOf(ask);
+}
+
+/// The code the customer read out, for the question `ask`.
+[Authorize(IsShopCounter)]
+public CounterCustomerView ConfirmCustomer(CounterCustomer ask, string code) {
+  if (ask.Status != CounterCustomerStatus.CodeSent) { return CustomerViewOf(ask); }
+  CounterCustomerLife.RaiseConfirm(ask, code);
+  return CustomerViewOf(CounterCustomer.Single(c => c.Id == ask.Id));
+}
+
+/// Takes the customer off the sale — their account, credit and prices with them.
+[Authorize(IsShopCounter)]
+public void DropCustomer(Bag bag) {
+  foreach (var open in CounterCustomer.Where(c => c.Bag == bag && (c.Status == CounterCustomerStatus.CodeSent || c.Status == CounterCustomerStatus.Confirmed)).ToList()) {
+    CounterCustomerLife.RaiseClose(open);
+  }
+}
+
+/// Called by the order's workflow, as the shop, as a counter sale is placed: the customer who proved themselves on its
+/// bag becomes the order's account — and the question is closed, so the clerk reads their prices no longer.
+void AttachCounterCustomer(Order order) {
+  if (order.PlacedFrom == null) { return; }
+  var c = ConfirmedCounterCustomer(order.PlacedFrom!);
+  if (c == null) { return; }
+  order.Account = c.Account;
+  CounterCustomerLife.RaiseClose(c);
+}
+
+// ── placing the sale and taking the money ────────────────────────────────────────────────────────────────────────
+
+/// A way the counter takes money: `Key` is what the counter chooses by; `PaysAs` the payment method the order records
+/// (the provider that refunds it, or the counter's card key); `Label` what the button and the receipt say.
+public class CounterPayChoice {
+  public string Key = "";
+  public string PaysAs = "";
+  public string Label = "";
+  /// The customer scans a code on the counter's screen (Swish).
+  public bool Scans = false;
+  /// The provider says when it is paid (a reader, Swish); false: the clerk says so (a terminal the shop runs itself).
+  public bool Asks = false;
+}
+
+/// The key a card taken on a terminal the shop runs itself is recorded with — refunded on that terminal, by hand.
+public string CounterCardKey() { return "counter-card"; }
+
+/// The ways the counter takes money for a sale in `currency`: a card on the shop's own terminal (unless the app says
+/// otherwise), then each of the app's counter payments that is set up, takes that currency, and has its refunding
+/// provider in the app's `Payments`.
+public List<CounterPayChoice> CounterPayChoices(string currency) {
+  var setup = App.Setting<ShopSetup>();
+  List<CounterPayChoice> choices = [];
+  if (setup.CounterCardByHand) {
+    choices.Add(new CounterPayChoice { Key = CounterCardKey(), PaysAs = CounterCardKey(), Label = "Card on the terminal" });
+  }
+  foreach (var p in setup.CounterPayments) {
+    if (!p.IsReady() || p.CounterCurrencyRefusal(currency) != "") { continue; }
+    if (!setup.Payments.Any(x => x.Key == p.RefundsThrough)) { continue; }
+    choices.Add(new CounterPayChoice { Key = p.Key, PaysAs = p.RefundsThrough, Label = p.Label, Scans = p.Key.Contains("swish"), Asks = true });
+  }
+  return choices;
+}
+
+/// The ways to take the money for the sale on `bag`, as the counter offers them.
+[Authorize(IsShopCounter)]
+public List<CounterPayChoice> CounterPaymentsFor(Bag bag) {
+  CheckCounterBag(bag);
+  return CounterPayChoices(BagCurrency(bag));
+}
+
+/// Places the sale on `bag` as an order — through the checkout's own path, so it is priced, taxed and its stock taken
+/// at this counter exactly as any order's — to be paid `payKey` way (ignored when gift cards and store credit cover it
+/// all, and it is paid at once). `receiptEmail`: where the receipt is mailed ("" for none — it is printed); `bornOn`:
+/// the date of birth on the ID the clerk checked, for goods with an age. Answers the order.
+[Authorize(IsShopCounter)]
+public Order PlaceCounterSale(Bag bag, string payKey, bool useCredit, string receiptEmail, DateOnly? bornOn) {
+  CheckCounterBag(bag);
+  if (SitePreviewing()) { throw new Exception("You are previewing the site — sales are off until you go back to the live site."); }
+  if (!CanSellAt(bag.SoldAt)) { throw new Exception($"You do not sell at {LocationName(bag.SoldAt)}."); }
+  if (bag.Lines.Count() == 0) { throw new Exception("Scan or find what they are buying first."); }
+  var email = receiptEmail.Trim();
+  if (email != "" && !email.Contains("@")) { throw new Exception("That is not an email address — leave it empty to print the receipt."); }
+  if (AgeNeeded(bag) > 0) {
+    if (bornOn == null) { throw new Exception($"Something in the sale is sold only to people {AgeNeeded(bag)} or older — check their ID and give the date of birth on it."); }
+    bag.BuyerBornOn = bornOn;
+  }
+  var sale = CounterSale(bag, useCredit);
+  if (sale.Totals.Problem != "") { throw new Exception(sale.Totals.Problem); }
+  var covered = sale.Totals.ToPay <= 0;
+  var choice = CounterPayChoices(sale.Currency).FirstOrDefault(c => c.Key == payKey);
+  if (!covered && choice == null) { throw new Exception("Choose how they pay."); }
+  var customer = ConfirmedCounterCustomer(bag);
+  var placement = new Placement {
+    Name = customer == null ? "Customer at the counter" : customer.Name ?? customer.Email,
+    Email = email != "" ? email : customer == null ? "" : customer.Email,
+    Way = CounterWay(bag.SoldAt),
+    Pay = covered ? new PaymentChoice { Key = sale.Totals.GiftCards > 0 ? GiftCardKey() : StoreCreditKey(), Label = "" }
+                  : new PaymentChoice { Key = choice!.PaysAs, Label = choice!.Label },
+    Fulfilment = Fulfilment.Collect,
+    VatCountry = "",
+    StartPayment = false,
+    AtCounter = true,
+    SoldAt = bag.SoldAt,
+    CounterCredit = sale.CreditUsed,
+  };
+  var receipt = PlaceBag(bag, placement, null);
+  return Order.Single(o => o.Reference == receipt.Reference);
+}
+
+/// One attempt to take a counter sale's money through a provider — who started it, and the provider's id for it.
+public entity CounterPayment {
+  [Required] Order Order;
+  /// The counter payment's key — "swish", "stripe-terminal".
+  [Required, MaxLength(40)] string Key;
+  [Required, MaxLength(120)] string ProviderRef;
+  /// Swish's QR code, kept privately — the counter shows it through a link that expires.
+  [MaxLength(200)] string? QrPath;
+  [MaxLength(300)] string? Instructions;
+  DateTime StartedAt;
+  [Required] ShopAccount StartedBy;
+  security {
+    allow create, read when IsShopCounter where StartedBy == user && Order.AtCounter && SellsAt(Order.SoldAt);
+    allow create, read when IsShopStaff;
+  }
+}
+
+/// What the counter shows while a payment is being taken — and when it is done.
+public class CounterPayView {
+  /// "waiting" · "paid" · "failed".
+  public string State = "waiting";
+  public string Message = "";
+  /// A link to the QR code to show, or "".
+  public string Qr = "";
+  public decimal ToPay = 0;
+}
+
+void CheckCounterOrder(Order order) {
+  if (!order.AtCounter) { throw new Exception($"{order.Reference} was not sold at the counter."); }
+  if (!CanSellAt(order.SoldAt)) { throw new Exception($"{order.Reference} was sold at another counter."); }
+}
+
+/// Starts taking the money for a counter sale through the counter payment it was placed with — Swish shows a code to
+/// scan, a card reader asks for the card. For a card on the shop's own terminal there is nothing to start: the clerk
+/// charges it there and says so (`CardPaidAtCounter`).
+[Authorize(IsShopCounter)]
+public CounterPayView StartCounterPayment(Order order, string key) {
+  CheckCounterOrder(order);
+  if (order.Status != OrderStatus.Reserved) { return CounterPayState(order); }
+  var provider = App.Setting<ShopSetup>().CounterPayments.FirstOrDefault(p => p.Key == key && p.RefundsThrough == order.PaymentMethod);
+  if (provider == null) { throw new Exception("That is not how this sale is paid."); }
+  var request = PaymentRequestFor(order);
+  // One per sale, and the same again when asked again — a second press never makes a second payment.
+  request.IdempotencyKey = $"counter-{order.Id}-{CounterPayment.Count(p => p.Order == order)}";
+  CounterPaymentStart started;
+  try { started = provider.StartAtCounter(request); }
+  catch (Exception ex) { throw new Exception($"{provider.Label} could not be reached: {ex.Message}"); }
+  string? qrPath = null;
+  if (started.Qr != null) {
+    qrPath = $"counter/{order.Id}-{Security.RandomHex(4)}.png";
+    File.WriteAllBytes(qrPath, started.Qr!);
+  }
+  new CounterPayment { Order = order, Key = provider.Key, ProviderRef = started.ProviderRef, QrPath = qrPath,
+                       Instructions = started.Instructions, StartedAt = DateTime.UtcNow, StartedBy = Session.CurrentUser! };
+  UnitOfWork.Commit();
+  return CounterPayState(order);
+}
+
+/// How a counter sale's payment stands — asked of the provider (never taken from the screen); paid, the order moves on
+/// and is handed over.
+[Authorize(IsShopCounter)]
+public CounterPayView CounterPayState(Order order) {
+  CheckCounterOrder(order);
+  if (order.PaidAt != null || order.Status == OrderStatus.Delivered) { return new CounterPayView { State = "paid", Message = "Paid." }; }
+  if (order.Status != OrderStatus.Reserved) { return new CounterPayView { State = "failed", Message = $"The sale is {order.Status.Label.ToLower()}." }; }
+  var view = new CounterPayView { ToPay = AmountDue(order) };
+  var last = CounterPayment.Where(p => p.Order == order).OrderByDescending(p => p.StartedAt).FirstOrDefault();
+  if (last == null) { view.Message = "Not started."; return view; }
+  var provider = App.Setting<ShopSetup>().CounterPayments.FirstOrDefault(p => p.Key == last.Key);
+  if (provider == null) { return new CounterPayView { State = "failed", Message = "The shop no longer takes that payment at the counter." }; }
+  var check = provider.CheckAtCounter(order.Reference, Minor(AmountDue(order)), last.ProviderRef);
+  if (check.State == PaymentState.Paid || check.State == PaymentState.Authorized) {
+    OrderLifecycle.CorrelatePaymentReceived(order.Reference, provider.Label, check.ProviderRef == "" ? last.ProviderRef : check.ProviderRef, "", "");
+    return new CounterPayView { State = "paid", Message = "Paid." };
+  }
+  if (check.State == PaymentState.Failed) { return new CounterPayView { State = "failed", Message = check.Message, ToPay = view.ToPay }; }
+  view.Message = last.Instructions ?? check.Message;
+  view.Qr = last.QrPath == null ? "" : File.SignedUrl(last.QrPath!);
+  return view;
+}
+
+/// The customer paid by card on the shop's own terminal — the clerk saw it approved. `terminalRef`: the number on the
+/// terminal's slip, kept with the sale ("" when there is none).
+[Authorize(IsShopCounter)]
+public void CardPaidAtCounter(Order order, string terminalRef) {
+  CheckCounterOrder(order);
+  if (order.Status != OrderStatus.Reserved) { throw new Exception($"{order.Reference} is {order.Status.Label}, not waiting for payment."); }
+  if (order.PaymentMethod != CounterCardKey()) { throw new Exception($"{order.Reference} is paid by {order.PaymentLabel ?? order.PaymentMethod}, not on the card terminal."); }
+  var slip = terminalRef.Trim();
+  OrderLifecycle.CorrelatePaymentReceived(order.Reference, slip == "" ? "Card on the terminal" : $"Card on the terminal, slip {slip}", "", "", "");
+}
+
+/// Calls off a counter sale that was not paid — the customer changed their mind, or the card was declined for good.
+/// What it held goes back on the counter's shelf, and any payment still waiting is withdrawn.
+[Authorize(IsShopCounter)]
+public void CancelCounterSale(Order order) {
+  CheckCounterOrder(order);
+  if (order.Status != OrderStatus.Reserved) { throw new Exception($"{order.Reference} is {order.Status.Label} — a paid sale is taken back as a return."); }
+  foreach (var p in CounterPayment.Where(x => x.Order == order).ToList()) {
+    var provider = App.Setting<ShopSetup>().CounterPayments.FirstOrDefault(x => x.Key == p.Key);
+    if (provider == null) { continue; }
+    try { provider.CancelAtCounter(p.ProviderRef); } catch (Exception ex) { Log.Warning($"{provider.Label} {p.ProviderRef} could not be withdrawn: {ex.Message}"); }
+  }
+  OrderLifecycle.RaiseCancel(order, "Called off at the counter");
+}
+
+// ── handed over, and the receipt ─────────────────────────────────────────────────────────────────────────────────
+
+/// Paid at the counter: handed over now — collected and arrived at once — its receipt written for printing and, when
+/// the customer gave an address, mailed. Called by the order's workflow, as the shop.
+void HandOverAtCounter(Order order) {
+  order.FulfilledAt = DateTime.UtcNow;
+  order.DeliveredAt = order.FulfilledAt;
+  File.WriteAllBytes(CounterReceiptPath(order), ReceiptPdf(order));
+  MailCounterReceipt(order, "");
+  Raise(new OrderSent { Order = order });
+  Raise(new OrderDelivered { Order = order });
+}
+
+string CounterReceiptPath(Order order) { return $"receipts/counter-{order.Id}.pdf"; }
+
+/// Mails a counter sale's receipt — to `email`, or ("") to the address it was sold with. Called by the order's workflow.
+void MailCounterReceipt(Order order, string email) {
+  var contact = order.Contact.FirstOrDefault();
+  if (contact == null) { return; }
+  var to = email.Trim() == "" ? contact.Email : email.Trim();
+  if (!to.Contains("@")) { return; }
+  contact.Email = to;
+  File.WriteAllBytes(CounterReceiptPath(order), ReceiptPdf(order));
+  MailCustomer(order, App.Setting<ShopSetup>().Mails.Shipped(order),
+    [new MailFile { Path = CounterReceiptPath(order), FileName = $"receipt-{order.Reference}.pdf", ContentType = "application/pdf" }]);
+}
+
+/// The receipt of a counter sale, as a link that expires — for printing at the counter.
+[Authorize(IsShopCounter)]
+public string CounterReceiptLink(Order order) {
+  CheckCounterOrder(order);
+  if (order.PaidAt == null) { throw new Exception($"{order.Reference} is not paid yet."); }
+  return File.SignedUrl(CounterReceiptPath(order));
+}
+
+/// Mails a counter sale's receipt to `email` — the customer asked after it was paid.
+[Authorize(IsShopCounter)]
+public void EmailCounterReceipt(Order order, string email) {
+  CheckCounterOrder(order);
+  if (!email.Contains("@")) { throw new Exception("That is not an email address."); }
+  if (order.Status != OrderStatus.Delivered) { throw new Exception($"{order.Reference} is {order.Status.Label}; its receipt is sent once it is paid."); }
+  OrderLifecycle.RaiseSendReceipt(order, email.Trim());
+}
+
+/// A sale as the counter's list shows it.
+public class CounterSaleRow {
+  public Order? Order;
+  public string Reference = "";
+  public DateTime PlacedAt;
+  public string Status = "";
+  public string PaidWith = "";
+  public int Items = 0;
+  public decimal Total = 0;
+}
+
+/// Today's sales at the counter of `at` — newest first — for a receipt printed again, or a return.
+[Authorize(IsShopCounter)]
+public List<CounterSaleRow> CounterSalesToday(StockLocation? at) {
+  if (!CanSellAt(at)) { throw new Exception($"You do not sell at {LocationName(at)}."); }
+  var since = DateTime.UtcNow.AddHours(-18);
+  return Order.Include(o => o.Lines).Where(o => o.AtCounter && o.PlacedAt >= since).OrderByDescending(o => o.PlacedAt).ToList()
+    .Where(o => SameLocation(o.SoldAt, at))
+    .Select(o => new CounterSaleRow { Order = o, Reference = o.Reference, PlacedAt = o.PlacedAt, Status = StatusText(o),
+                                       PaidWith = o.PaidWith ?? o.PaymentLabel ?? "", Items = o.Lines.Sum(l => l.Quantity), Total = o.Total }).ToList();
+}
+
+// ── a return at the counter ──────────────────────────────────────────────────────────────────────────────────────
+
+/// An order the counter can take goods back from, found by its reference — one collected or sold at the caller's
+/// counter. Null when it is not one of those (a parcel's order goes back by post).
+[Authorize(IsShopCounter)]
+public Order? CounterFindSale(string reference) {
+  var r = reference.Trim().ToUpper();
+  if (r == "") { return null; }
+  return Order.Include(o => o.Lines).FirstOrDefault(o => o.Reference == r && o.Fulfilment == Fulfilment.Collect);
+}
+
+/// One line of a sale, as the counter's return lists it — and how many can still come back.
+public class CounterReturnPick {
+  public OrderLine? Line;
+  public string Name = "";
+  public int Bought = 0;
+  public int CanReturn = 0;
+  public decimal Unit = 0;
+}
+
+[Authorize(IsShopCounter)]
+public List<CounterReturnPick> CounterReturnLines(Order order) {
+  return order.Lines.ToList().Select(l => new CounterReturnPick {
+    Line = l, Name = l.VariantLabel == null ? l.ProductName : $"{l.ProductName} ({l.VariantLabel})",
+    Bought = l.Quantity, CanReturn = l.Kind == LineKind.Goods ? Math.Max(RefundableOf(l), 0) : 0, Unit = l.Price,
+  }).ToList();
+}
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum CounterReturnStatus {
+  [Label("Asked")] Asked,
+  [Label("Settled")] Settled,
+  [Label("Refused")] Refused,
+}
+
+/// Goods brought back over the counter: the clerk says which lines and how many; the shop's workflow takes them back
+/// — a return with its credit note, the goods back on this counter's shelf, the money back the way it was paid (card
+/// by the provider or on the terminal, Swish by Swish, store credit to the account) — and writes what came of it.
+public entity CounterReturn {
+  [Required] Order Order;
+  [Required] ShopAccount ServedBy;
+  [MaxLength(300)] string? Reason;
+  /// The customer would rather have store credit — only for a sale with an account.
+  bool AsCredit = false;
+  /// What came back goes on sale again.
+  bool Restock = true;
+  CounterReturnStatus Status;                        // no default — CounterReturning owns it
+  // Written by the shop:
+  ReturnRequest? Return;
+  decimal Amount = 0;
+  /// Of `Amount`, what the clerk gives back BY HAND on the shop's own card terminal — "" of it for a provider's refund.
+  decimal ByHand = 0;
+  [MaxLength(300)] string? Settled;
+  [MaxLength(300)] string? Problem;
+  [ForeignKey(Of)] CounterReturnLine[] Lines;
+  security {
+    allow create when IsShopCounter
+      where ServedBy == user && SellsAt(Order.Location) && Order.Fulfilment == Fulfilment.Collect && Return == null
+            && Amount == 0 && ByHand == 0 && Settled == null;
+    allow read when IsAuthenticated where ServedBy == user;
+    allow read when IsShopStaff;
+  }
+}
+
+public entity CounterReturnLine {
+  [Required] CounterReturn Of;
+  [Required] OrderLine Line;
+  int Quantity = 1;
+  security {
+    allow create when IsShopCounter where Of.ServedBy == user && Of.Status == CounterReturnStatus.Asked;
+    allow read when IsAuthenticated where Of.ServedBy == user;
+    allow read when IsShopStaff;
+  }
+}
+
+public workflow CounterReturning {
+  Tracks    = CounterReturn.Status;
+  Autostart = true;
+  Initial   = Asked;
+
+  /// The lines are written: take them back.
+  event Settle();
+
+  state Asked {
+    subscribe Settle() as Go;
+    on Go() {
+      SettleCounterReturn(this.Item);
+      if (this.Item.Problem != null) { goto Refused; }
+      goto Settled;
+    }
+  }
+  terminal success Settled { }
+  terminal cancel Refused { }
+}
+
+/// Takes a counter return's goods back — as the shop: the checks a return has everywhere (`CheckReturnable`), a return
+/// on the order, received at the counter's location and refunded the way it was paid (`SettleReturn`).
+void SettleCounterReturn(CounterReturn r) {
+  r.Amount = 0m;
+  r.ByHand = 0m;
+  r.Settled = null;
+  r.Problem = null;
+  var order = r.Order;
+  var lines = r.Lines.ToList();
+  try {
+    if (lines.Count == 0) { throw new Exception("Choose what is coming back."); }
+    if (lines.Any(l => l.Line.Order.Id != order.Id)) { throw new Exception("That line is from another sale."); }
+    foreach (var l in lines) { CheckReturnable(l.Line, l.Quantity, false); }
+    if (r.AsCredit && order.Account == null) { throw new Exception("That sale has no account to keep store credit on — give the money back instead."); }
+    var ret = new ReturnRequest { Order = order, RequestedAt = DateTime.UtcNow, AsCredit = r.AsCredit };
+    foreach (var l in lines) {
+      new ReturnLine { Return = ret, Line = l.Line, Quantity = l.Quantity, Reason = r.Reason };
+    }
+    UnitOfWork.Commit();
+    SettleReturn(ret, r.Restock, r.AsCredit, order.Location);
+    r.Return = ret;
+    r.Amount = ret.Amount;
+    var provider = App.Setting<ShopSetup>().Payments.FirstOrDefault(p => p.Key == order.PaymentMethod);
+    var byProvider = order.PaymentRef != null && provider != null && !provider.IsManual;
+    var toMoney = ret.Amount - ret.CreditAmount - ret.GiftCardAmount;
+    r.ByHand = byProvider ? 0m : toMoney;
+    List<string> said = [];
+    if (ret.CreditAmount > 0) { said.Add($"{OrderMoney(ret.CreditAmount, order)} to their store credit"); }
+    if (ret.GiftCardAmount > 0) { said.Add($"{OrderMoney(ret.GiftCardAmount, order)} back on the gift card"); }
+    if (toMoney > 0) {
+      said.Add(byProvider ? $"{OrderMoney(toMoney, order)} back to their {order.PaymentLabel ?? order.PaymentMethod}"
+                          : $"give {OrderMoney(toMoney, order)} back on the card terminal");
+    }
+    var sentence = string.Join("; ", said);
+    r.Settled = said.Count == 0 ? "Nothing to give back." : sentence.Substring(0, 1).ToUpper() + sentence.Substring(1) + ".";
+  }
+  catch (Exception ex) {
+    r.Problem = ex.Message;
+  }
+}
+
+/// One line coming back over the counter.
+public class CounterBack {
+  public OrderLine? Line;
+  public int Quantity = 0;
+}
+
+/// Takes goods back over the counter from a sale the counter handed over. Answers what came of it — how much, and
+/// where the money went — or throws the sentence to show.
+[Authorize(IsShopCounter)]
+public CounterReturn TakeBackAtCounter(Order order, List<CounterBack> back, string reason, bool asCredit, bool restock) {
+  var picked = back.Where(b => b.Line != null && b.Quantity > 0).ToList();
+  if (picked.Count == 0) { throw new Exception("Choose what is coming back, and how many."); }
+  var r = new CounterReturn { Order = order, ServedBy = Session.CurrentUser!, Reason = reason.Trim() == "" ? null : reason.Trim(),
+                              AsCredit = asCredit, Restock = restock };
+  foreach (var b in picked) { new CounterReturnLine { Of = r, Line = b.Line!, Quantity = b.Quantity }; }
+  UnitOfWork.Commit();
+  CounterReturning.RaiseSettle(r);
+  var done = CounterReturn.Single(x => x.Id == r.Id);
+  if (done.Problem != null) { throw new Exception(done.Problem!); }
+  return done;
+}

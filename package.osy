@@ -1,0 +1,42 @@
+package Osysharp.Shop {
+  version     "0.7.0";
+  minPlatform "0.9.0";
+  // A product capability: other kits meet it through a bridge that `completes` it, never by using it (D-COMPOSE1 §3.7).
+  role        vertical;
+  summary     "an online shop's backend — catalogue, accounts, bag, orders, pluggable payment and delivery providers, returns, mail and the staff desk.";
+  model "model/**/*.osy";
+  use Osysharp.Workflow;
+  use Osysharp.Ui;
+  use Osysharp.Storage;
+  use Osysharp.PdfWriter@0;
+  // How it is paid and how goods reach the customer are contracts; the providers are the app's choice (`app.Shop`).
+  use Osysharp.Payments@0;
+  use Osysharp.Delivery@0;
+  use Osysharp.Http;
+  // A product page's structured data (schema.org Product) comes from the SEO kit.
+  use Osysharp.Seo@0;
+  // What the store's pages report to its analytics (Plausible or GA4) — `ShopAnalytics()` (model/ui/Analytics.osy).
+  // The provider's hosts are the APP's to grant, on its own `use Osysharp.Analytics`.
+  use Osysharp.Analytics@0;
+  // Its mail is designed, not typed: every mail is an `[Email]` template built from these parts (model/mail).
+  use Osysharp.EmailTemplates@0;
+  // The catalogue in and out of a spreadsheet (ProductsCsv.osy).
+  use Osysharp.Csv@0;
+  // Staff write a mail's own words in Markdown, on the desk, and they are kept as data (model/mail/Words.osy).
+  use Osysharp.Markdown;
+  use Osysharp.MarkdownEditor@1;
+  use Osysharp.Resend@0 { egress "api.resend.com"; }
+  // Newsletters and the bag reminder go to readers of the app's mailing lists — consent, unsubscribe, suppression.
+  use Osysharp.MailingLists@0;
+  // The shop's blocks (model/ui/Blocks.osy) — what staff place in a store's regions at the page desk (D-BLOCKS1).
+  use Osysharp.Blocks;
+  // …drawn as the general site contract's block TYPES (D-SITEFRAME1 part 2) — a hero, a quote, the footer's words — in
+  // the shop's plain design; a look kit draws the same types in its own. The shop's own contract (a row of products, the
+  // shelves, the frame and pages of a store) is `Osysharp.Shop.Looks`, in model/looks.
+  use Osysharp.Site.Looks@0;
+  egress "api.resend.com";
+  secret "ResendApiKey";
+  // The customer's account page is the store's own: signing in, and the account panel's links, land there.
+  appPage "/account";
+  tests "tests";
+}

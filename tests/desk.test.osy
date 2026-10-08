@@ -1,0 +1,98 @@
+// What staff do to an order — and that nobody else can.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Floor)]
+void staff_cancel_a_reservation_and_its_goods_go_back_on_sale() {
+  var reference = Buy("v-cancel", "Chelsea", "38", 1);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    CancelOrder(order, "Customer changed their mind");
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Cancelled, order.Status);
+    Assert.Equal("Customer changed their mind", order.CancelReason);
+  }
+  Assert.Equal(1, Pick("Chelsea", "38").Stock);
+  runas (Desk) { Assert.Equal(1, OrderLine.Count(l => l.ProductName == "Chelsea")); }   // what it was for, kept
+}
+
+[Test(Floor)]
+void a_visitor_cannot_cancel_or_pay_an_order() {
+  var reference = Buy("v-mischief", "Chelsea", "38", 1);
+  // Even the visit that placed it — which reads it — has no power to change it.
+  runas (new Visitor { Id = "v-mischief" }) {
+    var order = Order.Single(o => o.Reference == reference);
+    Assert.Throws<Exception>(() => CancelOrder(order, "because I can"));
+    Assert.Throws<Exception>(() => MarkPaid(order, ""));
+  }
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Reserved, Order.Single(o => o.Reference == reference).Status);
+  }
+}
+
+[Test(Floor)]
+void a_payment_received_pays_the_order_it_is_sent_and_a_paid_order_cannot_be_cancelled() {
+  var reference = Buy("v-paid", "Chelsea", "38", 1);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    MarkPaid(order, "");
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Paid, order.Status);
+    Assert.Equal("Bank transfer", order.PaidWith);
+    Assert.Throws<Exception>(() => CancelOrder(order, "too late"));
+
+    MarkSent(order, "PostNord 123");
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Delivered, order.Status);   // a collection is delivered when it is collected
+    Assert.Equal("PostNord 123", order.Tracking);
+  }
+  Assert.Equal(0, Pick("Chelsea", "38").Stock);   // sold
+}
+
+[Test(Floor)]
+void a_refund_puts_the_goods_back_only_when_they_came_back() {
+  var back = Buy("v-back", "Loafer", "38", 1);
+  var kept = Buy("v-kept", "Loafer", "38", 1);
+  Assert.Equal(0, Pick("Loafer", "38").Stock);
+  runas (Desk) {
+    foreach (var reference in new List<string> { back, kept }) {
+      var order = Order.Single(o => o.Reference == reference);
+      MarkPaid(order, "");
+      Workflow.Settle(order);
+      RefundOrder(order, "Returned", reference == back);
+      Workflow.Settle(order);
+      Assert.Equal(OrderStatus.Refunded, order.Status);
+    }
+  }
+  Assert.Equal(1, Pick("Loafer", "38").Stock);    // the one that came back — and only that one
+}
+
+[Test(Floor)]
+void voiding_ends_a_paid_order_and_puts_its_goods_back() {
+  var reference = Buy("v-void", "Chelsea", "38", 1);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    MarkPaid(order, "");
+    Workflow.Settle(order);
+    VoidOrder(order, "Entered by mistake");
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Voided, order.Status);
+  }
+  Assert.Equal(1, Pick("Chelsea", "38").Stock);
+}
+
+[Test(Floor)]
+void staff_edit_the_catalogue_and_visitors_cannot() {
+  Assert.Throws<Exception>(() => Rename("Loafer", "Mine now"));
+  runas (Desk) { Rename("Loafer", "Penny loafer"); }
+  Assert.Equal(1, Product.Count(p => p.Name == "Penny loafer"));
+}
+
+void Rename(string from, string to) {
+  var p = Product.Single(x => x.Name == from);
+  p.Name = to;
+  UnitOfWork.Commit();
+}

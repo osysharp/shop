@@ -1,0 +1,873 @@
+// Returns. A customer who bought signed in sends things back from their order history: they pick what, and why, one
+// line at a time, while the return is still waiting for the parcel. Staff open the parcel, and the return refunds what
+// came back — through the payment provider that took it, or by hand, or as STORE CREDIT — and puts it back in stock.
+//
+// ⚑ A RETURN REFUNDS ITS OWN LINES, never the order's face value. An order can be returned in parts, and each part is
+//   refunded for what those lines cost — the order itself stays `Sent`. A whole-order refund is the desk's separate
+//   `RefundOrder`, for when the shop gives everything back unasked.
+//
+// ⚑ THE CUSTOMER NEVER WRITES AN AMOUNT. They choose lines and quantities; what that is worth is worked out when the
+//   parcel is received, from the prices on the order.
+//
+// ⚑ AN EXCHANGE IS A RETURN WHOSE MONEY BUYS SOMETHING ELSE. Asking for one (`ExchangeItem`) places a REPLACEMENT order
+//   at once — through the checkout's own path, so its goods are held by its own workflow like any order's — linked to
+//   the original (`Order.ExchangeFor`), delivered free, and waiting unpaid until the parcel is in. When it is, what came
+//   back is set against the replacement (`Order.ExchangeCredit`): equal value, it is paid and goes out; worth more, the
+//   customer is sent a link to pay the difference; worth less, what is over goes to their store credit (or back to them,
+//   for a guest). The books see what happened: a credit note for what came back, an invoice for what went out.
+//
+// ⚑ A RETURN LABEL COMES FROM THE CARRIER THAT BROUGHT IT. Staff accepting a return (`AcceptReturn`) — or the customer
+//   asking for a code (`SendItBack`) — books the parcel back through the delivery provider the order went with, and the
+//   customer is mailed its label (attached), its code and its tracking. A carrier that does not book returns, or an
+//   order that went without one, is SAID so on the desk, and the customer is mailed where to post it instead.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Delivery;
+using Osysharp.Payments;
+using Osysharp.Workflow;
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum ReturnStatus {
+  [Label("Waiting for the parcel")] Requested,
+  [Label("Refund on its way")] Refunding,
+  [Label("Refunded")] Refunded,
+  [Label("Declined")] Declined,
+}
+
+public entity ReturnRequest {
+  [Required] Order Order;
+  /// Not a parcel coming back: part of an order that could not be SENT (it turned out to be out of stock), refunded
+  /// before the rest goes out. Its goods never left, so they are not restocked.
+  bool NotSent = false;
+  ReturnStatus Status;                               // no default — ReturnLifecycle owns it
+  DateTime RequestedAt;
+  DateTime? ReceivedAt;
+  DateTime? RefundedAt;
+  /// What the returned lines cost — worked out when the parcel is received.
+  decimal Amount;
+  /// Whether what came back goes on sale again.
+  bool Restock = true;
+  /// The provider's id for this return's refund — how its webhooks find the return again.
+  [MaxLength(80), Unique] string? RefundRef;
+  /// Why it was declined, or what went wrong with the refund, in a sentence for the customer.
+  [MaxLength(300)] string? Problem;
+  /// The return parcel, when the customer sends it back through the carrier that brought it (`SendItBack`).
+  [MaxLength(120)] string? ParcelNumber;
+  [MaxLength(400)] string? ParcelTrackingUrl;
+  /// What the customer shows at the counter, and that code as a QR image — or a label to print.
+  [MaxLength(60)] string? DropOffCode;
+  [MaxLength(200)] string? QrPath;
+  [MaxLength(200)] string? ReturnLabelPath;
+  /// An exchange: the order that sends the goods wanted instead (`ExchangeItem`). Null for a return for money.
+  Order? Replacement;
+  /// The customer asked for store credit instead of the money back.
+  bool AsCredit = false;
+  /// Of `Amount`, what goes to the customer's store credit rather than back through the payment provider — worked out
+  /// when the parcel is received.
+  decimal CreditAmount = 0;
+  /// Of `Amount`, what goes back onto the gift cards the order was paid with — in the part they paid.
+  decimal GiftCardAmount = 0;
+  /// Of `GiftCardAmount`, what went back onto SINGLE-purpose cards, and the VAT already paid inside it — goods whose
+  /// VAT was paid when those cards were sold, so the credit note gives none of it back. Written as the shop gives it back.
+  decimal SinglePurposeBack = 0;
+  decimal VoucherVatBack = 0;
+  /// When staff accepted it (`AcceptReturn`) — the label booked, or the customer told where to post it.
+  DateTime? AcceptedAt;
+  /// Why no return label could be booked, in the desk's words — the customer was mailed where to post it instead.
+  [MaxLength(300)] string? NoLabel;
+  [ForeignKey(Return)] ReturnLine[] Lines;
+  security {
+    // SECURITY-INVARIANT(a-link-opens-only-its-own-orders-return-and-receipt): besides the account and staff, the holder of an
+    //   order's link reads THAT order's returns — a guest follows the return they started on the order's page — and no
+    //   other order's.
+    allow read when IsAnonymous || IsAuthenticated where Order.Account == user || Order == OrderLink.Row;
+    allow read when IsShopStaff;
+    // …and a counter's clerks, for what was handed over there (what can still come back over it — Counter.osy).
+    allow read when IsShopCounter where SellsAt(Order.Location) && Order.Fulfilment == Fulfilment.Collect;
+    allow create when IsAuthenticated where Order.Account == user;
+    allow create when IsShopStaff;
+    allow update, delete when IsShopStaff;
+  }
+}
+
+public entity ReturnLine {
+  [Required] ReturnRequest Return;
+  [Required] OrderLine Line;
+  int Quantity = 1;
+  [MaxLength(300)] string? Reason;
+  security {
+    allow read when IsAnonymous || IsAuthenticated
+      where Return.Order.Account == user
+         || Return.Order == OrderLink.Row;
+    allow read when IsShopCounter where SellsAt(Return.Order.Location) && Return.Order.Fulfilment == Fulfilment.Collect;
+    allow read when IsShopStaff;
+    allow create, delete when IsAuthenticated where Return.Order.Account == user;
+    allow create, delete when IsShopStaff;
+    allow update when IsShopStaff;
+  }
+}
+
+public workflow ReturnLifecycle {
+  Tracks    = ReturnRequest.Status;
+  Autostart = true;
+  Initial   = Requested;
+
+  /// The parcel is in and the refund has been asked for.
+  event Received();
+  event Decline(string reason);
+  /// The carrier has booked the return parcel.
+  event ParcelBooked(string number, string trackingUrl, string code, string qrPath, string labelPath);
+  /// What the refund's money did — straight away for a payment refunded by hand, from the provider otherwise.
+  [CorrelateOn(this.Item.RefundRef == refundRef)]
+  event RefundUpdate(string refundRef, string status);
+
+  state Requested {
+    subscribe Received() as Opened;
+    subscribe Decline() as Declining;
+    subscribe ParcelBooked() as Booked;
+    on Opened() { goto Refunding; }
+    on Booked(string number, string trackingUrl, string code, string qrPath, string labelPath) {
+      this.Item.ParcelNumber = number == "" ? null : number;
+      this.Item.ParcelTrackingUrl = trackingUrl == "" ? null : trackingUrl;
+      this.Item.DropOffCode = code == "" ? null : code;
+      this.Item.QrPath = qrPath == "" ? null : qrPath;
+      this.Item.ReturnLabelPath = labelPath == "" ? null : labelPath;
+      this.Item.NoLabel = null;
+      // The label travels INSIDE the mail: a link to it would expire before some customers get to a printer.
+      List<MailFile> files = [];
+      if (labelPath != "") {
+        files.Add(new MailFile { Path = labelPath, FileName = $"return-{this.Item.Order.Reference}.pdf", ContentType = "application/pdf" });
+      }
+      MailCustomer(this.Item.Order, App.Setting<ShopSetup>().Mails.ReturnCode(this.Item), files);
+    }
+    on Declining(string reason) {
+      this.Item.Problem = reason;
+      TellCustomer(this.Item.Order, $"Your return for order {this.Item.Order.Reference}",
+        $"We cannot accept this return: {reason} Reply to this mail if you think that is wrong.");
+      goto Declined;
+    }
+  }
+
+  state Refunding {
+    subscribe RefundUpdate() as Settled;
+    on Settled(string refundRef, string status) {
+      if (status == "succeeded") { goto Refunded; }
+      if (status == "failed" || status == "canceled") { this.Item.Problem = $"The refund {status} at the payment provider — the shop will look at it."; }
+    }
+  }
+
+  terminal success Refunded {
+    enter {
+      this.Item.RefundedAt = DateTime.UtcNow;
+      // What goes to store credit is written HERE, as the shop — nobody holds a write on the ledger.
+      if (this.Item.CreditAmount > 0 && this.Item.Order.Account != null) {
+        PostCredit(this.Item.Order.Account!, this.Item.CreditAmount, StoreCreditKind.Return,
+                   null, this.Item.Order, this.Item, null);
+      }
+      // …and what goes back onto the gift cards it was paid with — here too, as the shop.
+      if (this.Item.GiftCardAmount > 0) {
+        GiveGiftCardsBack(this.Item.Order, this.Item.GiftCardAmount, GiveBackCause.Returned, this.Item);
+      }
+      // A gift card refunded stops working; a file refunded stops opening.
+      SettleNotPackedLines(this.Item);
+      CreditReturn(this.Item);
+      Raise(new ReturnRefunded { Return = this.Item });
+      this.Item.Problem = null;
+      TellCustomer(this.Item.Order, ReturnSettledSubject(this.Item), ReturnSettledText(this.Item));
+    }
+  }
+  terminal cancel Declined { }
+}
+
+/// What a settled return's mail is headed.
+string ReturnSettledSubject(ReturnRequest ret) {
+  var reference = ret.Order.Reference;
+  if (ret.NotSent) { return $"Part of order {reference} could not be sent"; }
+  if (ret.Replacement != null) { return $"Your exchange for order {reference}"; }
+  if (ret.CreditAmount >= ret.Amount && ret.Amount > 0) { return $"Store credit for your return on order {reference}"; }
+  return $"Refunded — your return for order {reference}";
+}
+
+/// What a settled return's mail says: what came of the money, and — for an exchange — what goes out and what is owed.
+string ReturnSettledText(ReturnRequest ret) {
+  var shop = TheShop();
+  var items = string.Join(", ", ret.Lines.ToList().Select(l => $"{l.Quantity} × {l.Line.ProductName}"));
+  if (ret.NotSent) {
+    return $"We are sorry — {items} turned out not to be in stock, so we have refunded {OrderMoney(ret.Amount, ret.Order)}. The rest of your order is on its way as planned.";
+  }
+  var toProvider = ret.Amount - ret.CreditAmount - ret.GiftCardAmount;
+  var credit = (ret.CreditAmount > 0 ? $"We have added {OrderMoney(ret.CreditAmount, ret.Order)} to your store credit. " : "")
+    + (ret.GiftCardAmount > 0 ? $"{OrderMoney(ret.GiftCardAmount, ret.Order)} is back on the gift card you paid with. " : "");
+  if (ret.Replacement != null) {
+    var r = ret.Replacement!;
+    var due = AmountDue(r);
+    var sends = string.Join(", ", r.Lines.ToList().Select(l => $"{l.Quantity} × {l.ProductName}{(l.VariantLabel == null ? "" : " (" + l.VariantLabel + ")")}"));
+    var exchanged = r.ExchangeFor != null && r.ExchangeCredit > 0;
+    if (!exchanged) {
+      return $"Your parcel has arrived, but what you asked for in exchange could no longer be held for you, so we have refunded {OrderMoney(ret.Amount, ret.Order)} instead. "
+        + credit;
+    }
+    return $"Your parcel has arrived. {sends} go out to you as order {r.Reference}"
+      + (due > 0 ? $" once the difference of {OrderMoney(due, ret.Order)} is paid — we have sent you how. " : " — there is nothing more to pay. ")
+      + credit
+      + (toProvider > 0 ? $"The {OrderMoney(toProvider, ret.Order)} it was worth more goes back the way you paid." : "");
+  }
+  return $"Your parcel has arrived. " + credit
+    + (toProvider > 0
+      ? $"We have refunded {OrderMoney(toProvider, ret.Order)}. " + (ret.Order.PaidWith == "Card" ? "It reaches your card within a few working days." : "We will send it back the way you paid.")
+      : "");
+}
+
+/// Whether a line may go back now, and how many — the checks a return and an exchange share. `anyTime`: staff are
+/// not held to the return window. Throws the sentence to show.
+void CheckReturnable(OrderLine line, int quantity, bool anyTime) {
+  var order = line.Order;
+  // Nothing was sent to send back: a file was the customer's the moment it was paid (with their consent to lose the
+  // right to withdraw), and an unused gift card is refunded by the shop, which voids it.
+  if (line.Kind == LineKind.Download) {
+    throw new Exception("A download cannot be sent back — you agreed to have it at once. Write to us if something is wrong with it.");
+  }
+  if (line.Kind == LineKind.GiftCard) {
+    throw new Exception("A gift card is not sent back — write to us while it is unused and we will refund it.");
+  }
+  if (!IsSent(order) || order.FulfilledAt == null) {
+    throw new Exception(IsBeingPrepared(order)
+      ? "It has not been sent yet — write to the shop to call it off."
+      : $"Order {order.Reference} is {order.Status.Label}, so nothing in it can be returned.");
+  }
+  var shop = TheShop();
+  // The window runs from when it ARRIVED where the carrier says so — the law's measure — else from when it was sent.
+  if (!anyTime && (order.DeliveredAt ?? order.FulfilledAt.Value).AddDays(shop.ReturnDays) < DateTime.UtcNow) {
+    throw new Exception($"Returns are open for {shop.ReturnDays} days after an order is sent, and that has passed.");
+  }
+  if (quantity < 1) { throw new Exception("Choose how many to return."); }
+  var already = ReturnLine.Where(r => r.Line == line && r.Return.Status != ReturnStatus.Declined).Sum(r => r.Quantity);
+  if (already + quantity > line.Quantity) {
+    throw new Exception(line.Quantity - already <= 0 ? "That is already on its way back." : $"You can return {line.Quantity - already} more of that.");
+  }
+}
+
+/// Adds `quantity` of a line to the order's waiting return, starting one if there is none. For the customer whose
+/// account placed the order, while it is inside the shop's return window. `asCredit`: they would rather have store
+/// credit than the money back — said when the return is started. Throws the sentence to show.
+public ReturnRequest ReturnItem(OrderLine line, int quantity, string reason, bool asCredit = false) {
+  var me = Session.CurrentUser;
+  var order = line.Order;
+  if (me == null || order.Account != me) { throw new Exception("Sign in with the account that placed the order to return from it."); }
+  CheckReturnable(line, quantity, false);
+  if (asCredit && OrderCurrency(order) != TheShop().Currency) {
+    throw new Exception($"Order {order.Reference} was paid in {OrderCurrency(order)}, so it is refunded the way it was paid — store credit is kept in {TheShop().Currency}.");
+  }
+  // An exchange is a return of its own: this one is for money (or credit).
+  var open = ReturnRequest.Where(r => r.Order == order && r.Status == ReturnStatus.Requested && r.Replacement == null).FirstOrDefault();
+  if (open == null) { open = new ReturnRequest { Order = order, RequestedAt = DateTime.UtcNow, AsCredit = asCredit }; }
+  new ReturnLine { Return = open, Line = line, Quantity = quantity, Reason = reason.Trim() == "" ? null : reason.Trim() };
+  UnitOfWork.Commit();
+  return open;
+}
+
+// ── a return through the order's link — a guest's, from the order's page ─────────────────────────────────────────
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum ReturnAskStatus {
+  [Label("Asked")] Asked,
+  [Label("Answered")] Answered,
+}
+
+/// A return asked for through an order's LINK (`ReturnWithLink`) — how a guest, who has no account to return from,
+/// sends something back. The row is the question: the visit writes it, carrying the link it holds; the shop's workflow
+/// checks that link and answers, as the shop — starting the return exactly as an account's would be started — and the
+/// asking function reads the answer and takes the row away again.
+///
+/// SECURITY-INVARIANT(a-link-opens-only-its-own-orders-return-and-receipt): a link opens a return on ITS order's lines and
+///   no other's. The visit writes this row, so everything on it is a claim: the shop checks the link text itself
+///   (`OrderLink.From` — signature, expiry, revocation) and refuses a line that is not that order's, whatever the
+///   visitor wrote. A row written by hand, naming another order's line or carrying no valid link, starts nothing.
+///   Guarded by order-link.test.osy a_link_returns_only_its_own_orders_lines.
+public entity ReturnAsk {
+  /// The order link the visitor holds, as text — checked by the shop, never trusted.
+  [Required, MaxLength(700)] string Link;
+  Guid LineId;
+  int Quantity = 1;
+  [MaxLength(300)] string? Reason;
+  /// The visit that asked — its question is its own, as its bag is.
+  [Required, MaxLength(64)] string VisitId;
+  ReturnAskStatus Status;                            // no default — ReturnAsking owns it
+  /// The shop's answer: the return it is on, or why not.
+  ReturnRequest? Return;
+  [MaxLength(300)] string? Problem;
+  security {
+    allow create, read, delete when IsAnonymous || IsAuthenticated where VisitId == Visitor.Id;
+    allow create, read, delete when IsShopStaff;
+    deny read Link when !IsShopStaff;
+  }
+}
+
+public workflow ReturnAsking {
+  Tracks    = ReturnAsk.Status;
+  Autostart = true;
+  Initial   = Asked;
+  state Asked {
+    enter {
+      AnswerReturnAsk(this.Item);
+      goto Answered;
+    }
+  }
+  terminal success Answered { }
+}
+
+/// The shop answers a return asked for through a link — as the shop, after checking the link and that the line is its
+/// order's. The same rules as an account's return (`CheckReturnable`): sent, inside the window, not more than was
+/// bought, never a file or a gift card. For the money back, the way it was paid — a guest has no store credit.
+void AnswerReturnAsk(ReturnAsk ask) {
+  // The question is the visitor's to write, so whatever it says of its own answer is wiped first.
+  ask.Return = null;
+  ask.Problem = null;
+  Order? order = null;
+  try { order = OrderLink.From(ask.Link).Row; }
+  catch (Exception) { ask.Problem = "This link has expired or is not valid."; return; }
+  var lineId = ask.LineId;
+  var line = OrderLine.FirstOrDefault(l => l.Id == lineId);
+  if (line == null || line.Order.Id != order!.Id) { ask.Problem = "That is not part of this order."; return; }
+  try { CheckReturnable(line, ask.Quantity, false); }
+  catch (Exception ex) { ask.Problem = ex.Message; return; }
+  var theOrder = order!;
+  var open = ReturnRequest.Where(r => r.Order == theOrder && r.Status == ReturnStatus.Requested && r.Replacement == null).FirstOrDefault();
+  if (open == null) { open = new ReturnRequest { Order = theOrder, RequestedAt = DateTime.UtcNow }; }
+  new ReturnLine { Return = open, Line = line, Quantity = ask.Quantity, Reason = ask.Reason };
+  ask.Return = open;
+}
+
+/// Sends `quantity` of a line back through the order's link — for a guest, from the order's page; for anyone holding
+/// the link. The same rules as `ReturnItem`, refunded the way it was paid. Answers "" when the return is started (or
+/// the line added to the one waiting for the parcel), else the sentence to show.
+[AllowAnonymous]
+public string ReturnWithLink(OrderLink link, Guid lineId, int quantity, string reason) {
+  var said = reason.Trim();
+  var ask = new ReturnAsk { Link = $"{link}", LineId = lineId, Quantity = quantity, Reason = said == "" ? null : said,
+                            VisitId = Visitor.Id };
+  UnitOfWork.Commit();
+  // Answered by the shop's workflow by now.
+  var problem = ask.Problem ?? (ask.Return == null ? "The return could not be started." : "");
+  ask.Delete();
+  UnitOfWork.Commit();
+  return problem;
+}
+
+// ── exchanges ───────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// What `line` can be exchanged for: the product's other sizes and colours first, then — when `search` names
+/// something — other listed products, all in stock. Never the very thing being sent back.
+public List<DeskPick> ExchangeChoices(OrderLine line, string search) {
+  var me = Session.CurrentUser;
+  var staff = me != null && ShopRoleGrant.Any(g => g.Member == me && g.Role == ShopRole.Staff);
+  if (me == null || (line.Order.Account != me && !staff)) { return []; }
+  var product = line.Variant.Product;
+  var sale = SaleRate(line.Order.Currency);
+  var s = search.Trim().ToLower();
+  var same = Variant.Where(v => v.Product == product && v.Product.Status == ProductStatus.Listed).ToList()
+    .Where(v => v.Id != line.Variant.Id && (v.Unlimited || v.Stock > 0)).ToList();
+  List<Variant> others = [];
+  if (s != "") {
+    others = Variant.Include(v => v.Product).Where(v => v.Product.Status == ProductStatus.Listed).ToList()
+      .Where(v => v.Product.Id != product.Id && (v.Unlimited || v.Stock > 0) && v.Product.Name.ToLower().Contains(s)).Take(8).ToList();
+  }
+  return same.Concat(others)
+    // Priced in the order's currency — an exchange is set against what that order was paid.
+    .Select(v => new DeskPick { Variant = v, Name = VariantName(v), Price = sale == null ? PriceOf(v) : SoldPrice(v, sale!), Stock = v.Stock, Unlimited = v.Unlimited })
+    .ToList();
+}
+
+/// The customer asks to exchange `quantity` of a line they bought for `wanted` — another size, colour or product.
+/// The replacement is placed and held for them at once; it goes out when the parcel is in (see the file's head).
+/// Answers the return. Throws the sentence to show.
+public ReturnRequest ExchangeItem(OrderLine line, int quantity, Variant wanted, string reason) {
+  var me = Session.CurrentUser;
+  if (me == null || line.Order.Account != me) { throw new Exception("Sign in with the account that placed the order to exchange from it."); }
+  CheckReturnable(line, quantity, false);
+  return MakeExchange(line, quantity, wanted, reason, false);
+}
+
+/// Staff exchange part of an order for the customer — asked at the counter, on the phone, by mail. The same as the
+/// customer's own, without the return window.
+[Authorize(IsShopStaff)]
+public ReturnRequest ExchangeForCustomer(OrderLine line, int quantity, Variant wanted, string reason) {
+  CheckReturnable(line, quantity, true);
+  return MakeExchange(line, quantity, wanted, reason, true);
+}
+
+/// `byShop`: staff arranged it, so the replacement is placed as the shop (`Placement.ByShop`); the customer's own is
+/// priced again by its workflow like any order they place.
+ReturnRequest MakeExchange(OrderLine line, int quantity, Variant wanted, string reason, bool byShop) {
+  var order = line.Order;
+  var shop = TheShop();
+  if (wanted.Id == line.Variant.Id) { throw new Exception("That is what you have — choose another size, colour or product."); }
+  if (wanted.Product.Status != ProductStatus.Listed) { throw new Exception($"{wanted.Product.Name} is not for sale."); }
+  if (!wanted.Unlimited && Buyable(wanted) < quantity) {
+    throw new Exception(Buyable(wanted) == 0 ? $"{VariantName(wanted)} has sold out — choose another." : $"There are only {Buyable(wanted)} of {VariantName(wanted)}.");
+  }
+  var contact = order.Contact.FirstOrDefault();
+  if (contact == null || !contact.Email.Contains("@")) { throw new Exception("This order has no address to send an exchange to — write to the shop."); }
+
+  // A bag the shop fills and places at once, holding what goes out instead — never the bag anybody shops in (BagFor
+  // passes it over). It is the ORDER's customer's (null for a guest's order, which only staff exchange): a guest bag is
+  // its visit's alone (SECURITY-INVARIANT(a-guest-row-is-its-visits)), and this one belongs to no visit.
+  // In the original's currency: what goes back is worth that order's money, and it is set against the replacement.
+  var bag = new Bag { Owner = order.Account, VisitId = "exchange-" + Security.RandomHex(16), BuyerBornOn = contact.BornOn,
+                      Currency = order.Currency };
+  if (order.Currency != null && SaleRate(order.Currency) == null) {
+    bag.Delete();
+    throw new Exception($"The shop does not sell in {order.Currency} just now, so it cannot price an exchange for this order — return it for your money back.");
+  }
+  var wantedLine = new BagLine { Bag = bag, Variant = wanted, Quantity = quantity };
+  wantedLine.PriceWhenAdded = LinePrice(wantedLine);
+  UnitOfWork.Commit();
+  var country = contact.Country ?? shop.HomeCountry;
+  // An exchange goes out at the shop's cost, the way the original did.
+  var way = ExchangeWay(bag, order, country);
+  if (way == null) { throw new Exception("The shop cannot send an exchange to you just now — write to us."); }
+  if (way.ChoosePoint) {
+    // The point the original was collected from, if it had one — else the carrier picks the nearest.
+    bag.PickupPointFor = way.Id;
+    bag.PickupPointId = contact.PickupPointId;
+    bag.PickupPointName = contact.PickupPointName;
+    bag.PickupPointStreet = contact.PickupPointStreet;
+    bag.PickupPointPostCode = contact.PickupPointPostCode;
+    bag.PickupPointCity = contact.PickupPointCity;
+    bag.PickupPointCountry = contact.PickupPointCountry;
+  }
+  var pays = PaymentChoicesIn(!way.NeedsAddress, OrderCurrency(order), way.NeedsAddress ? CountryCode(country) : "");
+  var pay = pays.FirstOrDefault(p => p.Key == order.PaymentMethod) ?? pays.FirstOrDefault();
+  if (pay == null) { throw new Exception("The shop takes no payment just now, so it cannot hold an exchange — write to us."); }
+  var placement = new Placement {
+    Name = contact.Name, Email = contact.Email, Phone = contact.Phone ?? "", Street = contact.Street ?? "",
+    PostCode = contact.PostCode ?? "", City = contact.City ?? "", Country = way.NeedsAddress ? country : "",
+    Way = way, Pay = pay, Fulfilment = way.NeedsAddress ? Fulfilment.Deliver : Fulfilment.Collect,
+    VatCountry = way.NeedsAddress ? CountryCode(country) : "",
+    StartPayment = false, ExchangeFor = order, ByShop = byShop,
+    // Held while the parcel comes back: the return window and two weeks for the post.
+    HoldDays = shop.ReturnDays + 14,
+  };
+  Receipt receipt;
+  try { receipt = PlaceBag(bag, placement, order.Account); }
+  catch (Exception ex) {
+    bag.Delete();
+    UnitOfWork.Commit();
+    throw new Exception(ex.Message.StartsWith("Something in your bag")
+      ? $"{VariantName(wanted)} went a moment before you — choose another, or return it for your money back."
+      : ex.Message);
+  }
+  bag.Delete();
+  var replacement = Order.Single(o => o.Reference == receipt.Reference);
+  var ret = new ReturnRequest { Order = order, RequestedAt = DateTime.UtcNow, Replacement = replacement };
+  new ReturnLine { Return = ret, Line = line, Quantity = quantity, Reason = reason.Trim() == "" ? null : reason.Trim() };
+  UnitOfWork.Commit();
+  return ret;
+}
+
+/// What an exchange would cost beside what goes back — for the customer choosing: positive, the difference to pay;
+/// negative, what goes to their store credit (or back). Priced as the replacement will be.
+public decimal ExchangeDifference(OrderLine line, int quantity, Variant wanted) {
+  var order = line.Order;
+  var back = line.Price * quantity;
+  var value = order.Discount <= 0 || order.Subtotal <= 0 ? back : Math.Round(back * (order.Subtotal - order.Discount) / order.Subtotal, 2, MidpointRounding.AwayFromZero);
+  var sale = SaleRate(order.Currency);
+  return (sale == null ? PriceOf(wanted) : SoldPrice(wanted, sale)) * quantity - value;
+}
+
+/// The replacement's goods have come back and it still owes something: the customer is mailed a payment link for the
+/// difference (the order desk's `SendPayLink`) — its page pays through the order's provider, or, for a payment by
+/// hand, says how to pay.
+void AskForDifference(Order replacement) {
+  if (AmountDue(replacement) <= 0) { return; }
+  var provider = App.Setting<ShopSetup>().Payments.FirstOrDefault(p => p.Key == replacement.PaymentMethod);
+  if (provider != null && provider.IsManual) {
+    // Asked for now, for what is left — the page and the mail show it.
+    replacement.PayInstructions = HandPayInstructions(provider, PaymentRequestFor(replacement));
+    UnitOfWork.Commit();
+  }
+  SendPayLink(replacement, true);
+}
+
+// ── return labels ───────────────────────────────────────────────────────────────────────────────────────────────
+
+/// How a return goes back through the carrier: the code to show at the counter, where to follow it, and links (which
+/// expire) to its QR image and its label. Empty strings for what the carrier did not give.
+public class ReturnParcel {
+  public string Code = "";
+  public string TrackingUrl = "";
+  public string QrLink = "";
+  public string LabelLink = "";
+}
+
+/// Books the return parcel with the carrier that delivered the order — once — writing the label and the QR code where
+/// the shop keeps its files, and the booking onto the return through its workflow (which mails the customer). Answers
+/// "" when it is booked, or why it could not be, in the desk's words.
+string BookReturnParcel(ReturnRequest ret) {
+  if (ret.ParcelNumber != null || ret.DropOffCode != null) { return ""; }
+  var order = ret.Order;
+  var lines = ret.Lines.ToList();
+  if (lines.Count == 0) { return "The return has nothing in it yet."; }
+  var carrierKey = CarrierKeyOf(order);
+  var carrier = App.Setting<ShopSetup>().Delivery.FirstOrDefault(d => d.Key == carrierKey);
+  var contact = order.Contact.FirstOrDefault();
+  if (order.Fulfilment != Fulfilment.Deliver) { return "It was collected at the shop, so there is no carrier to book it back with."; }
+  if (carrier == null) { return "The order did not go with a carrier, so there is none to book it back with."; }
+  if (order.Tracking == null) { return $"The order went with {carrier.Name} without a tracking number, so it cannot be booked back."; }
+  if (contact == null) { return "The order has no address to collect the parcel from."; }
+  var slash = order.DeliveryMethod.IndexOf("/");
+  ReturnShipment? parcel = null;
+  try {
+    parcel = carrier.BookReturn(new ReturnShipmentRequest {
+      Reference = order.Reference + "-R", OriginalTrackingNumber = order.Tracking,
+      OriginalOptionId = slash < 0 ? order.DeliveryMethod : order.DeliveryMethod.Substring(slash + 1),
+      WeightGrams = lines.Sum(l => l.Line.Variant.WeightGrams * l.Quantity), Items = lines.Sum(l => l.Quantity),
+      From = new DeliveryAddress { Name = contact.Name, Street = contact.Street ?? "", PostCode = contact.PostCode ?? "",
+                                   City = contact.City ?? "", Country = CountryCode(contact.Country ?? ""),
+                                   Email = contact.Email, Phone = contact.Phone },
+    });
+  }
+  catch (Exception ex) {
+    Log.Warning($"{carrier.Name} could not book the return on {order.Reference}: {ex.Message}");
+    return $"{carrier.Name} could not book it just now ({ex.Message}).";
+  }
+  if (parcel == null) { return $"{carrier.Name} does not book return parcels."; }
+  var qrPath = "";
+  var labelPath = "";
+  if (parcel.QrCode != null) { qrPath = $"returns/{ret.Id}.png"; File.WriteAllBytes(qrPath, parcel.QrCode); }
+  if (parcel.Label != null) { labelPath = $"returns/{ret.Id}.pdf"; File.WriteAllBytes(labelPath, parcel.Label); }
+  ReturnLifecycle.RaiseParcelBooked(ret, parcel.TrackingNumber, parcel.TrackingUrl, parcel.DropOffCode, qrPath, labelPath);
+  return "";
+}
+
+/// Books the return parcel with the carrier that delivered the order — once; asked again, it answers the same parcel —
+/// and mails the customer how to hand it in. Null when the order did not go with a carrier that takes returns: the
+/// customer then posts it back their own way, to the address in the shop's returns policy.
+public ReturnParcel? SendItBack(ReturnRequest ret) {
+  var me = Session.CurrentUser;
+  var order = ret.Order;
+  if (me == null || order.Account != me) { throw new Exception("Sign in with the account that placed the order."); }
+  if (ret.ParcelNumber != null || ret.DropOffCode != null) { return ParcelOf(ret); }
+  if (ret.Status != ReturnStatus.Requested) { throw new Exception($"That return is {ret.Status.Label}."); }
+  if (ret.Lines.Count() == 0) { throw new Exception("Choose what to send back first."); }
+  return BookReturnParcel(ret) == "" ? ParcelOf(ret) : null;
+}
+
+/// A booked return parcel, with fresh links.
+ReturnParcel ParcelOf(ReturnRequest ret) {
+  return new ReturnParcel { Code = ret.DropOffCode ?? "", TrackingUrl = ret.ParcelTrackingUrl ?? "",
+    QrLink = ret.QrPath == null ? "" : File.SignedUrl(ret.QrPath),
+    LabelLink = ret.ReturnLabelPath == null ? "" : File.SignedUrl(ret.ReturnLabelPath) };
+}
+
+/// Staff accept a return: the parcel is booked back with the carrier that brought it, and the customer is mailed its
+/// label, code and tracking — or, when no label can be had, where to post it. Pressed again after a carrier could not be
+/// reached, it tries again. Answers where the return's label stands, in the desk's words.
+[Authorize(IsShopStaff)]
+public string AcceptReturn(ReturnRequest ret) {
+  if (ret.Status != ReturnStatus.Requested) { throw new Exception($"That return is {ret.Status.Label}."); }
+  if (ret.Lines.Count() == 0) { throw new Exception("That return has nothing in it."); }
+  if (ret.ParcelNumber != null || ret.DropOffCode != null) { return ReturnLabelOf(ret, false).State; }
+  var first = ret.AcceptedAt == null;
+  ret.AcceptedAt = ret.AcceptedAt ?? DateTime.UtcNow;
+  UnitOfWork.Commit();
+  var why = BookReturnParcel(ret);
+  if (why != "") {
+    ret.NoLabel = why;
+    // Told once where to post it — a retry that still finds no label does not mail them again.
+    if (first) { MailCustomer(ret.Order, App.Setting<ShopSetup>().Mails.ReturnInstructions(ret)); }
+    UnitOfWork.Commit();
+  }
+  return ReturnLabelOf(ret, false).State;
+}
+
+/// Where a return's label stands, as the desk shows it.
+public class ReturnLabelView {
+  /// "none" — not accepted yet; "booked"; "instructions" — no label, the customer was told where to post it.
+  public string Kind = "none";
+  /// One line for the desk: "Booked with PostNord — RET-123", "PostNord does not book return parcels…".
+  public string State = "";
+  public string Carrier = "";
+  public string Tracking = "";
+  public string TrackingUrl = "";
+  public string Code = "";
+  /// A fresh link to the label (PDF), when the carrier made one.
+  public string LabelLink = "";
+  /// Where the parcel is now, as its carrier says — only when asked (`track`), "" otherwise.
+  public string Where = "";
+}
+
+/// A return's label, for the desk — asking the carrier where the parcel is when `track` says so.
+[Authorize(IsShopStaff)]
+public ReturnLabelView ReturnLabelOf(ReturnRequest ret, bool track) {
+  var view = new ReturnLabelView();
+  var carrier = App.Setting<ShopSetup>().Delivery.FirstOrDefault(d => d.Key == CarrierKeyOf(ret.Order));
+  view.Carrier = carrier == null ? "" : carrier.Name;
+  if (ret.ParcelNumber != null || ret.DropOffCode != null) {
+    view.Kind = "booked";
+    view.Tracking = ret.ParcelNumber ?? "";
+    view.TrackingUrl = ret.ParcelTrackingUrl ?? "";
+    view.Code = ret.DropOffCode ?? "";
+    view.LabelLink = ret.ReturnLabelPath == null ? "" : File.SignedUrl(ret.ReturnLabelPath);
+    view.State = $"Label booked with {(view.Carrier == "" ? "the carrier" : view.Carrier)}" + (view.Tracking == "" ? "" : $", tracking {view.Tracking}");
+    if (track && carrier != null && ret.ParcelNumber != null) {
+      try {
+        var status = carrier.Track(ret.ParcelNumber!);
+        view.Where = status.Description == "" ? status.State.Label : $"{status.State.Label}: {status.Description}";
+      }
+      catch (Exception ex) {
+        Log.Warning($"{carrier.Name} could not say where the return on {ret.Order.Reference} is: {ex.Message}");
+        view.Where = $"{carrier.Name} could not be asked just now.";
+      }
+    }
+    return view;
+  }
+  if (ret.NoLabel != null) {
+    view.Kind = "instructions";
+    view.State = $"No label: {ret.NoLabel} The customer was mailed where to post it.";
+    return view;
+  }
+  view.State = ret.AcceptedAt == null ? "Not accepted yet." : "Accepted.";
+  return view;
+}
+
+/// Takes a line back out of a return that is still waiting for the parcel. The line of an exchange takes the exchange
+/// with it: the replacement is called off, and its goods go back on sale.
+public void UndoReturnLine(ReturnLine line) {
+  var ret = line.Return;
+  if (ret.Status != ReturnStatus.Requested) { throw new Exception("That return has already been received."); }
+  var replacement = ret.Replacement;
+  line.Delete();
+  UnitOfWork.Commit();
+  if (replacement != null && replacement.Status == OrderStatus.Reserved && ret.Lines.Count() == 0) {
+    OrderLifecycle.RaiseCancel(replacement, "The exchange was called off");
+  }
+}
+
+/// The returns of the signed-in customer's orders, newest first.
+public List<ReturnRequest> MyReturns() {
+  var me = Session.CurrentUser;
+  if (me == null) { return []; }
+  return ReturnRequest.Where(r => r.Order.Account == me).OrderByDescending(r => r.RequestedAt).ToList();
+}
+
+/// The customer calls off an order that is reserved and not yet paid — its goods go back on sale.
+public void CancelMyOrder(Order order) {
+  var me = Session.CurrentUser;
+  if (me == null || order.Account != me) { throw new Exception("Sign in with the account that placed the order."); }
+  if (order.Status != OrderStatus.Reserved) {
+    throw new Exception(IsBeingPrepared(order)
+      ? "It is paid already — write to the shop and they will refund it."
+      : $"Order {order.Reference} is {order.Status.Label}.");
+  }
+  OrderLifecycle.RaiseCancel(order, "Cancelled by the customer");
+}
+
+// ── the desk's half ───────────────────────────────────────────────────────────────────────────────────────────
+
+/// The parcel is in: puts what came back in stock when `restock` says so, and gives back what those lines cost — as
+/// store credit when the customer asked for it (`AsCredit`), set against the replacement for an exchange, and
+/// otherwise through the provider that took the payment, or by hand for a payment staff marked as received.
+///
+/// What goes back in stock goes back where the order was picked from — `ReceiveReturnAt` names another location.
+[Authorize(IsShopStaff)]
+public void ReceiveReturn(ReturnRequest ret, bool restock) {
+  SettleReturn(ret, restock, ret.AsCredit, ret.Order.Location);
+}
+
+/// The parcel is in, at `location` — what came back goes on ITS shelf (a parcel posted to the warehouse, a return handed
+/// over at a counter), as `ReceiveReturn` otherwise.
+[Authorize(IsShopStaff)]
+public void ReceiveReturnAt(ReturnRequest ret, bool restock, StockLocation? location) {
+  SettleReturn(ret, restock, ret.AsCredit, location);
+}
+
+/// The parcel is in, and what it is worth goes to the customer's store credit rather than back to them — staff's call,
+/// or the customer's (`AsCredit`). Only for an order placed from an account: a guest has nowhere to hold credit.
+[Authorize(IsShopStaff)]
+public void ReceiveReturnAsCredit(ReturnRequest ret, bool restock) {
+  SettleReturn(ret, restock, true, ret.Order.Location);
+}
+
+void SettleReturn(ReturnRequest ret, bool restock, bool asCredit, StockLocation? restockAt) {
+  if (ret.Status != ReturnStatus.Requested) { throw new Exception($"That return is {ret.Status.Label}."); }
+  var lines = ret.Lines.ToList();
+  if (lines.Count == 0) { throw new Exception("That return has nothing in it."); }
+  var order = ret.Order;
+  // A line is worth what ITS order charged — never one of another order's, named on this return.
+  if (lines.Any(l => l.Line.Order.Id != order.Id)) { throw new Exception("That return holds a line from another order — decline it."); }
+  // SECURITY-INVARIANT(a-return-refunds-what-was-bought): the customer writes a return's lines (it is theirs), so
+  //   each is a claim — never refunded for fewer than one, or for more of a line than was bought less what is already
+  //   on its way back or refunded. Otherwise five of a line bought once are refunded five times. Guarded by
+  //   returns-and-stock.test.osy a_return_written_for_more_than_was_bought_refunds_nothing.
+  if (lines.Any(l => l.Quantity < 1 || RefundableOf(l.Line) < 0)) {
+    throw new Exception("That return asks for more than was bought — decline it.");
+  }
+  var replacement = ret.Replacement;
+  // An exchange whose replacement is still held for it. One that lapsed or was called off is a return for money.
+  var exchange = replacement != null && replacement.ExchangeFor != null && replacement.ExchangeFor.Id == order.Id
+                 && replacement.Status == OrderStatus.Reserved;
+  // An order in a currency the shop sells in besides its own goes back the way it was paid: store credit is kept in
+  // the shop's own currency (StoreCredit.osy), and a refund into it would be a conversion nobody asked for.
+  var foreign = OrderCurrency(order) != TheShop().Currency;
+  if (asCredit && !exchange && foreign) {
+    throw new Exception($"{order.Reference} was paid in {OrderCurrency(order)} — refund it the way it was paid; store credit is kept in {TheShop().Currency}.");
+  }
+  if (asCredit && !exchange && order.Account == null) {
+    throw new Exception($"{order.Reference} was placed without an account, so there is nowhere to keep store credit — refund it instead.");
+  }
+  // What those lines cost, less their share of what came off the goods — a discounted order refunds what was paid. A
+  // gift card had nothing taken off it.
+  var raw = lines.Where(l => l.Line.Kind != LineKind.GiftCard).Sum(l => l.Line.Price * l.Quantity);
+  var cardsBack = lines.Where(l => l.Line.Kind == LineKind.GiftCard).Sum(l => l.Line.Price * l.Quantity);
+  var goods = order.Subtotal - order.GiftCardsSold;
+  var goodsBack = order.Discount <= 0 || goods <= 0 ? raw : Math.Round(raw * (goods - order.Discount) / goods, 2, MidpointRounding.AwayFromZero);
+  ret.Amount = goodsBack + cardsBack;
+  ret.Restock = restock;
+  ret.ReceivedAt = DateTime.UtcNow;
+  // Written only as the shop gives the cards back — whatever a customer's request said of them is not.
+  ret.SinglePurposeBack = 0m;
+  ret.VoucherVatBack = 0m;
+  if (restock) {
+    // Only goods go back on a shelf.
+    foreach (var l in lines.Where(x => x.Line.Kind == LineKind.Goods && !x.Line.Variant.Unlimited)) {
+      MoveStockAt(restockAt, l.Line.Variant, l.Quantity, 0);
+      new StockMove { Variant = l.Line.Variant, Location = IsDefaultLocation(restockAt) ? DefaultLocation() : restockAt,
+                      Change = l.Quantity, Reason = StockReason.Returned,
+                      Order = order, By = Session.CurrentUser };
+      SendStockAlerts(l.Line.Variant);
+    }
+  }
+  // Where the money goes: to the replacement, to store credit, or back through the provider.
+  decimal toCredit = 0m;
+  if (exchange) {
+    var applied = Math.Min(ret.Amount, replacement!.Total);
+    replacement!.ExchangeCredit = applied;
+    // Worth more than what goes out: the rest to store credit when there is an account to keep it.
+    toCredit = order.Account != null && !foreign ? ret.Amount - applied : 0m;
+    var toProviderX = ret.Amount - applied - toCredit;
+    ret.CreditAmount = toCredit;
+    UnitOfWork.Commit();
+    ReturnLifecycle.RaiseReceived(ret);
+    if (AmountDue(replacement!) <= 0) {
+      OrderLifecycle.CorrelatePaymentReceived(replacement!.Reference, "Exchange", "", "", "");
+    } else {
+      AskForDifference(replacement!);
+    }
+    RefundThrough(ret, order, toProviderX, "exchange-");
+    return;
+  }
+  ret.AsCredit = asCredit;
+  if (asCredit) {
+    toCredit = ret.Amount;
+  }
+  // Paid partly with gift cards or store credit: the goods go back in the same parts they were paid — card to card,
+  // credit to credit, money to money. A gift card bought in the order was paid in money, and goes back as money.
+  decimal toCards = 0m;
+  var payable = order.Total - order.GiftCardsSold;
+  if (payable > 0 && order.GiftCardUsed > 0) {
+    toCards = Math.Max(Math.Min(order.GiftCardUsed - order.GiftCardReturned - GiftCardsPending(order), Math.Round(goodsBack * order.GiftCardUsed / payable, 2, MidpointRounding.AwayFromZero)), 0m);
+  }
+  if (!asCredit && order.CreditUsed > 0 && payable > 0) {
+    toCredit = Math.Min(order.CreditUsed - order.CreditReturned, Math.Round(goodsBack * order.CreditUsed / payable, 2, MidpointRounding.AwayFromZero));
+    toCredit = Math.Max(toCredit, 0m);
+    order.CreditReturned = order.CreditReturned + toCredit;
+  }
+  if (asCredit) { toCards = 0m; }
+  ret.CreditAmount = toCredit;
+  ret.GiftCardAmount = toCards;
+  UnitOfWork.Commit();
+  ReturnLifecycle.RaiseReceived(ret);
+  RefundThrough(ret, order, ret.Amount - toCredit - toCards, asCredit ? "credit-" : "manual-");
+}
+
+/// Gives `amount` of a received return back through the provider that took the order's payment — or, when there is
+/// nothing to give back that way (store credit, an exchange, a payment by hand), records it settled.
+void RefundThrough(ReturnRequest ret, Order order, decimal amount, string settledPrefix) {
+  var provider = App.Setting<ShopSetup>().Payments.FirstOrDefault(p => p.Key == order.PaymentMethod);
+  if (amount <= 0 || order.PaymentRef == null || provider == null || provider.IsManual) {
+    // Nothing leaves through a provider — by hand, as credit, or against the exchange; recording it is the whole step.
+    ret.RefundRef = settledPrefix + ret.Id.ToString();
+    UnitOfWork.Commit();
+    ReturnLifecycle.CorrelateRefundUpdate(ret.RefundRef, "succeeded");
+    return;
+  }
+  // What those lines cost, in minor units; keyed on the return, so a retry refunds ONCE.
+  var refund = provider.Refund(order.PaymentRef, Minor(amount), $"Return on {order.Reference}", "return-" + ret.Id.ToString());
+  ret.RefundRef = refund.RefundRef == "" ? "return-" + ret.Id.ToString() : refund.RefundRef;
+  UnitOfWork.Commit();
+  ReturnLifecycle.CorrelateRefundUpdate(ret.RefundRef ?? "", RefundStatus(refund.State));
+}
+
+/// How many of a line can still be given back — what was bought, less what is already on its way back or refunded.
+public int RefundableOf(OrderLine line) {
+  var back = ReturnLine.Where(r => r.Line == line && r.Return.Status != ReturnStatus.Declined).Sum(r => r.Quantity);
+  return line.Quantity - back;
+}
+
+/// Staff refund PART of an order: `quantity` of one line. Sent already, it is a return — the goods came back (to the
+/// counter, by post, however) and go back in stock when `restock` says so. Not sent yet, the goods turned out not to
+/// be there: they come off what is packed, are not restocked, and the customer is told. Either way the money goes back
+/// through the provider for exactly those lines (less their share of any discount), with a credit note.
+[Authorize(IsShopStaff)]
+public ReturnRequest RefundPart(OrderLine line, int quantity, string reason, bool restock) {
+  var order = line.Order;
+  var sent = IsSent(order);
+  if (!sent && !IsBeingPrepared(order)) { throw new Exception($"{order.Reference} is {order.Status.Label} — only a paid order is refunded."); }
+  if (quantity < 1) { throw new Exception("Choose how many to refund."); }
+  var left = RefundableOf(line);
+  if (quantity > left) { throw new Exception(left <= 0 ? "All of that is refunded already." : $"You can refund {left} more of that."); }
+  // A gift card is refunded only while it is unused — it is voided with the refund.
+  if (line.Kind == LineKind.GiftCard && UnusedCardsOf(line) < quantity) {
+    throw new Exception(UnusedCardsOf(line) == 0 ? "That gift card has been used — it cannot be refunded."
+      : $"Only {UnusedCardsOf(line)} of those gift cards is unused — refund no more than that.");
+  }
+  var ret = new ReturnRequest { Order = order, RequestedAt = DateTime.UtcNow, NotSent = !sent };
+  new ReturnLine { Return = ret, Line = line, Quantity = quantity, Reason = reason.Trim() == "" ? null : reason.Trim() };
+  UnitOfWork.Commit();
+  ReceiveReturn(ret, sent && restock);
+  return ret;
+}
+
+/// Turns a return down, with the reason the customer is mailed. An exchange's replacement is called off with it.
+[Authorize(IsShopStaff)]
+public void DeclineReturn(ReturnRequest ret, string reason) {
+  if (ret.Status != ReturnStatus.Requested) { throw new Exception($"That return is {ret.Status.Label}."); }
+  ReturnLifecycle.RaiseDecline(ret, reason.Trim() == "" ? "It does not meet the shop's returns policy." : reason.Trim());
+  var replacement = ret.Replacement;
+  if (replacement != null && replacement.Status == OrderStatus.Reserved) {
+    OrderLifecycle.RaiseCancel(replacement, "The exchange was declined");
+  }
+}
+
+// ── gift cards and files in a return ─────────────────────────────────────────────────────────────────────────────
+
+/// What a return still to be settled will give back onto an order's gift cards — so two returns received one after the
+/// other never promise the same money twice.
+decimal GiftCardsPending(Order order) {
+  return ReturnRequest.Where(r => r.Order == order && r.Status == ReturnStatus.Refunding).Sum(r => r.GiftCardAmount);
+}
+
+/// How many of the gift cards a line sold are still whole — sent or waiting, nothing spent from them.
+public int UnusedCardsOf(OrderLine line) {
+  return GiftCard.Where(c => c.Line == line).ToList()
+    .Count(c => (c.Status == GiftCardStatus.Active || c.Status == GiftCardStatus.Waiting) && c.Balance == c.Amount);
+}
+
+/// A settled return's lines that were never packed: the gift cards it refunds are voided (the unused ones, as many as
+/// came back), and a file refunded in full stops opening. Called by the return's workflow.
+void SettleNotPackedLines(ReturnRequest ret) {
+  foreach (var l in ret.Lines.ToList()) {
+    if (l.Line.Kind == LineKind.GiftCard) {
+      var line = l.Line;
+      var cards = GiftCard.Where(c => c.Line == line).ToList()
+        .Where(c => (c.Status == GiftCardStatus.Active || c.Status == GiftCardStatus.Waiting) && c.Balance == c.Amount).Take(l.Quantity).ToList();
+      foreach (var c in cards) { GiftCardLife.RaiseRefund(c, $"Refunded with order {ret.Order.Reference}"); }
+    }
+    if (l.Line.Kind == LineKind.Download && RefundableOf(l.Line) <= 0) {
+      var line = l.Line;
+      foreach (var d in Download.Where(x => x.Line == line && x.Status != DownloadStatus.Closed).ToList()) { DownloadAccess.RaiseClose(d); }
+    }
+  }
+}

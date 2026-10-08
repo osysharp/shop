@@ -1,0 +1,82 @@
+// The shop's plain design of the site's FRAME block types (D-SITEFRAME1; the types are the general contract's since part
+// 2 — `Osysharp.Site.Looks`): what staff place in the regions around every page — the strip across the top
+// (`Region("announcement", allow: [Announcement])`) and the footer (`Region("footer", allow: [FooterWords, FooterLink,
+// OpeningHours, Address, FooterSignUp])`, in `StoreFooter`'s `about` slot). They wear the store's theme and nothing else;
+// a look kit draws the same types in its own design. The menu is not blocks — it is `SiteMenu(…)`, a list of links the
+// desk edits as a list.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Ui;
+using Osysharp.Blocks;
+using Osysharp.MailingLists;
+using Osysharp.Site.Looks;
+
+/// One line across the top of every page — free delivery, a cut-off before the holidays, a new collection. Give it
+/// dates on the desk and it comes and goes by itself.
+public component ShopAnnouncement(string words, string more = "", PageLink link = "/") : Announcement {
+  render { StorePromo(words, linkLabel: more, to: link); }
+}
+
+/// A few words about the shop, under its name in the footer.
+public component ShopFooterWords(string words) : FooterWords {
+  render { Text(words, color: Colors.TextMuted, lineHeight: "1.6"); }
+}
+
+/// One link in the footer — a page of the shop, or an address outside it, marked as one.
+public component ShopFooterLink(string words, PageLink link = "/") : FooterLink {
+  render {
+    Link(href: link, label: ShopOutside(link) ? $"{words} (another site)" : words, color: Colors.TextSecondary) {
+      Text(words, fontSize: FontSize.Body);
+      if (ShopOutside(link)) { Icon(Icons.ExternalLink, size: 14); }
+    }
+  }
+}
+
+/// When the shop is open, under a heading.
+public component ShopOpeningHours(string heading = "Opening hours", Markdown hours = "Monday to Friday 8–18  \nSaturday 10–16  \nSunday closed") : OpeningHours {
+  render {
+    Stack(gap: 1, label: "Opening hours") {
+      Text(heading, fontWeight: FontWeight.Semibold);
+      Box(color: Colors.TextMuted) { Markdown(hours); }
+    }
+  }
+}
+
+/// Where the shop is — a street, a town, and a map if there is one.
+public component ShopAddress(string heading = "Find us", string street = "", string town = "", PageLink map = "") : Address {
+  render {
+    Stack(gap: 1, label: "Address") {
+      Text(heading, fontWeight: FontWeight.Semibold);
+      if (street != "") { Text(street, color: Colors.TextMuted); }
+      if (town != "") { Text(town, color: Colors.TextMuted); }
+      if (map != "") {
+        Link(href: map, label: ShopOutside(map) ? "On the map (another site)" : "On the map", color: Colors.TextSecondary) {
+          Text("On the map", textDecoration: TextDecoration.Underline);
+          if (ShopOutside(map)) { Icon(Icons.ExternalLink, size: 14); }
+        }
+      }
+    }
+  }
+}
+
+/// The newsletter's sign-up, small enough for the footer — with the words the reader agrees to, exactly what is kept.
+public component ShopFooterSignup(string heading = "The newsletter", string words = "What is new, once in a while.", string button = "Sign up") : FooterSignUp {
+  string list = "";
+  string consent = "";
+  on mount { list = NewsletterListKey(); consent = NewsletterWords(); }
+  render {
+    if (list != "" && consent != "") {
+      Stack(gap: 2, label: "Newsletter sign-up") {
+        Text(heading, fontWeight: FontWeight.Semibold);
+        Text(words, color: Colors.TextMuted);
+        ListSignupForm(list, consent, source: "footer", button: button);
+      }
+    }
+  }
+}
+
+/// An address outside the shop — http or https.
+public bool ShopOutside(string address) {
+  return address.StartsWith("https://") || address.StartsWith("http://");
+}

@@ -1,0 +1,129 @@
+// What a search engine reads: a sitemap of every listed product and category, robots.txt, and what a product page
+// puts in its head. Served on the store's own address (`[Serve]`), from the store's own rows — nothing to keep in step.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Seo;
+
+/// A product's own address in this store, from `ShopSetup.ProductPath` — in the language it is being read in: a
+/// Swedish page's structured data, a Swedish feed's links and a Swedish sitemap name `/sv/p/kiambu`, the shop's own
+/// language the plain `/p/kiambu`. (A page's canonical is moved into the served language by the platform either way,
+/// and every public page also names its address in each language.)
+public string ProductUrl(Product product) {
+  return App.BaseUrl + InReadersLanguage(App.Setting<ShopSetup>().ProductPath.Replace("{slug}", product.Slug)
+    .Replace("{id}", product.Id.ToString()));
+}
+
+/// `path` as the address of that page in the language being read: unchanged in the shop's own language (the first of
+/// `App.Languages`), under the language's code in any other — `/p/kiambu` → `/sv/p/kiambu`.
+public string InReadersLanguage(string path) {
+  return Session.Language == App.Languages[0] ? path : $"/{Session.Language}{path}";
+}
+
+/// The words a search result shows for a product: its name and the shop's — and its summary, or the start of its story.
+public string ProductHeadTitle(Product product, ShopSettings shop) { return $"{product.Name} | {shop.Name}"; }
+
+public string? ProductHeadDescription(Product product) {
+  if (product.Summary != null && product.Summary.Trim() != "") { return product.Summary.Trim(); }
+  if (product.Description == null) { return null; }
+  var d = product.Description.Trim();
+  return d.Length <= 160 ? d : d.Substring(0, 157).TrimEnd() + "…";
+}
+
+/// The picture a shared link shows — the product's first photograph, at an address anyone can fetch.
+public string? ProductHeadImage(Product product) {
+  var cover = ProductImage.Where(i => i.Product == product).OrderBy(i => i.Rank).FirstOrDefault();
+  return cover == null ? null : App.BaseUrl + File.Url(cover.Path);
+}
+
+/// What a search engine shows beside a product — its price, whether it is in stock, its pictures and brand — as
+/// schema.org Product data for `head { StructuredData = … }`. The price is the lowest a buyer can pay now; the rating
+/// is the add-ons' (`IShopAddOn.Rating` — reviews), and absent when none gives one.
+public SeoProduct ProductStructuredData(Product product) {
+  var shop = TheShop();
+  var variants = Variant.Where(v => v.Product == product).ToList();
+  var prices = variants.Select(v => PriceOf(v)).ToList();
+  var images = ProductImage.Where(i => i.Product == product).OrderBy(i => i.Rank).ToList()
+    .Select(i => App.BaseUrl + File.Url(i.Path)).ToList();
+  return new SeoProduct {
+    Name = product.Name,
+    Description = ProductHeadDescription(product),
+    Image = images.Count == 0 ? null : images,
+    Sku = variants.Select(v => v.Sku).FirstOrDefault(s => s != null && s != ""),
+    Brand = product.Brand == null ? null : new SeoBrand { Name = product.Brand },
+    Url = ProductUrl(product),
+    Offers = new SeoOffer {
+      Price = prices.Count == 0 ? product.Price : prices.Min(),
+      Currency = shop.Currency,
+      Availability = variants.Any(v => v.Stock > 0) ? SeoAvailability.InStock : SeoAvailability.OutOfStock,
+      Url = ProductUrl(product),
+    },
+    Rating = AddOnRating(product),
+  };
+}
+
+/// Every listed product and every category, where a search engine looks for them.
+[Serve("/sitemap.xml")]
+[AllowAnonymous]
+public string ShopSitemap() {
+  var setup = App.Setting<ShopSetup>();
+  var xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">";
+  xml = xml + $"<url><loc>{App.BaseUrl}/</loc></url>";
+  foreach (var c in Category.OrderBy(c => c.Slug).ToList()) {
+    xml = xml + "<url><loc>" + XmlText(App.BaseUrl + setup.CategoryPath.Replace("{slug}", c.Slug).Replace("{id}", c.Id.ToString())) + "</loc></url>";
+  }
+  foreach (var p in Product.Where(p => p.Status == ProductStatus.Listed).OrderBy(p => p.Slug).ToList()) {
+    xml = xml + "<url><loc>" + XmlText(ProductUrl(p)) + "</loc></url>";
+  }
+  return xml + "</urlset>";
+}
+
+/// Crawl the shop, not the parts that are one customer's: the bag, the checkout, accounts, payments and the desk.
+[Serve("/robots.txt")]
+[AllowAnonymous]
+public string ShopRobots() {
+  var checkout = App.Setting<ShopSetup>().CheckoutPath;
+  return "User-agent: *\nDisallow: /account\n"
+       + (checkout == "/checkout" ? "" : $"Disallow: {checkout}\n")
+       + "Disallow: /checkout\nDisallow: /bag\nDisallow: /paid\nDisallow: /staff\nDisallow: /desk\n"
+       + $"Sitemap: {App.BaseUrl}/sitemap.xml\n";
+}
+
+string XmlText(string s) { return s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;"); }
+
+// ── a product that moved ─────────────────────────────────────────────────────────────────────────────────────────
+
+/// An address a product used to have — kept when its slug changes, so a link or a search result pointing at the old
+/// one still arrives (with a 301, which tells a search engine to move its ranking over).
+public entity ProductOldSlug {
+  [Required] Product Product;
+  [Required, Unique, MaxLength(120)] string Slug;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, delete when IsShopStaff;
+  }
+}
+
+/// Changes a product's address — the old one is kept and sent on to the new one.
+[Authorize(IsShopStaff)]
+public void SetProductSlug(Product product, string slug) {
+  var wanted = SlugOf(slug);
+  if (wanted == "") { throw new Exception("An address needs letters or digits."); }
+  if (wanted == product.Slug) { return; }
+  if (Product.Any(p => p.Slug == wanted && p.Id != product.Id)) { throw new Exception($"Another product already lives at '{wanted}'."); }
+  // An address this product (or another) used to have is taken over: it is a live address again.
+  foreach (var old in ProductOldSlug.Where(o => o.Slug == wanted).ToList()) { old.Delete(); }
+  if (!ProductOldSlug.Any(o => o.Slug == product.Slug)) { new ProductOldSlug { Product = product, Slug = product.Slug }; }
+  product.Slug = wanted;
+  UnitOfWork.Commit();
+}
+
+/// Where a product that used to live at `slug` lives now — the path a product page's `head { RedirectTo }` answers
+/// with — or null when no product ever did (or one still does).
+[AllowAnonymous]
+public string? MovedProductPath(string slug) {
+  if (Product.Any(p => p.Slug == slug)) { return null; }
+  var old = ProductOldSlug.FirstOrDefault(o => o.Slug == slug);
+  if (old == null) { return null; }
+  return App.Setting<ShopSetup>().ProductPath.Replace("{slug}", old.Product.Slug).Replace("{id}", old.Product.Id.ToString());
+}

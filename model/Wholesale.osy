@@ -1,0 +1,310 @@
+// Wholesale — business customers buying at a price list. Staff mark an account WHOLESALE, with its VAT number checked
+// against the register, and put it on a price list: its own price per variant (per sold currency where that matters),
+// else a percentage off the retail price; a minimum order if the list says so; and, when the shop lists an invoice way
+// to pay (`ShopSetup.OnlyForWholesale`), payment by invoice with the list's terms — offered to nobody else.
+//
+// ⚑ THE PRICE IS THE BAG OWNER'S, NEVER THE CALLER'S. `LinePrice` asks whose bag it is (`WholesaleOf(bag.Owner)`), so
+//   the checkout (as the customer) and the order's workflow pricing it again (as the shop) reach the same number. A
+//   guest's bag has no owner and is retail; a retail customer's owner has no wholesale row.
+//
+// ⚑ A RETAIL VISITOR NEVER SEES A WHOLESALE PRICE: a price list and its prices are read by staff and by the accounts on
+//   that list, and by nobody else — see SECURITY-INVARIANT(wholesale-prices-are-their-accounts-alone).
+//
+// ⚑ AN ORDER ON INVOICE TERMS GOES OUT BEFORE IT IS PAID. Its workflow takes the stock as sold, issues the invoice
+//   with its due date and moves to `Paid` with no `PaidAt` — the goods are the customer's on credit — and staff record
+//   the payment when the money arrives (`MarkInvoicePaid`). What is owed is `Order.InvoiceDueAt` until then.
+
+namespace Osysharp.Shop;
+
+/// WHO a trade price is for: an account the shop sells to at a price list (`WholesaleAccount`, active) — a fact about
+/// the caller, so a retail shopper's read never asks which list a price is on.
+policy IsShopWholesale => WholesaleAccount.Any(w => w.Account == user && w.Active);
+
+/// A price list for business customers.
+public entity PriceList {
+  /// What staff call it — "Cafés and restaurants".
+  [Required, MaxLength(80)] string Name;
+  /// Off the retail price, in percent, for anything the list gives no price of its own — 0: the retail price.
+  decimal PercentOff = 0;
+  /// The least the goods of one order on this list may come to, in the shop's own currency (converted in a sold one)
+  /// — 0: no minimum.
+  decimal MinimumOrder = 0;
+  /// Days an account on this list has to pay an invoice — 0: it pays as a retail customer does, and is offered no
+  /// invoice.
+  int InvoiceDays = 30;
+  bool Active = true;
+  [ForeignKey(List)] PriceListPrice[] Prices;
+  invariant PercentOff >= 0 && PercentOff < 100 && MinimumOrder >= 0 && InvoiceDays >= 0
+    message "A price list takes off less than all of the price, and its minimum and terms are not negative.";
+  security {
+    // SECURITY-INVARIANT(wholesale-prices-are-their-accounts-alone): a price list — its percentage, its minimum, its
+    //   terms and every price on it — is read by staff and by the accounts on it, and by nobody else. Failure mode: a
+    //   retail customer (or a competitor with an account) reads what the café down the road pays, and the shop's whole
+    //   trade price book is public. Guarded by wholesale.test.osy a_retail_visitor_never_sees_a_wholesale_price.
+    // …and by a counter clerk serving, right now, a customer on it who proved themselves with the code mailed to them
+    //   (Counter.osy) — the sale in front of them is priced at that customer's list, and nobody else's.
+    allow read when IsShopStaff;
+    allow read when IsShopWholesale where WholesaleAccount.Any(w => w.PriceList.Id == Id && w.Account == user && w.Active);
+    allow read when IsShopCounter
+      where CounterCustomer.Any(c => c.PriceList.Id == Id && c.ServedBy == user && c.Status == CounterCustomerStatus.Confirmed);
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// One variant's price on a price list — in the shop's own currency (`Currency` null) or in one it sells in — and the
+/// least an order on the list takes of it.
+public entity PriceListPrice {
+  [Required] PriceList List;
+  [Required] Variant Variant;
+  /// ISO 4217 — null: the shop's own.
+  [MaxLength(3)] string? Currency;
+  /// VAT included, as every price in the shop is (`ShownPrice` shows it without).
+  decimal Price;
+  /// Bought by this many or more — 0: any number.
+  int MinQuantity = 0;
+  invariant Price >= 0 && MinQuantity >= 0 message "A list price and its minimum are not negative.";
+  security {
+    // SECURITY-INVARIANT(wholesale-prices-are-their-accounts-alone) — its list's readers, and nobody else.
+    allow read when IsShopStaff;
+    allow read when IsShopWholesale where WholesaleAccount.Any(w => w.PriceList.Id == List.Id && w.Account == user && w.Active);
+    allow read when IsShopCounter
+      where CounterCustomer.Any(c => c.PriceList.Id == List.Id && c.ServedBy == user && c.Status == CounterCustomerStatus.Confirmed);
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// A customer account that buys wholesale: the price list it buys at, and the VAT number the register confirmed when
+/// staff made it one. Staff's to write; the account reads its own.
+public entity WholesaleAccount {
+  [Required, Unique] ShopAccount Account;
+  [Required] PriceList PriceList;
+  /// Its VAT number as the register confirmed it, with the country prefix — "SE556677889901".
+  [Required, MaxLength(20)] string VatNumber;
+  /// The company, as the register names it — what its invoices are made out to.
+  [MaxLength(200)] string? Company;
+  DateTime CheckedAt;
+  /// It may pay by invoice, with its list's terms.
+  bool PaysByInvoice = true;
+  bool Active = true;
+  security {
+    allow read when IsShopStaff;
+    allow read when IsAuthenticated where Account == user;
+    allow read when IsShopCounter
+      where CounterCustomer.Any(c => c.Account == Account && c.ServedBy == user && c.Status == CounterCustomerStatus.Confirmed);
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// The wholesale terms `account` buys on — null for a guest, a retail customer, or one whose list is not in use. Read
+/// as whoever calls: an account reads its own row, the shop reads every one.
+public WholesaleAccount? WholesaleOf(ShopAccount? account) {
+  if (account == null) { return null; }
+  return WholesaleAccount.Include(w => w.PriceList).FirstOrDefault(w => w.Account == account && w.Active && w.PriceList.Active);
+}
+
+/// What one of `variant` costs on `list`, in the currency of `rate` (null: the shop's own): the list's own price
+/// there, else the retail price there less the list's percentage.
+public decimal WholesalePrice(PriceList list, Variant variant, ExchangeRate? rate) {
+  var code = rate == null ? "" : rate.Currency;
+  var own = PriceListPrice.Where(p => p.List == list && p.Variant == variant).ToList()
+    .FirstOrDefault(p => (p.Currency ?? "") == code);
+  if (own != null) { return own.Price; }
+  var retail = rate == null ? PriceOf(variant) : SoldPrice(variant, rate!);
+  return list.PercentOff <= 0 ? retail : Math.Round(retail * (100m - list.PercentOff) / 100m, 2, MidpointRounding.AwayFromZero);
+}
+
+/// Why `bag` cannot be ordered on its owner's price list as it is — a line under its minimum, the goods under the
+/// list's minimum order — or "" when it can, and always "" for a bag that is not wholesale.
+public string WholesaleProblem(Bag bag) {
+  var w = WholesaleOf(BagCustomer(bag));
+  if (w == null) { return ""; }
+  var list = w.PriceList;
+  var shop = TheShop();
+  var rate = SaleRate(bag.Currency);
+  var mins = PriceListPrice.Where(p => p.List == list && p.MinQuantity > 0).ToList();
+  foreach (var l in bag.Lines.ToList().Where(x => KindOf(x.Variant) == LineKind.Goods)) {
+    var v = l.Variant;
+    // The least any of its rows asks (one per currency, which may each say it).
+    var min = mins.Where(p => p.Variant.Id == v.Id).Select(p => p.MinQuantity).DefaultIfEmpty(0).Max();
+    var have = bag.Lines.ToList().Where(x => x.Variant.Id == v.Id).Sum(x => x.Quantity);
+    if (min > 0 && have < min) { return $"{VariantName(v)} is sold to you by {min} or more. Your bag has {have}."; }
+  }
+  var least = Converted(list.MinimumOrder, rate);
+  var goods = BagGoodsSubtotal(bag);
+  if (least > 0 && goods < least) {
+    var currency = BagCurrency(bag);
+    return $"An order on your price list is at least {MoneyIn(least, currency, shop)}. Add {MoneyIn(least - goods, currency, shop)} more.";
+  }
+  return "";
+}
+
+/// The days `account` has to pay an invoice for an order — 0 when it may not pay by invoice.
+public int InvoiceDaysFor(ShopAccount? account) {
+  var w = WholesaleOf(account);
+  return w == null || !w.PaysByInvoice ? 0 : w.PriceList.InvoiceDays;
+}
+
+/// Whether a way to pay (`key`) is offered to `account`: one the shop keeps for wholesale (`ShopSetup.OnlyForWholesale`)
+/// only to an account that pays by invoice.
+public bool OfferedTo(string key, ShopAccount? account) {
+  if (!App.Setting<ShopSetup>().OnlyForWholesale.Contains(key)) { return true; }
+  return InvoiceDaysFor(account) > 0;
+}
+
+/// An order goes out on invoice terms: what it holds is sold, its invoice issued with the date it is due, and the
+/// customer and the shop told — with nothing paid yet. Called by the order's workflow, as the shop, in place of a payment.
+void GiveTerms(Order order, int days) {
+  foreach (var l in order.Lines.Where(x => x.Held)) { MoveStockAt(order.Location, l.Variant, 0, -l.Quantity); }
+  order.PaymentTermsDays = days;
+  order.InvoiceDueAt = DateTime.UtcNow.AddDays(days);
+  IssueInvoice(order);
+  IssueGiftCards(order);
+  OpenDownloads(order);
+  MailShop(order, $"On invoice — {order.Reference} is ready to pick");
+  TellCustomer(order, $"Confirmed — order {order.Reference}",
+    $"Thank you. Order {order.Reference} is confirmed on your account's terms: the invoice for {OrderMoney(order.Total, order)} is due on "
+    + $"{order.InvoiceDueAt!.Value.ToString("d MMMM yyyy")}. "
+    + (order.Fulfilment == Fulfilment.Deliver ? "We will mail you again when it is on its way." : "We will mail you when it is ready to collect."));
+  Raise(new OrderPaid { Order = order });
+  CountBoughtTogether(order, 1);
+}
+
+/// The money for an invoice has arrived — staff record it, and the order is paid.
+[Authorize(IsShopStaff)]
+public void MarkInvoicePaid(Order order, string how) {
+  if (order.InvoiceDueAt == null) { throw new Exception($"{order.Reference} is not on invoice terms."); }
+  if (order.PaidAt != null) { throw new Exception($"{order.Reference} is paid already."); }
+  order.PaidAt = DateTime.UtcNow;
+  order.PaidWith = how.Trim() == "" ? (order.PaymentLabel ?? "Invoice") : how.Trim();
+  UnitOfWork.Commit();
+}
+
+/// Invoices not paid yet, the oldest due first — what the desk chases.
+[Authorize(IsShopStaff)]
+public List<Order> UnpaidInvoices() {
+  return Order.Where(o => o.InvoiceDueAt != null && o.PaidAt == null && o.Status != OrderStatus.Voided && o.Status != OrderStatus.Refunded)
+    .OrderBy(o => o.InvoiceDueAt).ToList();
+}
+
+// ── what a wholesale customer's pages show ───────────────────────────────────────────────────────────────────────
+
+/// A price list as the account on it reads it — what a store's pages show its prices from, while they render.
+public class PriceListView {
+  public string Name = "";
+  public string Company = "";
+  public decimal PercentOff = 0;
+  public decimal MinimumOrder = 0;
+  public int InvoiceDays = 0;
+  public List<ListPriceView> Prices = [];
+}
+
+public class ListPriceView {
+  public Guid Variant;
+  /// "" for the shop's own.
+  public string Currency = "";
+  public decimal Price = 0;
+  public int MinQuantity = 0;
+}
+
+/// The caller's price list, or null — a guest, a retail customer, or staff browsing as themselves.
+[AllowAnonymous]
+public PriceListView? MyPriceList() {
+  var w = WholesaleOf(Session.CurrentUser);
+  if (w == null) { return null; }
+  var list = w.PriceList;
+  return new PriceListView {
+    Name = list.Name, Company = w.Company ?? "", PercentOff = list.PercentOff, MinimumOrder = list.MinimumOrder,
+    InvoiceDays = w.PaysByInvoice ? list.InvoiceDays : 0,
+    Prices = PriceListPrice.Where(p => p.List == list).ToList()
+      .Select(p => new ListPriceView { Variant = p.Variant.Id, Currency = p.Currency ?? "", Price = p.Price, MinQuantity = p.MinQuantity }).ToList(),
+  };
+}
+
+/// What one of a variant costs a wholesale customer, from the list they read (`MyPriceList`) and its retail price in
+/// the same currency (`currency` "" for the shop's own) — pure, so a page may call it while it renders. `list` null:
+/// the retail price.
+public decimal ListUnit(PriceListView? list, Guid variant, decimal retail, string currency) {
+  if (list == null) { return retail; }
+  var own = list.Prices.FirstOrDefault(p => p.Variant == variant && p.Currency == currency);
+  if (own != null) { return own.Price; }
+  return list.PercentOff <= 0 ? retail : Math.Round(retail * (100m - list.PercentOff) / 100m, 2, MidpointRounding.AwayFromZero);
+}
+
+/// The least of a variant a wholesale customer's order takes — 0 for any number.
+public int ListMinimum(PriceListView? list, Guid variant) {
+  if (list == null) { return 0; }
+  return list.Prices.Where(p => p.Variant == variant).Select(p => p.MinQuantity).DefaultIfEmpty(0).Max();
+}
+
+// ── the desk ────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A new price list, or one changed. Answers it.
+[Authorize(IsShopStaff)]
+public PriceList SavePriceList(PriceList? list, string name, decimal percentOff, decimal minimumOrder, int invoiceDays) {
+  if (name.Trim() == "") { throw new Exception("A price list needs a name."); }
+  if (percentOff < 0 || percentOff >= 100) { throw new Exception("The percentage off is from 0 to under 100."); }
+  if (minimumOrder < 0 || invoiceDays < 0) { throw new Exception("A minimum and the days to pay are not negative."); }
+  var l = list ?? new PriceList { Name = name.Trim() };
+  l.Name = name.Trim();
+  l.PercentOff = percentOff;
+  l.MinimumOrder = minimumOrder;
+  l.InvoiceDays = invoiceDays;
+  UnitOfWork.Commit();
+  return l;
+}
+
+/// Sets a variant's price on a list, in `currency` ("" for the shop's own), and the least an order takes of it. A
+/// price below zero takes the variant off the list (it then costs the retail price less the list's percentage).
+[Authorize(IsShopStaff)]
+public void SetListPrice(PriceList list, Variant variant, string currency, decimal price, int minQuantity) {
+  var code = currency.Trim().ToUpper();
+  if (code != "" && code != TheShop().Currency && !ExchangeRate.Any(r => r.Currency == code && r.Sold)) {
+    throw new Exception($"The shop does not sell in {code}.");
+  }
+  if (code == TheShop().Currency) { code = ""; }
+  if (minQuantity < 0) { throw new Exception("A minimum is not negative."); }
+  var there = PriceListPrice.Where(p => p.List == list && p.Variant == variant).ToList().FirstOrDefault(p => (p.Currency ?? "") == code);
+  if (price < 0) {
+    if (there != null) { there.Delete(); }
+  } else if (there == null) {
+    new PriceListPrice { List = list, Variant = variant, Currency = code == "" ? null : code, Price = price, MinQuantity = minQuantity };
+  } else {
+    there.Price = price;
+    there.MinQuantity = minQuantity;
+  }
+  UnitOfWork.Commit();
+}
+
+/// Makes a customer's account a wholesale one on `list` — its VAT number checked against the register now, as the
+/// checkout checks a business buyer's (`ShopSetup.VatNumbers`). Answers the company the register names. An account
+/// already wholesale moves to the list, and its number is checked again.
+[Authorize(IsShopStaff)]
+public string MakeWholesale(ShopAccount account, PriceList list, string vatNumber, bool paysByInvoice) {
+  var cleaned = vatNumber.Replace(" ", "").Replace("-", "").Replace(".", "").ToUpper();
+  if (cleaned.Length < 4 || !IsEuPrefix(cleaned.Substring(0, 2))) { throw new Exception("Write the VAT number with its country prefix — SE556677889901."); }
+  var check = App.Setting<ShopSetup>().VatNumbers;
+  if (check == null) { throw new Exception("The shop has no VAT register to check a number against (ShopSetup.VatNumbers)."); }
+  VatNumberResult result;
+  try { result = check.Check(cleaned.Substring(0, 2), cleaned.Substring(2)); }
+  catch (Exception ex) { throw new Exception("The VAT register cannot be reached just now — try again shortly."); }
+  if (!result.Valid) { throw new Exception($"{cleaned} is not a valid VAT number in the register."); }
+  var w = WholesaleAccount.FirstOrDefault(x => x.Account == account);
+  if (w == null) { w = new WholesaleAccount { Account = account, PriceList = list, VatNumber = cleaned, CheckedAt = DateTime.UtcNow }; }
+  w.PriceList = list;
+  w.VatNumber = cleaned;
+  w.Company = result.Name == "" ? null : result.Name;
+  w.CheckedAt = DateTime.UtcNow;
+  w.PaysByInvoice = paysByInvoice;
+  w.Active = true;
+  UnitOfWork.Commit();
+  return result.Name == "" ? cleaned : result.Name;
+}
+
+/// The account buys at retail again. Its orders keep what they were sold at.
+[Authorize(IsShopStaff)]
+public void EndWholesale(ShopAccount account) {
+  var w = WholesaleAccount.FirstOrDefault(x => x.Account == account);
+  if (w == null) { return; }
+  w.Active = false;
+  UnitOfWork.Commit();
+}

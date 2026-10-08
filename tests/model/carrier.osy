@@ -1,0 +1,58 @@
+using Osysharp.Delivery;
+
+/// A carrier written in the test app, as anyone can: it books a parcel and answers a tracking number, a link and a
+/// label — what PostNord or any other carrier answers — without reaching anywhere.
+public class FakeCarrier : IDeliveryProvider {
+  public string Key { get; set; } = "courier";
+  public string Name { get; set; } = "Courier";
+  public bool IsReady() { return true; }
+  public List<DeliveryOption> Quote(DeliveryQuoteRequest request) {
+    return [new DeliveryOption { Id = "courier", Label = "Courier", Price = 5000, NeedsAddress = true },
+            new DeliveryOption { Id = "locker", Label = "Parcel locker", Price = 3000, NeedsAddress = true, ChoosePoint = true }];
+  }
+  /// Two lockers near any post code; none for the courier to the door.
+  public List<PickupPoint> PickupPoints(string optionId, DeliveryAddress near) {
+    if (optionId != "locker") { return []; }
+    return [new PickupPoint { Id = "LK-" + near.PostCode + "-1", Name = "Locker at the station", Street = "Station Square 1",
+                              PostCode = near.PostCode, City = near.City, Country = near.Country, DistanceMetres = 350,
+                              OpeningHours = "Mon–Sun 06:00–23:00" },
+            new PickupPoint { Id = "LK-" + near.PostCode + "-2", Name = "Locker at the library", Street = "Library Lane 4",
+                              PostCode = near.PostCode, City = near.City, Country = near.Country, DistanceMetres = 1200 }];
+  }
+  public Shipment Ship(ShipmentRequest request) {
+    // The point it was handed goes in the tracking number, where a test can read it.
+    return new Shipment { TrackingNumber = "TRK-" + request.Reference + "-" + Convert.ToString(request.WeightGrams)
+                            + (request.PickupPoint == null ? "" : "@" + request.PickupPoint.Id),
+                          // The customs it was handed, echoed where a test can read them: HS code × quantity, and who exports.
+                          TrackingUrl = "https://track.example/" + request.Reference
+                            + (request.Customs.Count == 0 ? "" : "?customs=" + string.Join(",", request.Customs.Select(c => $"{c.HsCode}x{c.Quantity}-{c.OriginCountry}-{c.Value.ToString("0")}")) + "&eori=" + request.ExporterId)
+                            + (request.MinimumAge > 0 ? "#age=" + Convert.ToString(request.MinimumAge) : "")
+                            // Where it was sent from, when that is not this carrier's own sender (a shop's second location).
+                            + (request.SendFrom == null ? "" : "#from=" + request.SendFrom!.PostCode),
+                          Label = Text.ToBytes("%PDF-fake label") };
+  }
+  public bool MakesLabels() { return true; }
+  public bool BooksPickups() { return true; }
+
+  public PickupBooking? BookPickup(PickupRequest request) {
+    return new PickupBooking { Reference = $"PU-{request.Date.ToString("yyyyMMdd")}-{request.Parcels}",
+                               Url = "https://pickup.example/" + request.Reference + (request.SendFrom == null ? "" : "?from=" + request.SendFrom!.PostCode) };
+  }
+
+  public ReturnShipment? BookReturn(ReturnShipmentRequest request) {
+    // A parcel from a locker goes back with a printed label; one from the door with a code shown at the counter.
+    if (request.OriginalOptionId == "locker") {
+      return new ReturnShipment { TrackingNumber = "RET-" + request.OriginalTrackingNumber, TrackingUrl = "https://track.example/return/" + request.Reference,
+                                  Label = Text.ToBytes("%PDF-fake return label " + request.Reference) };
+    }
+    return new ReturnShipment { TrackingNumber = "RET-" + request.OriginalTrackingNumber, DropOffCode = "CODE-" + request.Reference,
+                                TrackingUrl = "https://track.example/return/" + request.Reference, QrCode = Convert.FromBase64String(QrPng) };
+  }
+  /// A real PNG, so a page showing the code can be looked at.
+  const string QrPng = "iVBORw0KGgoAAAANSUhEUgAAAFQAAABUCAAAAAA5AE8dAAAAbUlEQVR4nOXRMQoAIAwDQP//afUFHYSAR7J06hHIWkP2zcsdU45abQ3UaGmhVlsDNVpaqNXWQI2W/6Gvj+MtRyNgOeqs76ARsBx11nfQCFiOOus7aAQsR531HTQClqPO+g4aActRZ30HjYDd6AEJjzR1Go3A8gAAAABJRU5ErkJggg==";
+  /// A parcel it booked has arrived by the time anyone asks — the carrier that says so.
+  public TrackingStatus Track(string trackingNumber) {
+    return new TrackingStatus { State = trackingNumber.StartsWith("TRK-") ? DeliveryState.Delivered : DeliveryState.InTransit };
+  }
+  public List<DeliveryEvent> HandleEvent(string body, Dictionary<string, string> headers) { return []; }
+}

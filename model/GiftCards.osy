@@ -1,0 +1,1237 @@
+// Gift cards — sold like any product, paid like any order, and spent at the checkout beside any way to pay.
+//
+// ⚑ A GIFT CARD IS MONEY THE SHOP OWES, NOT A SALE. By default selling one is a MULTI-purpose voucher (EU VAT Directive
+//   2006/112/EC art. 30a(3) and 30b(2), as amended by Directive 2016/1065): it carries no VAT and is not revenue — it is
+//   a liability until it is spent, and the goods it pays for carry their VAT then, at their own rate, as if paid in
+//   money. So a gift card line is left out of the order's VAT rows, its sale is kept apart (`Order.GiftCardsSold`), and
+//   spending one is a means of PAYMENT (`Order.GiftCardUsed`, like store credit), never money off.
+//
+// ⚑ …OR A SINGLE-PURPOSE ONE, when the shop says so (`ShopSettings.GiftCardsAreSinglePurpose`, D-GIFTCARD-SPV1): a card
+//   for goods at ONE rate in ONE country, whose VAT is known when it is sold (art. 30a(2)). Then its VAT, at the
+//   standard rate, is due on the SALE (art. 30b(1): each transfer of it is the supply of the goods) — the card line
+//   carries it in the order's VAT rows (`Order.GiftCardsSoldVat`) — and the goods it pays for later carry no second
+//   VAT: the part of an order a single-purpose card pays is out of its VAT rows (`Order.SinglePurposeUsed`, with the
+//   VAT already paid on it in `Order.VoucherVat`). Each card keeps the kind it was SOLD as (`GiftCard.SinglePurpose`),
+//   so changing the setting never re-books a card already out there. A card staff GIVE is always multi-purpose: nothing
+//   was paid for it, so no VAT fell due, and what it buys carries its VAT (D-GIFTCARD-FREECARDS1).
+//
+// ⚑ THE CODE IS NEVER STORED, AND NO CARD IS EVER LISTED. A card is found by the keyed fingerprint of its code
+//   (`Security.Fingerprint`, D-FINGERPRINT1), and a card row is the desk's to read — a buyer reads the cards they bought
+//   without their balance. So a shopper who types a code cannot look the card up themselves: they ASK (`GiftCardCheck`),
+//   and the shop's own workflow answers, as the shop. Until a card is mailed its code is sealed with the app's key
+//   (`Crypto.Encrypt`) for the mail that carries it, and then it is gone: a lost code is replaced, never read back.
+//
+// ⚑ A BALANCE MOVES ONLY THROUGH THE SHOP'S WORKFLOWS, as store credit's does: the order's (spending, giving back,
+//   issuing what was sold), a card's own (sending, expiring, voiding) and a desk change's (staff issue, adjust, void,
+//   replace — each a `GiftCardChange` row the ledger names). No principal holds a create or update rule on a card or
+//   its ledger, so no function, page or API call can mint a card or top one up.
+//
+// ⚑ THE ORDER OF PAYMENT AT A CHECKOUT: discount codes come off the price first (they are money off, and the VAT is on
+//   what is left); then gift cards pay, the one that expires first first; then store credit (which does not expire);
+//   then the way to pay the customer chose, for the rest. Neither a gift card nor store credit pays for a gift card.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Workflow;
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum GiftCardStatus {
+  /// Bought to be sent on a date — its code waits, sealed, for the mail that carries it.
+  [Label("Waiting to be sent")] Waiting,
+  [Label("Active")] Active,
+  [Label("Expired")] Expired,
+  [Label("Voided")] Voided,
+}
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+/// Why money went back to a card or to store credit — a fact, said in the reader's language when the ledger is read
+/// (D-RTL2 Q2). ⚠ Appended, never inserted: an enum is stored by position.
+public enum GiveBackCause {
+  [Label("Refunded")] Refunded,
+  [Label("Not paid in time")] NotPaidInTime,
+  [Label("Cancelled")] Cancelled,
+  [Label("Voided")] Voided,
+  [Label("Returned")] Returned,
+}
+
+public enum GiftCardEntryKind {
+  /// Paid for in an order.
+  [Label("Sold")] Sold,
+  /// Given by staff, with their reason.
+  [Label("From the shop")] Issued,
+  [Label("Spent")] Spent,
+  /// Given back — an order it paid was called off or refunded, or part of it came back.
+  [Label("Given back")] Refunded,
+  /// Changed by staff, with their reason.
+  [Label("Adjusted")] Adjusted,
+  [Label("Voided")] Voided,
+  [Label("Expired")] Expired,
+  /// Its own sale was refunded — the money went back to whoever paid for it, on the credit note — so what was on it is
+  /// not written off as income: the shop owes it no longer because it gave the money back.
+  [Label("Sale refunded")] SaleRefunded,
+  /// Moved to a new card in the shop's own currency, at the rate the card was sold at — its currency is no longer sold
+  /// (`ReissueGiftCard`). Not a write-off and not a sale: the same debt, on another card.
+  [Label("Reissued")] Reissued,
+}
+
+// SECURITY-INVARIANT(a-gift-card-is-checked-never-listed): a card row is the desk's — nobody else reads its balance or
+//   its fingerprint, and nobody at all reads its sealed code. The buyer reads the cards THEY bought (to whom, when,
+//   for how much), never what is left on them. A shopper who holds a code learns about THAT card only by asking the
+//   shop (`GiftCardCheck`), whose workflow answers as the shop. Guarded by gift-cards.test.osy
+//   nobody_lists_gift_cards_and_a_buyer_never_reads_a_balance.
+// SECURITY-INVARIANT(a-gift-card-balance-moves-only-through-the-shop): no principal may create, change or delete a card
+//   or its ledger. Cards are minted by the order's workflow (what was paid for) and by a desk change's (what staff
+//   issued); a balance moves only in the shop's workflows — spent at placing, given back when an order is called off
+//   or refunded, adjusted or voided by staff through a recorded `GiftCardChange`, written off at expiry. `[ConcurrencyCheck]`
+//   makes two spends of the same card meet, and `invariant Balance >= 0` refuses the second at commit. Guarded by
+//   gift-cards.test.osy a_customer_cannot_mint_or_top_up_a_gift_card and two_checkouts_cannot_spend_one_card_twice.
+public entity GiftCard {
+  /// `Security.Fingerprint` of the code as typed and normalised — what a code is looked up by.
+  [Required, Unique, MaxLength(64)] string CodeHash;
+  /// The code's last four characters, so a customer and staff can tell cards apart: "…7K2Q".
+  [Required, MaxLength(4)] string Last4;
+  /// What it was issued for.
+  decimal Amount;
+  /// The ONE currency it is in (ISO 4217) — the currency of the order that sold it; null: the shop's own. It pays only
+  /// for an order in that currency (D-SELLCURRENCY1): converting it at each day's rate would make a card worth a
+  /// different amount every day, which nobody who gave one meant.
+  [MaxLength(3)] string? Currency;
+  /// How many of `Currency` one unit of the shop's own bought when it was sold — the rate its debt is booked at.
+  [Precision(18, 8)] decimal Rate = 1;
+  /// Sold as a SINGLE-purpose voucher: its VAT (`VatPercent`) was charged on the sale, so what it pays for carries none.
+  /// False: a multi-purpose voucher — no VAT when sold, the goods' own when spent. Fixed when the card is made.
+  bool SinglePurpose = false;
+  /// The rate of the VAT its sale carried — 0 for a multi-purpose card.
+  decimal VatPercent = 0;
+  /// What is left on it — the balance after the last entry, kept beside the ledger for what two spends meet on.
+  [ConcurrencyCheck] decimal Balance = 0;
+  DateTime IssuedAt;
+  /// The first moment it no longer pays: the end of its last day, in the shop's time zone.
+  DateTime ExpiresAt;
+  GiftCardStatus Status;                             // no default — GiftCardLife owns it
+  /// The order that sold it, and the line — null for a card staff issued.
+  Order? SoldWith;
+  OrderLine? Line;
+  /// Who bought it — reads their own cards (not their balance) on their account.
+  ShopAccount? Buyer;
+  /// Who it is from and for, and the buyer's message — printed in the mail that carries it.
+  [MaxLength(120)] string? FromName;
+  [MaxLength(120)] string? ToName;
+  /// Where the card is mailed: the recipient, or the buyer when they named nobody.
+  [Required, MaxLength(200)] string SendTo;
+  [MaxLength(500)] string? Message;
+  /// When it is to be mailed — null: as soon as it is paid.
+  DateTime? SendAt;
+  DateTime? SentAt;
+  /// The code, sealed with the app's key, until the mail that carries it is sent — then gone.
+  [MaxLength(600)] string? SealedCode;
+  /// For a card staff issued: who, and why.
+  ShopAccount? IssuedBy;
+  [MaxLength(300)] string? Reason;
+  /// Reissued in the shop's own currency (its own was no longer sold): the card that carries its balance now, and on
+  /// that card, the one it came from.
+  GiftCard? ReissuedAs;
+  GiftCard? ReissuedFrom;
+  [ForeignKey(Card)] GiftCardEntry[] Entries;
+  invariant Balance >= 0 message "A gift card cannot go below nothing.";
+  security {
+    allow read when IsAuthenticated where Buyer == user;
+    allow read when IsShopStaff;
+    deny read Balance, CodeHash, IssuedBy, Reason when !IsShopStaff;
+    // Nobody reads a code — not staff either. The shop's workflow opens it once, to mail it.
+    deny read SealedCode;
+  }
+}
+
+/// One change to a card's balance — added, never edited. The desk's to read.
+public entity GiftCardEntry {
+  [Required] GiftCard Card;
+  /// Signed: what was added, or (negative) taken.
+  decimal Amount;
+  decimal BalanceAfter;
+  [Required] GiftCardEntryKind Kind;
+  /// The reason staff gave, as they gave it — never a sentence the shop writes: what the shop did is said from the
+  /// facts below when the ledger is read (`GiftCardNote`), in the reader's language.
+  [MaxLength(300)] string? Note;
+  Order? Order;
+  ReturnRequest? Return;
+  /// Why it was given back, for a `Refunded` entry — and whether onto a NEW card (the one it was paid with had ended).
+  GiveBackCause? Cause;
+  bool OntoNewCard;
+  /// Staff who made the change, for an issue, an adjustment or a void.
+  ShopAccount? By;
+  DateTime At;
+  invariant BalanceAfter >= 0 message "A gift card cannot go below nothing.";
+  security {
+    allow read when IsShopStaff;
+  }
+}
+
+/// What a bag's gift card line is: the amount (for a card whose buyer chooses it), and who it is for.
+///
+/// ⚑ THE CUSTOMER'S TO WRITE — it is their gift. What a card COSTS is still the shop's: a card of a fixed amount costs
+///   its variant's price whatever is written here, and a chosen amount must lie between the shop's bounds or the order
+///   is refused (`PriceBag`). A card is worth exactly what was paid for it, so nothing written here buys more.
+public entity GiftCardChoice {
+  [Required, Unique] BagLine Line;
+  /// The chosen amount — used only for a variant with `AnyAmount`.
+  decimal Amount;
+  [MaxLength(120)] string? FromName;
+  [MaxLength(120)] string? ToName;
+  /// Empty: the card is mailed to the buyer.
+  [MaxLength(200)] string? ToEmail;
+  [MaxLength(500)] string? Message;
+  /// When to mail it — null: as soon as the order is paid.
+  DateOnly? SendOn;
+  security {
+    allow create, update, delete when IsAnonymous || IsAuthenticated
+      where Line.Bag.Owner == null && Line.Bag.VisitId == Visitor.Id
+         || Line.Bag.Owner == user;
+    allow create, update, delete when IsShopCounter where Line.Bag.Owner == null && Line.Bag.AtCounter && SellsAt(Line.Bag.SoldAt);
+    allow create, update, delete when IsShopStaff;
+    allow read when IsAnonymous || IsAuthenticated
+      where Line.Bag.Owner == null && Line.Bag.VisitId == Visitor.Id
+         || Line.Bag.Owner == user
+         || Line.Bag == ResumeBag.Row;
+    allow read when IsShopCounter where Line.Bag.Owner == null && Line.Bag.AtCounter && SellsAt(Line.Bag.SoldAt);
+    allow read when IsShopStaff;
+    deny read ToEmail, Message when !IsShopStaff where Line.Bag.Owner != null && Line.Bag.Owner != user;
+  }
+}
+
+/// A gift card line of an order: who it is for, copied from the bag when the order is placed. The desk's, and the
+/// buyer's (a recipient's address says who they are giving to).
+public entity GiftCardOrderLine {
+  [Required, Unique] OrderLine Line;
+  decimal Amount;
+  [MaxLength(120)] string? FromName;
+  [MaxLength(120)] string? ToName;
+  [MaxLength(200)] string? ToEmail;
+  [MaxLength(500)] string? Message;
+  DateOnly? SendOn;
+  security {
+    allow create when IsAnonymous || IsAuthenticated
+      where Line.Order.Status == OrderStatus.Placed && (Line.Order.Account == null || Line.Order.Account == user);
+    allow create when IsShopStaff;
+    allow read when IsAuthenticated where Line.Order.Account == user;
+    allow read when IsShopStaff;
+    allow update when IsShopStaff;
+  }
+}
+
+/// A card paid an order: which, and how much — written by the order's workflow as it takes the money. The customer
+/// reads their own order's, without which card it was.
+public entity OrderGiftCard {
+  [Required] Order Order;
+  [Required] GiftCard Card;
+  [Required, MaxLength(4)] string Last4;
+  decimal Amount;
+  /// Of `Amount`, what has gone back on the card (or onto a new one).
+  decimal Returned = 0;
+  security {
+    // SECURITY-INVARIANT(an-order-reads-through-its-link): its order's readers, and nobody else.
+    allow read when IsAnonymous || IsAuthenticated
+      where Order.Account == user
+         || Order.VisitId == Visitor.Id
+         || Order == OrderLink.Row
+         || Order == Pay.Row;
+    allow read when IsShopPacker where PacksAt(Order.Location);
+    allow read when IsShopCounter where SellsAt(Order.Location) && Order.Fulfilment == Fulfilment.Collect;
+    deny read Card when !IsShopStaff;
+  }
+}
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum GiftCardCheckStatus {
+  [Label("Asked")] Asked,
+  [Label("Answered")] Answered,
+}
+
+/// A shopper asks about a code — to see what is on it, or to pay with it. The row is the question; the shop's workflow
+/// writes the answer onto it (and, for a bag, puts the card on the bag), then the asking function reads it and takes
+/// the row away again.
+// SECURITY-INVARIANT(a-gift-card-is-found-only-by-its-code): a card reaches a bag only through this question, answered
+//   by the shop from the code's fingerprint — never from a card the customer names. `BagGiftCard` is written by the
+//   shop alone, and an order spends only the cards on the bag it was placed from, so knowing a card's id (a buyer
+//   does) spends nothing. The fingerprint asked for is the desk's to read, so it cannot be lifted off a question and
+//   replayed. Guarded by gift-cards.test.osy a_buyer_cannot_spend_a_card_they_gave_away_by_its_id.
+public entity GiftCardCheck {
+  [Required, MaxLength(64)] string CodeHash;
+  /// The bag to pay with it — null when the shopper only wants to know what is left.
+  Bag? Bag;
+  ShopAccount? Owner;
+  /// The visit that asked — a guest's question is its own visit's, as its bag is.
+  [MaxLength(64)] string? VisitId;
+  GiftCardCheckStatus Status;                        // no default — GiftCardChecking owns it
+  bool Found = false;
+  decimal Balance = 0;
+  /// The card's currency — null: the shop's own.
+  [MaxLength(3)] string? Currency;
+  DateTime? ExpiresAt;
+  [MaxLength(4)] string? Last4;
+  [MaxLength(300)] string? Problem;
+  security {
+    allow create, read, delete when IsAnonymous || IsAuthenticated
+      where (Owner == null && VisitId == Visitor.Id || Owner == user)
+         && (Bag == null || Bag.Owner == null && Bag.VisitId == Visitor.Id || Bag.Owner == user);
+    allow create, read, delete when IsShopCounter
+      where (Owner == null && VisitId == Visitor.Id || Owner == user)
+         && Bag.Owner == null && Bag.AtCounter && SellsAt(Bag.SoldAt);
+    allow create, read, delete when IsShopStaff;
+    deny read CodeHash when !IsShopStaff;
+  }
+}
+
+/// A card on a bag, to pay with at the checkout — put there by the shop when the shopper's code checked out.
+public entity BagGiftCard {
+  [Required] Bag Bag;
+  [Required] GiftCard Card;
+  [Required, MaxLength(4)] string Last4;
+  /// What was on it when it was checked. The order's workflow takes it from the card's balance as it stands then.
+  decimal Available;
+  /// The card's currency — null: the shop's own. It pays only for a bag bought in it.
+  [MaxLength(3)] string? Currency;
+  DateTime ExpiresAt;
+  /// The card is a single-purpose voucher, its VAT (at `VatPercent`) paid when it was sold — what it pays for then
+  /// carries no second VAT. Copied from the card by the shop, like `Available`.
+  bool SinglePurpose = false;
+  decimal VatPercent = 0;
+  security {
+    allow read, delete when IsAnonymous || IsAuthenticated
+      where Bag.Owner == null && Bag.VisitId == Visitor.Id
+         || Bag.Owner == user;
+    allow read, delete when IsShopCounter where Bag.Owner == null && Bag.AtCounter && SellsAt(Bag.SoldAt);
+    allow read, delete when IsShopStaff;
+    deny read Card when !IsShopStaff;
+  }
+}
+
+public workflow GiftCardChecking {
+  Tracks    = GiftCardCheck.Status;
+  Autostart = true;
+  Initial   = Asked;
+
+  state Asked {
+    enter {
+      AnswerCheck(this.Item);
+      goto Answered;
+    }
+  }
+  terminal success Answered { }
+}
+
+/// The shop answers a question about a code — as the shop, which may read the card.
+void AnswerCheck(GiftCardCheck check) {
+  // The question is the customer's to write, so whatever it says of its own answer is wiped before the shop answers.
+  check.Found = false;
+  check.Balance = 0m;
+  check.Currency = null;
+  check.Last4 = null;
+  check.ExpiresAt = null;
+  check.Problem = null;
+  var card = GiftCard.FirstOrDefault(c => c.CodeHash == check.CodeHash);
+  if (card == null) { check.Problem = "That is not one of our gift cards. Check the code."; return; }
+  check.Found = true;
+  check.Last4 = card.Last4;
+  check.Currency = card.Currency;
+  check.ExpiresAt = card.ExpiresAt;
+  check.Balance = card.Status == GiftCardStatus.Voided || card.Status == GiftCardStatus.Expired ? 0m : card.Balance;
+  if (card.Status == GiftCardStatus.Voided) { check.Problem = "That gift card has been cancelled."; return; }
+  if (card.Status == GiftCardStatus.Expired || card.ExpiresAt <= DateTime.UtcNow) {
+    check.Problem = $"That gift card expired on {LocalDay(card.ExpiresAt.AddSeconds(-1))}."; return;
+  }
+  if (card.Balance <= 0) { check.Problem = "That gift card has been spent."; return; }
+  if (check.Bag == null) { return; }
+  var bag = check.Bag!;
+  // A card pays only for a bag bought in its own currency — never converted.
+  var cardIn = card.Currency ?? TheShop().Currency;
+  if (cardIn != BagCurrency(bag)) {
+    check.Problem = $"That gift card is in {cardIn}, and pays for an order in {cardIn}. Choose {cardIn} at the top of the page to spend it.";
+    return;
+  }
+  var on = BagGiftCard.FirstOrDefault(b => b.Bag == bag && b.Card == card);
+  if (on == null) {
+    new BagGiftCard { Bag = bag, Card = card, Last4 = card.Last4, Available = card.Balance, ExpiresAt = card.ExpiresAt, Currency = card.Currency,
+                      SinglePurpose = card.SinglePurpose, VatPercent = card.VatPercent };
+  } else {
+    on.Available = card.Balance;
+    on.ExpiresAt = card.ExpiresAt;
+    on.SinglePurpose = card.SinglePurpose;
+    on.VatPercent = card.VatPercent;
+  }
+}
+
+/// A day as the shop writes it — "3 October 2027" — in its own time zone.
+string LocalDay(DateTime instant) {
+  return DateOnly.FromDateTime(instant.InZone(TheShop().TimeZone)).ToString("d MMMM yyyy");
+}
+
+/// A code as typed, normalised: case, spaces and dashes do not matter.
+string NormalCardCode(string code) { return code.Trim().ToUpper().Replace(" ", "").Replace("-", ""); }
+
+/// What a code is looked up by. Its own space, so a gift card's fingerprint is never a discount code's.
+string CardHash(string normal) { return Security.Fingerprint($"giftcard|{normal}"); }
+
+/// Asks the shop about a typed code — for a bag to pay with it, or to know what is left — and answers the shop's
+/// answer. The question is taken away once it is read. Throws a sentence for a code that cannot be one.
+GiftCardCheck AskAboutCard(string code, Bag? bag) {
+  var normal = NormalCardCode(code);
+  if (normal.Length != 16) { throw new Exception("A gift card's code is 16 letters and digits, like ABCD-EFGH-JKLM-NPQR."); }
+  var check = new GiftCardCheck { CodeHash = CardHash(normal), Bag = bag, Owner = Session.CurrentUser, VisitId = Visitor.Id };
+  UnitOfWork.Commit();
+  // Answered by the shop's workflow by now.
+  return check;
+}
+
+/// What a code holds, as the customer reads it.
+public class GiftCardBalanceView {
+  public bool Found = false;
+  public string Ending = "";
+  public decimal Balance = 0;
+  /// The card's currency (ISO 4217).
+  public string Currency = "";
+  /// The last day it pays, in the shop's time zone.
+  public string ValidUntil = "";
+  /// Why it cannot be spent — "" when it can.
+  public string Problem = "";
+}
+
+/// What is left on a gift card, by its code — the shopper's own question, answered by the shop.
+[AllowAnonymous]
+public GiftCardBalanceView GiftCardBalance(string code) {
+  var check = AskAboutCard(code, null);
+  var view = new GiftCardBalanceView { Found = check.Found, Ending = check.Last4 ?? "", Balance = check.Balance,
+                                       Currency = check.Currency ?? TheShop().Currency,
+                                       ValidUntil = check.ExpiresAt == null ? "" : LocalDay(check.ExpiresAt!.Value.AddSeconds(-1)),
+                                       Problem = check.Problem ?? "" };
+  check.Delete();
+  UnitOfWork.Commit();
+  return view;
+}
+
+/// Puts a gift card on the caller's bag, to pay with at the checkout. Answers what it holds — "Gift card …7K2Q, 350 kr
+/// to spend" — or throws the sentence to show.
+[AllowAnonymous]
+public string ApplyGiftCard(string code) {
+  var bag = BagFor(true)!;
+  var check = AskAboutCard(code, bag);
+  var problem = check.Problem ?? "";
+  var ending = check.Last4 ?? "";
+  var balance = check.Balance;
+  var currency = check.Currency;
+  check.Delete();
+  UnitOfWork.Commit();
+  if (problem != "") { throw new Exception(problem); }
+  return $"Gift card ending {ending}, {MoneyIn(balance, currency, TheShop())} to spend";
+}
+
+/// The gift cards on the caller's bag, the one that expires first first — those still valid.
+[AllowAnonymous]
+public List<BagGiftCard> BagGiftCards() {
+  var bag = BagFor(false);
+  if (bag == null) { return []; }
+  var now = DateTime.UtcNow;
+  return BagGiftCard.Where(b => b.Bag == bag && b.ExpiresAt > now).OrderBy(b => b.ExpiresAt).ToList();
+}
+
+/// Takes a gift card off the bag.
+[AllowAnonymous]
+public void RemoveGiftCard(BagGiftCard applied) {
+  applied.Delete();
+  UnitOfWork.Commit();
+}
+
+/// One card paying at the checkout: which, how much of it this order takes, and what is left on it after.
+public class GiftCardUse {
+  public string Ending = "";
+  public decimal Amount = 0;
+  public decimal Left = 0;
+  /// A single-purpose card: `Amount` pays for goods whose VAT was paid when the card was sold, at `VatPercent`.
+  public bool SinglePurpose = false;
+  public decimal VatPercent = 0;
+}
+
+/// The VAT inside `gross` at `percent` — to the cent.
+public decimal VatIn(decimal gross, decimal percent) {
+  return percent <= 0 ? 0m : Math.Round(gross * percent / (100m + percent), 2, MidpointRounding.AwayFromZero);
+}
+
+/// The rate a gift card SOLD now carries: the standard rate when the shop sells single-purpose vouchers, else none.
+public decimal CardVatPercent(ShopSettings shop) {
+  return shop.GiftCardsAreSinglePurpose ? shop.VatPercent : 0m;
+}
+
+/// Of `uses`, what single-purpose cards pay — goods whose VAT was paid when those cards were sold.
+public decimal SinglePurposePaid(List<GiftCardUse> uses) {
+  return uses.Where(u => u.SinglePurpose).Sum(u => u.Amount);
+}
+
+/// The VAT already paid (when the cards were sold) inside what single-purpose cards pay of `uses`.
+public decimal VoucherVatOf(List<GiftCardUse> uses) {
+  return uses.Where(u => u.SinglePurpose).Sum(u => VatIn(u.Amount, u.VatPercent));
+}
+
+/// How the gift cards on `bag` pay for `payable` — the one that expires first first, never more than they hold.
+public List<GiftCardUse> GiftCardUses(Bag bag, decimal payable) {
+  List<GiftCardUse> uses = [];
+  var left = Math.Max(payable, 0m);
+  var now = DateTime.UtcNow;
+  var own = TheShop().Currency;
+  var bagIn = BagCurrency(bag);
+  foreach (var b in BagGiftCard.Where(x => x.Bag == bag && x.ExpiresAt > now).OrderBy(x => x.ExpiresAt).ToList()) {
+    if (left <= 0) { break; }
+    // A card put on the bag before its currency changed pays nothing until the bag is back in the card's.
+    if ((b.Currency ?? own) != bagIn) { continue; }
+    var take = Math.Min(b.Available, left);
+    if (take <= 0) { continue; }
+    uses.Add(new GiftCardUse { Ending = b.Last4, Amount = take, Left = b.Available - take, SinglePurpose = b.SinglePurpose,
+                               VatPercent = b.VatPercent });
+    left = left - take;
+  }
+  return uses;
+}
+
+/// What the gift cards on `bag` pay of `payable`.
+public decimal GiftCardsFor(Bag bag, decimal payable) {
+  return GiftCardUses(bag, payable).Sum(u => u.Amount);
+}
+
+/// What an order's receipt and mails say about gift cards and VAT — the cards it SOLD (a multi-purpose voucher carries
+/// none; a single-purpose one carries its VAT on the sale) and the goods single-purpose cards PAID for (no VAT again).
+/// `cite` adds the articles of the VAT Directive, for the receipt. Empty when neither applies.
+public List<string> GiftCardVatSentences(Order order, bool cite) {
+  List<string> said = [];
+  if (order.GiftCardsSold > 0 && order.GiftCardsSinglePurpose) {
+    said.Add($"Gift cards {OrderMoney(order.GiftCardsSold, order)}: a single-purpose voucher — its VAT, {OrderMoney(order.GiftCardsSoldVat, order)}, is paid now, and nothing more when it is spent"
+      + (cite ? " (articles 30a(2) and 30b(1), Council Directive 2006/112/EC)." : "."));
+  } else if (order.GiftCardsSold > 0) {
+    said.Add(cite ? $"Gift cards {OrderMoney(order.GiftCardsSold, order)}: a multi-purpose voucher, sold without VAT — the VAT is charged on the goods it pays for (articles 30a–30b, Council Directive 2006/112/EC)."
+                  : $"Gift cards ({OrderMoney(order.GiftCardsSold, order)}) carry no VAT — it is paid on what they buy.");
+  }
+  if (order.SinglePurposeUsed > 0) {
+    said.Add($"{OrderMoney(order.SinglePurposeUsed, order)} was paid with a single-purpose gift card: its VAT, {OrderMoney(order.VoucherVat, order)}, was paid when the card was bought, so none is charged on it here"
+      + (cite ? " (article 30b(1), Council Directive 2006/112/EC)." : "."));
+  }
+  return said;
+}
+
+/// The key an order paid in full by gift cards (and store credit) is recorded with — no provider takes anything.
+public string GiftCardKey() { return "giftcard"; }
+
+// ── the order's side ────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Why the gift cards an order asks for cannot pay it — "" when they can. Asked by the order's workflow before anything
+/// is taken, against the cards on the bag it was placed from as they stand now.
+string GiftCardProblem(Order order) {
+  if (order.GiftCardUsed <= 0) { return ""; }
+  if (order.PlacedFrom == null) { return "A gift card pays only at the checkout."; }
+  if (order.GiftCardUsed + order.CreditUsed > order.Total - order.GiftCardsSold) {
+    return "A gift card or store credit cannot pay for a gift card.";
+  }
+  var usable = UsableCards(order.PlacedFrom!);
+  var has = usable.Sum(c => c.Balance);
+  if (has < order.GiftCardUsed) {
+    return $"Your gift card holds {OrderMoney(has, order)} now, less than the {OrderMoney(order.GiftCardUsed, order)} this order would take";
+  }
+  // The order's VAT counted what single-purpose cards pay (no second VAT) — the cards must still hold that part.
+  var single = usable.Where(c => c.SinglePurpose).Sum(c => c.Balance);
+  if (single < order.SinglePurposeUsed || has - single < order.GiftCardUsed - order.SinglePurposeUsed) {
+    return $"Your gift card holds {OrderMoney(has, order)} now, less than the {OrderMoney(order.GiftCardUsed, order)} this order would take";
+  }
+  return "";
+}
+
+/// The cards on `bag` that can pay now, the one that expires first first.
+List<GiftCard> UsableCards(Bag bag) {
+  var now = DateTime.UtcNow;
+  var own = TheShop().Currency;
+  var bagIn = BagCurrency(bag);
+  var cards = BagGiftCard.Where(b => b.Bag == bag).Select(b => b.Card).ToList();
+  return cards.Where(c => (c.Status == GiftCardStatus.Active || c.Status == GiftCardStatus.Waiting) && c.ExpiresAt > now && c.Balance > 0
+                          && (c.Currency ?? own) == bagIn)
+              .OrderBy(c => c.ExpiresAt).ToList();
+}
+
+/// Takes what an order asked of its gift cards — called by the order's workflow once `GiftCardProblem` said yes.
+void TakeGiftCards(Order order) {
+  if (order.GiftCardUsed <= 0 || order.PlacedFrom == null) { return; }
+  // Single-purpose cards pay exactly the part the order's VAT was worked out for; multi-purpose ones the rest.
+  var singleLeft = order.SinglePurposeUsed;
+  var multiLeft = order.GiftCardUsed - order.SinglePurposeUsed;
+  foreach (var card in UsableCards(order.PlacedFrom!)) {
+    var left = card.SinglePurpose ? singleLeft : multiLeft;
+    if (left <= 0) { continue; }
+    var take = Math.Min(card.Balance, left);
+    PostGiftCard(card, -take, GiftCardEntryKind.Spent, null, order, null, null);
+    new OrderGiftCard { Order = order, Card = card, Last4 = card.Last4, Amount = take };
+    if (card.SinglePurpose) { singleLeft = singleLeft - take; } else { multiLeft = multiLeft - take; }
+  }
+  order.GiftCardTaken = true;
+}
+
+/// Changes a card's balance by `amount` and writes the entry that says why. Called by the shop's workflows only.
+void PostGiftCard(GiftCard card, decimal amount, GiftCardEntryKind kind, string? note, Order? order, ReturnRequest? ret,
+                  ShopAccount? by, GiveBackCause? cause = null, bool ontoNewCard = false) {
+  if (amount == 0 && kind != GiftCardEntryKind.Voided && kind != GiftCardEntryKind.Expired && kind != GiftCardEntryKind.SaleRefunded) { return; }
+  var after = card.Balance + amount;
+  if (after < 0) {
+    throw new Exception($"That would take {MoneyIn(-amount, card.Currency, TheShop())} from a gift card holding {MoneyIn(card.Balance, card.Currency, TheShop())}.");
+  }
+  card.Balance = after;
+  new GiftCardEntry { Card = card, Amount = amount, BalanceAfter = after, Kind = kind, Note = note, Order = order, Return = ret,
+                      By = by, Cause = cause, OntoNewCard = ontoNewCard, At = DateTime.UtcNow };
+}
+
+/// Gives back up to `amount` of what an order took from its gift cards and has not yet given back — onto the same
+/// cards; a card that has since expired or been voided pays its part onto a NEW card, mailed to whoever placed the
+/// order. Answers what was given back. Called by the order's and the return's workflows.
+decimal GiveGiftCardsBack(Order order, decimal amount, GiveBackCause why, ReturnRequest? ret) {
+  var left = Math.Min(amount, order.GiftCardUsed - order.GiftCardReturned);
+  if (left <= 0) { return 0m; }
+  var given = 0m;
+  decimal toNewCard = 0m;
+  // What goes onto a NEW card keeps the kind of the card it came from — a single-purpose card's VAT was paid.
+  decimal toNewSingle = 0m;
+  decimal singleVat = 0m;
+  foreach (var used in OrderGiftCard.Where(u => u.Order == order).Include(u => u.Card).ToList()) {
+    if (left <= 0) { break; }
+    var back = Math.Min(used.Amount - used.Returned, left);
+    if (back <= 0) { continue; }
+    used.Returned = used.Returned + back;
+    left = left - back;
+    given = given + back;
+    var card = used.Card;
+    // A single-purpose card's part carried no VAT on this order: the return's credit note gives none of it back.
+    if (card.SinglePurpose && ret != null) {
+      ret!.SinglePurposeBack = ret!.SinglePurposeBack + back;
+      ret!.VoucherVatBack = ret!.VoucherVatBack + VatIn(back, card.VatPercent);
+    }
+    if (card.Status == GiftCardStatus.Active || card.Status == GiftCardStatus.Waiting) {
+      PostGiftCard(card, back, GiftCardEntryKind.Refunded, null, order, ret, null, why);
+    } else if (card.SinglePurpose) {
+      toNewSingle = toNewSingle + back;
+      singleVat = card.VatPercent;
+    } else {
+      toNewCard = toNewCard + back;
+    }
+  }
+  var contact = order.Contact.FirstOrDefault();
+  if (contact != null && contact.Email.Contains("@")) {
+    if (toNewCard > 0) {
+      NewGiftCard(toNewCard, GiftCardEntryKind.Refunded, null,
+                  order, null, order.Account, null, contact.Email, contact.Name, null, $"What came back from order {order.Reference}.",
+                  null, null, ret, why, true);
+    }
+    if (toNewSingle > 0) {
+      var again = NewGiftCard(toNewSingle, GiftCardEntryKind.Refunded, null,
+                              order, null, order.Account, null, contact.Email, contact.Name, null, $"What came back from order {order.Reference}.",
+                              null, null, ret, why, true);
+      again.SinglePurpose = true;
+      again.VatPercent = singleVat;
+    }
+  }
+  order.GiftCardReturned = order.GiftCardReturned + given;
+  return given;
+}
+
+/// A card of `amount`, minted by the shop — its code made here, sealed for the mail, and never stored. Called by the
+/// shop's workflows only; its own workflow (GiftCardLife) mails it, now or on its date.
+GiftCard NewGiftCard(decimal amount, GiftCardEntryKind how, string? note, Order? order, OrderLine? line, ShopAccount? buyer,
+                     ShopAccount? by, string sendTo, string? toName, string? fromName, string? message, DateOnly? sendOn,
+                     string? reason, ReturnRequest? ret, GiveBackCause? cause = null, bool ontoNewCard = false) {
+  var shop = TheShop();
+  var code = NewCardCode();
+  var normal = NormalCardCode(code);
+  var today = DateOnly.FromDateTime(DateTime.UtcNow.InZone(shop.TimeZone));
+  // Valid to the end of the day, the shop's months from today.
+  var expires = shop.TimeZone.Resolve(today.AddMonths(Math.Max(shop.GiftCardMonths, 12)).AddDays(1), TimeOnly.MinValue);
+  // In the currency of the order it comes from (sold with it, or given back to it) — booked at its invoice's rate.
+  var invoice = order == null ? null : Invoice.FirstOrDefault(i => i.Order == order);
+  var card = new GiftCard {
+    CodeHash = CardHash(normal), Last4 = normal.Substring(12, 4), Amount = amount, Balance = 0m,
+    Currency = order == null ? null : order.Currency, Rate = order == null ? 1m : invoice != null ? invoice.Rate : order.Rate,
+    IssuedAt = DateTime.UtcNow, ExpiresAt = expires, SoldWith = order, Line = line, Buyer = buyer,
+    FromName = fromName, ToName = toName, SendTo = sendTo.Trim().ToLower(), Message = message,
+    SendAt = sendOn == null || sendOn!.Value <= today ? null : shop.TimeZone.Resolve(sendOn!.Value, new TimeOnly(8, 0)),
+    SealedCode = Crypto.Encrypt(code), IssuedBy = by, Reason = reason,
+  };
+  PostGiftCard(card, amount, how, note, order, ret, by, cause, ontoNewCard);
+  return card;
+}
+
+/// A new card's code: 16 characters from an alphabet without look-alikes (no 0/O, 1/I), in four groups of four —
+/// 80 random bits, so guessing one is out of the question.
+string NewCardCode() {
+  var alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  var hex = "0123456789abcdef";
+  var random = Security.RandomHex(32).ToLower();
+  var code = "";
+  for (var i = 0; i < 16; i = i + 1) {
+    var b = hex.IndexOf(random.Substring(i * 2, 1)) * 16 + hex.IndexOf(random.Substring(i * 2 + 1, 1));
+    if (i > 0 && i % 4 == 0) { code = code + "-"; }
+    code = code + alphabet.Substring(b % 32, 1);
+  }
+  return code;
+}
+
+/// Issues the cards an order paid for — one per unit of each gift card line, to whom its buyer said. Called by the
+/// order's workflow when it is paid.
+void IssueGiftCards(Order order) {
+  var contact = order.Contact.FirstOrDefault();
+  foreach (var line in order.Lines.Where(l => l.Kind == LineKind.GiftCard).ToList()) {
+    var given = GiftCardOrderLine.FirstOrDefault(g => g.Line == line);
+    var to = given != null && (given.ToEmail ?? "").Contains("@") ? given.ToEmail! : contact?.Email ?? "";
+    if (!to.Contains("@")) { Log.Warning($"Order {order.Reference}: a gift card has nowhere to be mailed."); continue; }
+    for (var n = 0; n < line.Quantity; n = n + 1) {
+      var card = NewGiftCard(line.Price, GiftCardEntryKind.Sold, null, order, line, order.Account, null, to,
+                             given?.ToName, given?.FromName ?? contact?.Name, given?.Message, given?.SendOn, null, null);
+      // The kind it was SOLD as — the line carried VAT exactly when it was sold as a single-purpose voucher.
+      card.SinglePurpose = line.VatPercent > 0;
+      card.VatPercent = line.VatPercent;
+    }
+  }
+}
+
+/// Voids the cards an order sold — it was refunded or voided, so they were never paid for. Called by the order's
+/// workflow; a card already spent from was refused before the refund was asked for (`RefundOrder`).
+void VoidCardsSoldBy(Order order, string why) {
+  foreach (var card in GiftCard.Where(c => c.SoldWith == order).ToList()) {
+    if (card.Status == GiftCardStatus.Voided || card.Status == GiftCardStatus.Expired) { continue; }
+    GiftCardLife.RaiseRefund(card, why);
+  }
+}
+
+/// The part of an order that was gift cards sold — what a refund of it must find unspent.
+public bool GiftCardsUnspent(Order order) {
+  return GiftCard.Where(c => c.SoldWith == order).ToList()
+    .All(c => c.Balance == c.Amount && c.Status != GiftCardStatus.Expired);
+}
+
+// ── a card's life ───────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A card waits for its date (if it has one), is mailed, pays until it expires, and may be voided by staff on the way.
+/// What is left at expiry, or on a void, is written off — the shop owes it no longer.
+public workflow GiftCardLife {
+  Tracks    = GiftCard.Status;
+  Autostart = true;
+  Initial   = Waiting;
+
+  /// Staff send a card now that was to wait for its date.
+  event SendNow();
+  /// Staff void a card — sold by mistake, reported stolen. What was on it is written off. `by` names who, for the
+  /// ledger ("" for the shop itself).
+  event Void(string reason, string by);
+  /// Its own sale was refunded: it stops working, and nothing is written off — the credit note gave the money back.
+  event Refund(string reason);
+  /// Reissued in the shop's own currency: its balance is on the new card already (`ReissueGiftCard`), so it stops
+  /// working and nothing is written off.
+  event Reissue(string reason);
+
+  state Waiting {
+    enter {
+      if (this.Item.SendAt == null || this.Item.SendAt!.Value <= DateTime.UtcNow) {
+        DeliverGiftCard(this.Item);
+        goto Active;
+      }
+    }
+    subscribe SendNow() as Due {
+      Finished {
+        Within = CardWait(this.Item);
+        Unfinished { DeliverGiftCard(this.Item); goto Active; }
+      }
+    }
+    subscribe Void() as VoidWaiting;
+    subscribe Refund() as RefundWaiting;
+    on Due() { DeliverGiftCard(this.Item); goto Active; }
+    on RefundWaiting(string reason) {
+      TakeRefundedCard(this.Item, reason);
+      this.Item.SealedCode = null;
+      goto Voided;
+    }
+    on VoidWaiting(string reason, string by) {
+      WriteOffCard(this.Item, GiftCardEntryKind.Voided, reason, by);
+      this.Item.SealedCode = null;
+      goto Voided;
+    }
+  }
+
+  state Active {
+    subscribe Void() as Voiding {
+      Finished {
+        Within = CardLeft(this.Item);
+        Unfinished { goto Expired; }
+      }
+    }
+    on Voiding(string reason, string by) { WriteOffCard(this.Item, GiftCardEntryKind.Voided, reason, by); goto Voided; }
+    subscribe Refund() as Refunding;
+    on Refunding(string reason) { TakeRefundedCard(this.Item, reason); goto Voided; }
+    subscribe Reissue() as Reissuing;
+    on Reissuing(string reason) { goto Voided; }
+  }
+
+  terminal cancel Expired { enter { WriteOffCard(this.Item, GiftCardEntryKind.Expired, null, ""); } }
+  terminal cancel Voided { }
+}
+
+/// How long a card waits for its date.
+TimeSpan CardWait(GiftCard card) {
+  var wait = (card.SendAt ?? DateTime.UtcNow) - DateTime.UtcNow;
+  return wait < TimeSpan.Zero ? TimeSpan.Zero : wait;
+}
+
+/// How long a card has left.
+TimeSpan CardLeft(GiftCard card) {
+  var left = card.ExpiresAt - DateTime.UtcNow;
+  return left < TimeSpan.Zero ? TimeSpan.Zero : left;
+}
+
+/// Writes off what is left on a card — it expired, or was voided.
+void WriteOffCard(GiftCard card, GiftCardEntryKind kind, string? note, string by) {
+  var staff = by == "" ? null : ShopAccount.FirstOrDefault(a => a.Email == by);
+  PostGiftCard(card, -card.Balance, kind, note, null, null, staff);
+}
+
+/// Empties a card whose own sale was refunded — the money went back on the credit note, so the entry is not a write-off.
+void TakeRefundedCard(GiftCard card, string note) {
+  PostGiftCard(card, -card.Balance, GiftCardEntryKind.SaleRefunded, note, card.SoldWith, null, null);
+}
+
+/// Mails a card: its code, opened once from its seal and then forgotten. The buyer is told too when it went to
+/// somebody else.
+void DeliverGiftCard(GiftCard card) {
+  if (card.SealedCode == null) { return; }
+  var code = Crypto.Decrypt(card.SealedCode!);
+  Mail(card.SendTo, App.Setting<ShopSetup>().Mails.GiftCard(card, code));
+  card.SealedCode = null;
+  card.SentAt = DateTime.UtcNow;
+  var buyer = card.SoldWith == null ? null : card.SoldWith!.Contact.FirstOrDefault();
+  if (buyer != null && buyer.Email.Contains("@") && buyer.Email.Trim().ToLower() != card.SendTo) {
+    var shop = TheShop();
+    Mail(buyer.Email, App.Setting<ShopSetup>().Mails.Notice($"Your gift card is on its way, {shop.Name}", "Your gift card is on its way",
+      $"Hello {FirstName(buyer.Name)},\n\nWe have sent your gift card of {MoneyIn(card.Amount, card.Currency, shop)} to {card.ToName ?? card.SendTo}.",
+      "See your order", OrderPageLink(card.SoldWith!)));
+  }
+}
+
+// ── the desk ────────────────────────────────────────────────────────────────────────────────────────────────────
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum GiftCardChangeKind {
+  /// A new card, from the shop — a goodwill gesture, a prize.
+  [Label("Issued")] Issue,
+  [Label("Adjusted")] Adjust,
+  [Label("Voided")] Void,
+  /// A new code for a card whose mail was lost — the old code stops working, the balance moves with it.
+  [Label("New code")] Replace,
+  [Label("Sent now")] SendNow,
+  /// Its currency is no longer sold: a new card in the shop's own, at the rate it was sold at; this one voided.
+  [Label("Reissued")] Reissue,
+}
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum GiftCardChangeStatus {
+  [Label("Asked")] Asked,
+  [Label("Done")] Done,
+}
+
+/// Staff change something about a gift card — or issue one. The row is the request and the record of who asked and
+/// why; its workflow makes the change, as the shop. The desk's alone.
+public entity GiftCardChange {
+  [Required] GiftCardChangeKind Kind;
+  /// The card — null for a new one.
+  GiftCard? Card;
+  /// Issue: its amount; Adjust: what is added (negative: taken).
+  decimal Amount = 0;
+  [Required, MaxLength(300)] string Reason;
+  /// Issue: to whom, and the words in its mail.
+  [MaxLength(200)] string? ToEmail;
+  [MaxLength(120)] string? ToName;
+  [MaxLength(500)] string? Message;
+  ShopAccount? By;
+  DateTime At;
+  GiftCardChangeStatus Status;                       // no default — GiftCardChanging owns it
+  security {
+    allow read, create when IsShopStaff;
+  }
+}
+
+public workflow GiftCardChanging {
+  Tracks    = GiftCardChange.Status;
+  Autostart = true;
+  Initial   = Asked;
+
+  state Asked {
+    enter {
+      ApplyGiftCardChange(this.Item);
+      goto Done;
+    }
+  }
+  terminal success Done { }
+}
+
+/// Makes a desk change, as the shop.
+void ApplyGiftCardChange(GiftCardChange change) {
+  var by = change.By;
+  var who = by == null ? "" : by!.Email;
+  if (change.Kind == GiftCardChangeKind.Issue) {
+    // Given, never sold: a multi-purpose card whatever the setting — no VAT fell due on nothing paid, and what it buys
+    // carries its VAT (D-GIFTCARD-FREECARDS1).
+    var card = NewGiftCard(change.Amount, GiftCardEntryKind.Issued, change.Reason, null, null, null, by, change.ToEmail ?? "",
+                           change.ToName, TheShop().Name, change.Message, null, change.Reason, null);
+    change.Card = card;
+    return;
+  }
+  var target = change.Card!;
+  if (change.Kind == GiftCardChangeKind.Adjust) {
+    PostGiftCard(target, change.Amount, GiftCardEntryKind.Adjusted, change.Reason, null, null, by);
+  }
+  // A void and an early send are the card's own events — the staff function raises them once this row is recorded.
+  if (change.Kind == GiftCardChangeKind.Replace) {
+    var code = NewCardCode();
+    var normal = NormalCardCode(code);
+    target.CodeHash = CardHash(normal);
+    target.Last4 = normal.Substring(12, 4);
+    target.SealedCode = Crypto.Encrypt(code);
+    new GiftCardEntry { Card = target, Amount = 0m, BalanceAfter = target.Balance, Kind = GiftCardEntryKind.Adjusted,
+                        Note = $"New code: {change.Reason}", By = by, At = DateTime.UtcNow };
+    if (target.Status == GiftCardStatus.Active) { DeliverGiftCard(target); }
+  }
+  if (change.Kind == GiftCardChangeKind.Reissue) { ReissueCard(change, target, by); }
+}
+
+/// The desk's reissue, as the shop: what is left on `card` moves to a NEW card in the shop's own currency — converted
+/// at the rate the card was SOLD at (`GiftCard.Rate`), the rate its debt is booked at — and is taken off `card` in the
+/// same step, both entries naming the other. The new card keeps what the old one was: its kind (single- or
+/// multi-purpose, and the VAT a single-purpose one's sale paid), its last day, whom it is for and from; its code is
+/// new and is mailed to the holder the old one went to. Not a sale and not a write-off — the same debt, moved.
+void ReissueCard(GiftCardChange change, GiftCard card, ShopAccount? by) {
+  var shop = TheShop();
+  var from = card.Currency ?? shop.Currency;
+  var left = card.Balance;
+  var amount = GiftCardInShopMoney(left, card);
+  // Both sides of the move name the other — said from `ReissuedFrom`/`ReissuedAs` when the ledger is read.
+  var again = NewGiftCard(amount, GiftCardEntryKind.Reissued, null,
+                          null, null, card.Buyer, by, card.SendTo, card.ToName, card.FromName, card.Message, null, change.Reason, null);
+  again.SinglePurpose = card.SinglePurpose;
+  again.VatPercent = card.VatPercent;
+  again.ExpiresAt = card.ExpiresAt;
+  again.ReissuedFrom = card;
+  card.ReissuedAs = again;
+  PostGiftCard(card, -left, GiftCardEntryKind.Reissued, null, null, null, by);
+  change.Amount = amount;
+}
+
+/// `amount` of `card`'s money in the shop's own, at the rate the card was sold at — to the cent.
+public decimal GiftCardInShopMoney(decimal amount, GiftCard card) {
+  return card.Rate <= 0 || card.Rate == 1m ? amount : Math.Round(amount / card.Rate, 2, MidpointRounding.AwayFromZero);
+}
+
+/// "1 EUR = 11.3205 SEK" — the rate a card in another currency was sold at.
+public string RateAsSold(GiftCard card) {
+  var shop = TheShop();
+  if (card.Rate <= 0 || card.Rate == 1m || card.Currency == null) { return "1:1"; }
+  return $"1 {card.Currency} = {Math.Round(1m / card.Rate, 4):0.0000} {shop.Currency}";
+}
+
+/// Why `card` cannot be reissued in the shop's own currency — "" when it can: it is active, has something left, and
+/// is in a currency the shop no longer SELLS in (one merely out of date with its rate is still sold, and spends again
+/// once the rate is fresh).
+public string ReissueRefusal(GiftCard card) {
+  var shop = TheShop();
+  if (card.Currency == null || card.Currency == "" || card.Currency == shop.Currency) { return $"That card is in {shop.Currency} already."; }
+  var code = card.Currency!;
+  if (ExchangeRate.Any(r => r.Currency == code && r.Sold)) {
+    return $"The shop still sells in {code}, so the card pays for an order in {code} as it is.";
+  }
+  if (card.Status != GiftCardStatus.Active) { return $"That card is {card.Status.Label}."; }
+  if (card.Balance <= 0) { return "Nothing is left on that card."; }
+  return "";
+}
+
+/// Staff reissue a card in a currency the shop no longer sells: what is left on it goes onto a new card in the shop's
+/// own currency, at the rate it was sold at, mailed to whoever the card went to; the old code stops working. Answers
+/// the new card (its code is only ever in the mail).
+[Authorize(IsShopStaff)]
+public GiftCard ReissueGiftCard(GiftCard card, string reason) {
+  var said = reason.Trim() == "" ? $"{card.Currency} is no longer sold" : reason.Trim();
+  var no = ReissueRefusal(card);
+  if (no != "") { throw new Exception(no); }
+  var change = new GiftCardChange { Kind = GiftCardChangeKind.Reissue, Card = card, Reason = said, By = Session.CurrentUser, At = DateTime.UtcNow };
+  UnitOfWork.Commit();
+  GiftCardLife.RaiseReissue(card, said);
+  return card.ReissuedAs!;
+}
+
+/// Staff issue a gift card, mailed to `email` at once — a goodwill gesture, a prize. The reason is kept with it.
+/// Answers the card (its code is only ever in the mail).
+[Authorize(IsShopStaff)]
+public GiftCard IssueGiftCard(decimal amount, string email, string name, string message, string reason) {
+  var to = email.Trim().ToLower();
+  if (amount <= 0) { throw new Exception("Give an amount above nothing."); }
+  if (amount > 100000m) { throw new Exception("That is more than the desk issues in one go."); }
+  if (!to.Contains("@")) { throw new Exception("Say who it goes to: an email address."); }
+  if (reason.Trim() == "") { throw new Exception("Say why. It is kept with the card, for whoever reads it next."); }
+  var change = new GiftCardChange { Kind = GiftCardChangeKind.Issue, Amount = Math.Round(amount, 2, MidpointRounding.AwayFromZero), ToEmail = to,
+                                    ToName = name.Trim() == "" ? null : name.Trim(), Message = message.Trim() == "" ? null : message.Trim(),
+                                    Reason = reason.Trim(), By = Session.CurrentUser, At = DateTime.UtcNow };
+  UnitOfWork.Commit();
+  return change.Card!;
+}
+
+/// Staff add to a card, or take from it (a negative amount), with the reason.
+[Authorize(IsShopStaff)]
+public void AdjustGiftCard(GiftCard card, decimal amount, string reason) {
+  if (amount == 0) { throw new Exception("Say how much to add, or (below nothing) to take."); }
+  if (reason.Trim() == "") { throw new Exception("Say why. It is kept with the card."); }
+  if (card.Status != GiftCardStatus.Active && card.Status != GiftCardStatus.Waiting) { throw new Exception($"That card is {card.Status.Label}."); }
+  if (card.Balance + amount < 0) { throw new Exception($"The card holds {MoneyIn(card.Balance, card.Currency, TheShop())} . Take no more than that."); }
+  // A single-purpose card's VAT was paid on what it was SOLD for — money added to it would buy goods on which no VAT is
+  // ever declared.
+  if (card.SinglePurpose && amount > 0) {
+    throw new Exception("That card is a single-purpose voucher: its VAT was paid on what it was sold for, so nothing can be added to it. Issue a new card, or give store credit.");
+  }
+  new GiftCardChange { Kind = GiftCardChangeKind.Adjust, Card = card, Amount = Math.Round(amount, 2, MidpointRounding.AwayFromZero), Reason = reason.Trim(),
+                       By = Session.CurrentUser, At = DateTime.UtcNow };
+  UnitOfWork.Commit();
+}
+
+/// Staff void a card — what is left on it is written off, and its code stops working.
+[Authorize(IsShopStaff)]
+public void VoidGiftCard(GiftCard card, string reason) {
+  if (reason.Trim() == "") { throw new Exception("Say why. It is kept with the card."); }
+  if (card.Status == GiftCardStatus.Voided || card.Status == GiftCardStatus.Expired) { throw new Exception($"That card is {card.Status.Label} already."); }
+  new GiftCardChange { Kind = GiftCardChangeKind.Void, Card = card, Reason = reason.Trim(), By = Session.CurrentUser, At = DateTime.UtcNow };
+  UnitOfWork.Commit();
+  GiftCardLife.RaiseVoid(card, reason.Trim(), Session.CurrentUser == null ? "" : Session.CurrentUser!.Email);
+}
+
+/// Staff give a card a new code — its mail was lost — and send it again. The old code stops working.
+[Authorize(IsShopStaff)]
+public void ReplaceGiftCardCode(GiftCard card, string reason) {
+  if (reason.Trim() == "") { throw new Exception("Say why. It is kept with the card."); }
+  if (card.Status != GiftCardStatus.Active) { throw new Exception($"That card is {card.Status.Label} . Only an active card gets a new code."); }
+  new GiftCardChange { Kind = GiftCardChangeKind.Replace, Card = card, Reason = reason.Trim(), By = Session.CurrentUser, At = DateTime.UtcNow };
+  UnitOfWork.Commit();
+}
+
+/// Staff send a card now that was waiting for its date.
+[Authorize(IsShopStaff)]
+public void SendGiftCardNow(GiftCard card) {
+  if (card.Status != GiftCardStatus.Waiting) { throw new Exception("That card has been sent already."); }
+  new GiftCardChange { Kind = GiftCardChangeKind.SendNow, Card = card, Reason = "Sent before its date", By = Session.CurrentUser, At = DateTime.UtcNow };
+  UnitOfWork.Commit();
+  GiftCardLife.RaiseSendNow(card);
+}
+
+/// Why selling single-purpose gift cards is wrong for this shop as it stands — a sentence per reason, empty when it is
+/// not (or when the shop sells multi-purpose ones). A single-purpose voucher is one whose place of supply AND VAT are
+/// known when it is sold (VAT Directive 2006/112/EC art. 30a(2)); a card that may pay for goods at two rates, or be
+/// spent by a customer abroad, is not one, whatever the shop calls it — it is multi-purpose (art. 30a(3)).
+[Authorize(IsShopStaff)]
+public List<string> GiftCardKindWarnings() {
+  var shop = TheShop();
+  List<string> said = [];
+  if (!shop.GiftCardsAreSinglePurpose) { return said; }
+  // Every rate the goods on sale carry — an exempt product (0 %) is a rate too.
+  var rates = Product.Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard).ToList()
+    .Select(p => VatRateOf(p, shop)).Distinct().OrderByDescending(r => r).ToList();
+  if (rates.Count > 1) {
+    said.Add($"The goods on sale carry {rates.Count} VAT rates ({string.Join(", ", rates.Select(r => $"{r:0.##} %"))}). A card that may pay for any of them "
+      + "does not know its VAT when it is sold, so it is a multi-purpose voucher (VAT Directive, article 30a(3)): charging the standard rate on "
+      + "the sale over-pays the VAT on what is sold at a lower rate. Turn this off, or sell only goods at one rate.");
+  }
+  // Customers in another country: the place of supply — whose VAT — is not known until a card is spent.
+  var home = shop.HomeCountry.Trim().ToUpper();
+  var since = DateTime.UtcNow.AddDays(-365);
+  var abroad = OrderContact.Where(c => c.Country != null && c.Order.PlacedAt >= since).ToList()
+    .Select(c => CountryCode(c.Country!)).Where(c => c.Length == 2 && c != home).Distinct().OrderBy(c => c).ToList();
+  List<string> why = [];
+  if (shop.OssRegistered) { why.Add("it is registered for the One-Stop Shop, charging other EU countries' VAT"); }
+  if (SellsToBusinesses()) { why.Add("it sells VAT-free to businesses in other EU countries"); }
+  if (abroad.Count > 0) { why.Add($"it sent orders to {string.Join(", ", abroad)} this past year"); }
+  if (why.Count > 0) {
+    said.Add($"The shop sells to other countries — {string.Join("; ", why)}. A card that may be spent by a customer abroad does not know "
+      + "whose VAT is due when it is sold, so it is a multi-purpose voucher (VAT Directive, article 30a(3)). Turn this off, or sell only at home.");
+  }
+  return said;
+}
+
+/// A card as the desk lists it.
+public class GiftCardRow {
+  public GiftCard? Card = null;
+  /// The card's currency (ISO 4217).
+  public string Currency = "";
+  public string Ending = "";
+  public decimal Amount = 0;
+  public decimal Balance = 0;
+  public string Status = "";
+  public string ValidUntil = "";
+  /// "Order GG-1043", or "From the shop: <reason>".
+  public string Source = "";
+  public string SentTo = "";
+  /// When it goes, for a card waiting for its date.
+  public string SendsOn = "";
+  /// "Single-purpose, VAT 25 % paid when sold", or "Multi-purpose" — how it was sold, which is how it is booked.
+  public string Kind = "";
+  /// "Reissued in SEK as …ABCD" — the card it went to — or "". (The new card says where it came from as its `Source`.)
+  public string Reissue = "";
+  /// In a currency the shop no longer sells, with something left: the desk offers to reissue it in the shop's own.
+  public bool CanReissue = false;
+  /// What it would be in the shop's own money, at the rate it was sold at — what a reissue would give.
+  public decimal InShopMoney = 0;
+}
+
+/// Every gift card, newest first — or the one a typed code, or its last four characters, names.
+[Authorize(IsShopStaff)]
+public List<GiftCardRow> DeskGiftCardRows(string search) {
+  var s = search.Trim();
+  List<GiftCard> cards = [];
+  var normal = NormalCardCode(s);
+  if (normal.Length == 16) {
+    var hash = CardHash(normal);
+    cards = GiftCard.Include(c => c.SoldWith).Include(c => c.ReissuedAs).Include(c => c.ReissuedFrom).Where(c => c.CodeHash == hash).ToList();
+  } else {
+    cards = GiftCard.Include(c => c.SoldWith).Include(c => c.ReissuedAs).Include(c => c.ReissuedFrom).OrderByDescending(c => c.IssuedAt).ToList();
+    if (s != "") { cards = cards.Where(c => c.Last4 == s.ToUpper() || c.SendTo.Contains(s.ToLower())).ToList(); }
+  }
+  return cards.Take(200).Select(c => new GiftCardRow {
+    Card = c, Currency = c.Currency ?? TheShop().Currency, Ending = c.Last4, Amount = c.Amount, Balance = c.Balance, Status = c.Status.Label,
+    ValidUntil = LocalDay(c.ExpiresAt.AddSeconds(-1)),
+    Source = c.SoldWith != null ? $"Order {c.SoldWith!.Reference}"
+           : c.ReissuedFrom != null ? $"Reissued from …{c.ReissuedFrom!.Last4} ({c.ReissuedFrom!.Currency ?? TheShop().Currency})" : $"From the shop: {c.Reason ?? ""}",
+    SentTo = c.ToName == null ? c.SendTo : $"{c.ToName} ({c.SendTo})",
+    SendsOn = c.Status == GiftCardStatus.Waiting && c.SendAt != null ? LocalDay(c.SendAt!.Value) : "",
+    Kind = c.SinglePurpose ? $"Single-purpose, VAT {c.VatPercent:0.##} % paid when sold" : "Multi-purpose",
+    Reissue = c.ReissuedAs != null ? $"Reissued in {TheShop().Currency} as …{c.ReissuedAs!.Last4}" : "",
+    CanReissue = ReissueRefusal(c) == "",
+    InShopMoney = GiftCardInShopMoney(c.Balance, c),
+  }).ToList();
+}
+
+/// One change to a card, as the desk reads it.
+public class GiftCardLedgerLine {
+  public DateTime At;
+  public string What = "";
+  public decimal Amount = 0;
+  public decimal BalanceAfter = 0;
+  public string Note = "";
+  public string Who = "";
+  public string OrderReference = "";
+}
+
+/// A card's ledger, newest first — the audit of every change to it.
+[Authorize(IsShopStaff)]
+public List<GiftCardLedgerLine> GiftCardLedger(GiftCard card) {
+  return GiftCardEntry.Include(e => e.Order).Include(e => e.By).Where(e => e.Card == card).OrderByDescending(e => e.At).ToList()
+    .Select(e => new GiftCardLedgerLine { At = e.At, What = e.Kind.Label, Amount = e.Amount, BalanceAfter = e.BalanceAfter,
+                                         Note = GiftCardNote(e), Who = e.By == null ? "" : AccountName(e.By!),
+                                         OrderReference = e.Order == null ? "" : e.Order!.Reference }).ToList();
+}
+
+/// What a card's entry says to whoever reads it — the reason staff gave, as they gave it; else said from its facts, in
+/// the reader's language: "Refunded — order GG-1043", "Reissued in SEK as …ABCD". A sale or a spend says nothing more:
+/// the line shows its order beside it.
+public string GiftCardNote(GiftCardEntry e) {
+  if (e.Note != null && e.Note != "") { return e.Note!; }
+  var order = e.Order == null ? "" : e.Order!.Reference;
+  if (e.Kind == GiftCardEntryKind.Refunded && e.Cause != null) { return GiveBackWords(e.Cause.Value, order, e.OntoNewCard); }
+  if (e.Kind == GiftCardEntryKind.Reissued) {
+    var card = GiftCard.Include(c => c.ReissuedAs).Include(c => c.ReissuedFrom).Single(c => c.Id == e.Card.Id);
+    if (e.Amount < 0 && card.ReissuedAs != null) { return $"Reissued in {TheShop().Currency} as …{card.ReissuedAs!.Last4}"; }
+    if (card.ReissuedFrom != null) {
+      return $"Reissued from …{card.ReissuedFrom!.Last4} at the rate it was sold at, {RateAsSold(card.ReissuedFrom!)}";
+    }
+  }
+  return "";
+}
+
+/// Why money went back, with its order — "Refunded — order GG-1043", "Return on GG-1043".
+string GiveBackWords(GiveBackCause cause, string order, bool ontoNewCard = false) {
+  var said = cause == GiveBackCause.Returned ? $"Return on {order}"
+    : cause == GiveBackCause.NotPaidInTime ? $"Not paid in time — order {order}"
+    : cause == GiveBackCause.Cancelled ? $"Cancelled — order {order}"
+    : cause == GiveBackCause.Voided ? $"Voided — order {order}"
+    : $"Refunded — order {order}";
+  return ontoNewCard ? $"{said}. The card it was paid with had ended, so it is on a new one." : said;
+}
+
+// ── the customer's side ─────────────────────────────────────────────────────────────────────────────────────────
+
+/// A gift card the signed-in customer bought, as their account shows it — to whom, when, for how much. Never what is
+/// left on it: that is the recipient's.
+public class BoughtGiftCard {
+  /// The card's currency (ISO 4217).
+  public string Currency = "";
+  public string Ending = "";
+  public decimal Amount = 0;
+  public string To = "";
+  public string OrderReference = "";
+  /// "Sent 3 October", "Goes on 24 December", "Voided".
+  public string State = "";
+  public string ValidUntil = "";
+}
+
+/// The gift cards the signed-in customer bought, newest first.
+public List<BoughtGiftCard> MyGiftCards() {
+  var me = Session.CurrentUser;
+  if (me == null) { return []; }
+  return GiftCard.Include(c => c.SoldWith).Where(c => c.Buyer == me).OrderByDescending(c => c.IssuedAt).ToList()
+    .Select(c => new BoughtGiftCard {
+      Currency = c.Currency ?? TheShop().Currency, Ending = c.Last4, Amount = c.Amount, To = c.ToName ?? c.SendTo,
+      OrderReference = c.SoldWith == null ? "" : c.SoldWith!.Reference,
+      State = c.Status == GiftCardStatus.Voided ? "Voided"
+            : c.Status == GiftCardStatus.Waiting && c.SendAt != null ? $"Goes on {LocalDay(c.SendAt!.Value)}"
+            : c.SentAt != null ? $"Sent {LocalDay(c.SentAt!.Value)}" : c.Status.Label,
+      ValidUntil = LocalDay(c.ExpiresAt.AddSeconds(-1)),
+    }).ToList();
+}
+
+// ── buying one ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Puts a gift card in the caller's bag — its own line, for one recipient — for `amount` when the card lets the buyer
+/// choose it (else the variant's price), from `fromName` to `toName` at `toEmail` ("": to the buyer), with a message,
+/// mailed on `sendOn` (null: as soon as it is paid). Answers "" when it went in, or the sentence to show.
+[AllowAnonymous]
+public string AddGiftCardToBag(Variant variant, decimal amount, string fromName, string toName, string toEmail,
+                               string message, DateOnly? sendOn) {
+  var shop = TheShop();
+  if (!variant.Product.IsGiftCard) { return "That is not a gift card."; }
+  if (variant.Product.Status != ProductStatus.Listed) { return "That is no longer for sale."; }
+  // In the currency the bag is bought in: a chosen amount is in it, and the shop's bounds are converted into it.
+  var inBag = BagFor(false);
+  var sale = inBag == null ? SaleRate(VisitSaleCurrency(Visitor.Id)) : SaleRate(inBag.Currency);
+  var currency = sale == null ? shop.Currency : sale.Currency;
+  var price = variant.AnyAmount ? Math.Round(amount, 2, MidpointRounding.AwayFromZero) : sale == null ? PriceOf(variant) : SoldPrice(variant, sale);
+  var min = Converted(shop.GiftCardMin, sale);
+  var max = Converted(shop.GiftCardMax, sale);
+  if (variant.AnyAmount && (price < min || price > max)) {
+    return $"Choose an amount from {MoneyIn(min, currency, shop)} to {MoneyIn(max, currency, shop)}.";
+  }
+  var email = toEmail.Trim().ToLower();
+  if (email != "" && !email.Contains("@")) { return "Write the recipient's email address, or leave it empty to have it mailed to you."; }
+  if (message.Trim().Length > 500) { return "Keep the message to 500 characters."; }
+  var today = DateOnly.FromDateTime(DateTime.UtcNow.InZone(shop.TimeZone));
+  if (sendOn != null && sendOn!.Value < today) { return "Choose today or a day to come."; }
+  if (sendOn != null && sendOn!.Value > today.AddYears(1)) { return "Choose a day within a year."; }
+  var bag = BagFor(true)!;
+  var line = new BagLine { Bag = bag, Variant = variant, Quantity = 1, PriceWhenAdded = price };
+  new GiftCardChoice { Line = line, Amount = price, FromName = Blank(fromName), ToName = Blank(toName), ToEmail = email == "" ? null : email,
+                       Message = Blank(message), SendOn = sendOn != null && sendOn!.Value > today ? sendOn : null };
+  ArmBagReminder(bag);
+  UnitOfWork.Commit();
+  return "";
+}
+
+/// The gift card choice on a bag line, or null for a line that is not a gift card.
+public GiftCardChoice? GiftCardOf(BagLine line) {
+  return line.Gift.FirstOrDefault();
+}
+
+/// Who a gift card line is for, as the bag and the order say it — "For Anna, 24 December", or "".
+public string GiftCardFor(string? toName, string? toEmail, DateOnly? sendOn) {
+  var who = toName ?? toEmail ?? "";
+  var when = sendOn == null ? "" : sendOn!.Value.ToString("d MMMM");
+  if (who == "" && when == "") { return ""; }
+  if (who == "") { return $"Mailed to you on {when}"; }
+  return when == "" ? $"For {who}" : $"For {who}, {when}";
+}

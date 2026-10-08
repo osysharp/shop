@@ -1,0 +1,156 @@
+// The customer's link to an order (D-ORDERLINK1). An order is read by the account it was placed from, by the visit
+// that placed it, by staff and packers — and by whoever holds a signed `OrderLink` to it. The reference alone opens
+// nothing: it is printed on the parcel, read out on the phone and counts up by one, so it proves nothing about who
+// is asking.
+//
+// ⚑ EVERY WAY BACK TO AN ORDER CARRIES THE LINK. The order confirmation and every later mail about it ("See your
+//   order"), the address a payment provider sends the customer back to (`/paid/{link}/…`), and the receipt placing
+//   answers (`Receipt.Link`). A store serves the order's page at `ShopSetup.OrderPath` + `/{link}`:
+//
+//       [Page("/order/{link}")] [AllowAnonymous]
+//       component OrderPage(OrderLink link) { render { ShopOrderByLink(link); } }
+//
+//   A link that does not check out — altered, expired, from another shop — never reaches the page: the platform
+//   answers it with the app's `InvalidLinkSurface`.
+
+namespace Osysharp.Shop;
+
+/// The link to one order that the customer is given — in every mail about it, on the page a payment comes back to,
+/// and on the receipt. It opens that order (and its lines and figures, never who it is for or where it goes:
+/// `OrderContact` names no grant) for a year: long enough for the whole of an order's life — paying, the parcel, the
+/// days to change one's mind, a return — and for the receipt a guest keeps to open when they come back with a
+/// question months later. Nothing takes it back while the order exists: a paid, sent or refunded order is still the
+/// customer's to look at.
+public grant OrderLink for Order { Expires = TimeSpan.FromDays(365); }
+
+/// The store's page for `order`, with the customer's link to it — what every mail about the order opens. Made by
+/// whoever sends the mail (the order's workflow, staff), who can read the order.
+public string OrderPageLink(Order order) {
+  return ShopLink($"{App.Setting<ShopSetup>().OrderPath}/{OrderLink.For(order)}");
+}
+
+/// The link to one of the caller's OWN orders, found by its reference among the orders the caller reads — its
+/// account's, and its visit's — or "" for any other reference. For a page the customer reaches from their own checkout
+/// that carries the reference rather than the link (a payment provider's waiting page), to go on to the order's pages.
+/// It opens nothing new: a link is minted only for an order the caller can read already.
+[AllowAnonymous]
+public string LinkToMyOrder(string reference) {
+  var order = Order.SingleOrDefault(o => o.Reference == reference);
+  return order == null ? "" : $"{OrderLink.For(order!)}";
+}
+
+/// One order as its page shows it to whoever holds the link: what it holds and costs, where it stands, and how it
+/// reaches them. Nothing about who it is for.
+public class OrderPageView {
+  public string Reference = "";
+  /// "3 October 2026", in the shop's time zone.
+  public string PlacedOn = "";
+  public OrderStatus Status;
+  public string StatusText = "";
+  /// Waiting for its payment — `PayInstructions` says how, for a payment with no page to go to.
+  public bool AwaitingPayment = false;
+  public string PayInstructions = "";
+  public string PaymentLabel = "";
+  public Fulfilment Fulfilment;
+  public string DeliveryLabel = "";
+  public List<PayLinkLine> Lines = [];
+  /// The currency the order was placed and charged in — the shop's own unless it was sold in another (D-SELLCURRENCY1).
+  public string? Currency = null;
+  public decimal Discount = 0;
+  public decimal Delivery = 0;
+  public decimal Total = 0;
+  public decimal Vat = 0;
+  /// Paid already another way — store credit, gift cards, goods sent back in exchange — and what is left to pay.
+  public decimal PaidAlready = 0;
+  public decimal ToPay = 0;
+  /// The carrier's tracking number and the page to follow the parcel on — "" until it is sent.
+  public string Tracking = "";
+  public string TrackingUrl = "";
+  /// When it was paid, sent and delivered — "" for a step not reached.
+  public string PaidOn = "";
+  public string SentOn = "";
+  public string DeliveredOn = "";
+  /// Why it did not go through, or was called off — "" otherwise.
+  public string Problem = "";
+  /// Something in it may be sent back now — it was sent, and the shop's return window is open — until `ReturnsUntil`
+  /// ("12 November 2026"), through the link (`ReturnWithLink`), with the same rules as an account's return.
+  public bool CanReturn = false;
+  public string ReturnsUntil = "";
+  public List<ReturnableLine> Returnable = [];
+  /// Its returns, newest first.
+  public List<OrderPageReturn> Returns = [];
+}
+
+/// A line of the order that may go back, and how many of it are left to send.
+public class ReturnableLine {
+  public Guid LineId;
+  public string Name = "";
+  public int Left = 0;
+}
+
+/// A return on the order, as the order's page shows it.
+public class OrderPageReturn {
+  /// "3 October 2026" — when it was started.
+  public string Started = "";
+  public ReturnStatus Status;
+  public string StatusText = "";
+  /// "1 × Kiambu AA, 250 g: Too strong".
+  public List<string> Lines = [];
+  /// What came of it, once settled ("Refunded 149 kr"), or why it was declined.
+  public string Outcome = "";
+}
+
+/// The order a link opens, as its page shows it.
+[AllowAnonymous]
+public OrderPageView OrderByLink(OrderLink link) {
+  return OrderPageViewOf(link.Row);
+}
+
+/// `order` as its page shows it — for its link's holder, and for anybody else who may read it.
+public OrderPageView OrderPageViewOf(Order order) {
+  var view = new OrderPageView {
+    Reference = order.Reference, PlacedOn = LocalDay(order.PlacedAt), Status = order.Status, StatusText = StatusText(order),
+    AwaitingPayment = order.Status == OrderStatus.Reserved && AmountDue(order) > 0,
+    PayInstructions = order.PayInstructions ?? "", PaymentLabel = order.PaymentLabel ?? order.PaymentMethod,
+    Fulfilment = order.Fulfilment, DeliveryLabel = order.DeliveryLabel ?? order.Fulfilment.Label,
+    Currency = order.Currency, Discount = order.Discount, Delivery = order.Delivery, Total = order.Total, Vat = order.Vat,
+    PaidAlready = order.CreditUsed + order.GiftCardUsed + order.ExchangeCredit, ToPay = AmountDue(order),
+    Tracking = order.Tracking ?? "", TrackingUrl = order.TrackingUrl ?? "",
+    PaidOn = order.PaidAt == null ? "" : LocalDay(order.PaidAt!.Value),
+    SentOn = order.FulfilledAt == null ? "" : LocalDay(order.FulfilledAt!.Value),
+    DeliveredOn = order.DeliveredAt == null ? "" : LocalDay(order.DeliveredAt!.Value),
+    Problem = order.CancelReason ?? order.Problem ?? "",
+  };
+  foreach (var l in order.Lines) {
+    view.Lines.Add(new PayLinkLine { Name = l.VariantLabel == null ? l.ProductName : $"{l.ProductName} — {l.VariantLabel}",
+                                     Product = l.ProductName, Variant = l.VariantLabel ?? "",
+                                     Quantity = l.Quantity, Amount = l.Price * l.Quantity });
+  }
+  // What may still go back — the rules `CheckReturnable` applies when it is asked for: sent, inside the window (from
+  // when it arrived, else from when it was sent), goods only, less what is already on its way back.
+  var shop = TheShop();
+  if (IsSent(order) && order.FulfilledAt != null) {
+    var until = (order.DeliveredAt ?? order.FulfilledAt!.Value).AddDays(shop.ReturnDays);
+    if (until >= DateTime.UtcNow) {
+      view.ReturnsUntil = LocalDay(until);
+      foreach (var l in order.Lines.ToList().Where(x => x.Kind == LineKind.Goods)) {
+        var line = l;
+        var already = ReturnLine.Where(r => r.Line == line && r.Return.Status != ReturnStatus.Declined).Sum(r => r.Quantity);
+        if (l.Quantity - already > 0) {
+          view.Returnable.Add(new ReturnableLine { LineId = l.Id, Left = l.Quantity - already,
+                                                   Name = l.VariantLabel == null ? l.ProductName : $"{l.ProductName} — {l.VariantLabel}" });
+        }
+      }
+      view.CanReturn = view.Returnable.Count > 0;
+    }
+  }
+  var theOrder = order;
+  foreach (var r in ReturnRequest.Where(x => x.Order == theOrder).OrderByDescending(x => x.RequestedAt).ToList()) {
+    view.Returns.Add(new OrderPageReturn {
+      Started = LocalDay(r.RequestedAt), Status = r.Status, StatusText = r.Status.Label,
+      Lines = r.Lines.ToList().Select(rl => $"{rl.Quantity} × {rl.Line.ProductName}{(rl.Line.VariantLabel == null ? "" : " (" + rl.Line.VariantLabel + ")")}{(rl.Reason == null ? "" : ": " + rl.Reason)}").ToList(),
+      Outcome = r.Status == ReturnStatus.Refunded ? ReturnOutcome(r, shop) : r.Problem ?? "",
+    });
+  }
+  return view;
+}

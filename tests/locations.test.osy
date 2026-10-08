@@ -1,0 +1,258 @@
+// Stock in several places (Locations.osy): a counter that hands orders over and a warehouse that sends parcels, each
+// with its own stock; an order picked from one of them; transfers on the road between them; and a shop with one
+// place exactly as it was.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// The shop's counter — its default location, holding the stock it had — hands orders over and sends nothing; a
+/// warehouse, first in the desk's order, sends parcels. Nothing has moved yet: all of it is at the counter.
+StockLocation Warehouse() {
+  runas (Desk) {
+    var counter = EnsureDefaultLocation();
+    UpdateLocation(counter, "The counter", "Storgatan 1", "11122", "Stockholm", "Weekdays 10–18", false, true, true);
+    var w = AddLocation("The warehouse", "warehouse", "Lagergatan 5", "12030", "Stockholm", "SE", true, false);
+    MoveLocation(w, -1);
+    return w;
+  }
+}
+
+StockLocation Counter() {
+  runas (Desk) { return DefaultLocation()!; }
+}
+
+/// As staff: `quantity` of a variant sent from the counter to `to`, and received there.
+void Move(string product, string size, StockLocation to, int quantity) {
+  runas (Desk) {
+    ReceiveTransfer(SendTransfer(Pick(product, size), Counter(), to, quantity, ""));
+  }
+}
+
+/// A visit's bag placed to go `delivery` ("collect", "courier"…), paid by transfer — answers the order.
+Order PlaceTo(string visit, string delivery) {
+  runas (new Visitor { Id = visit }) {
+    var home = delivery.StartsWith("collect");
+    var reference = PlaceOrder("Maja Berg", "maja@example.test", "", delivery, "banktransfer",
+                               home ? "" : "Storgatan 1", home ? "" : "11122", home ? "" : "Stockholm", home ? "" : "SE").Reference;
+    runas (Desk) { return Order.Single(o => o.Reference == reference); }
+  }
+}
+
+[Test(Floor)]
+void a_shop_with_one_place_has_no_locations_and_nothing_changes() {
+  Bag("v-one", "Loafer", "38", 2);
+  runas (new Visitor { Id = "v-one" }) {
+    // The choices are what the providers quote, named as they always were.
+    var ids = DeliveryChoices("SE").Select(d => d.Id).ToList();
+    Assert.Contains("collect", ids);
+    Assert.Contains("courier", ids);
+    Assert.True(DeliveryChoices("SE").All(d => d.Problem == ""));
+  }
+  var order = PlaceTo("v-one", "collect");
+  runas (Desk) {
+    Assert.Null(order.Location);
+    Assert.Equal(0, Pick("Loafer", "38").Stock);
+    Assert.Equal(2, Pick("Loafer", "38").Reserved);
+    Assert.Equal(0, StockLevel.Count());
+    Assert.True(StockByLocation().All(r => r.At.Count == 0));
+  }
+}
+
+[Test(Floor)]
+void a_second_location_keeps_the_shops_stock_where_it_was() {
+  var w = Warehouse();
+  runas (Desk) {
+    var counter = Counter();
+    Assert.True(counter.IsDefault);
+    Assert.Equal(2, StockAt(counter, Pick("Loafer", "38")));
+    Assert.Equal(0, StockAt(w, Pick("Loafer", "38")));
+    // Nothing moved: the shop still holds what it held, at its default.
+    Assert.Equal(2, Pick("Loafer", "38").Stock);
+    Assert.Equal(0, StockLevel.Count());
+    var row = StockByLocation().Single(r => r.Name == "Loafer (38)");
+    Assert.Equal(new List<string> { "The warehouse 0", "The counter 2" }, row.At.Select(a => $"{a.Name} {a.Stock}").ToList());
+  }
+}
+
+[Test(Floor)]
+void a_collection_is_picked_at_its_counter_and_a_parcel_from_the_warehouse() {
+  var w = Warehouse();
+  Move("Loafer", "38", w, 1);
+  Bag("v-at-counter", "Loafer", "38", 1);
+  var collected = PlaceTo("v-at-counter", "collect");
+  Bag("v-by-post", "Loafer", "38", 1);
+  var sent = PlaceTo("v-by-post", "courier");
+  runas (Desk) {
+    Assert.Equal("The counter", collected.Location!.Name);
+    Assert.Equal("The warehouse", sent.Location!.Name);
+    // Each holds its order's unit, where it was taken.
+    Assert.Equal(0, StockAt(Counter(), Pick("Loafer", "38")));
+    Assert.Equal(0, StockAt(w, Pick("Loafer", "38")));
+    Assert.Equal(1, StockLevel.Single(s => s.Location == w).Reserved);
+    Assert.Equal(2, Pick("Loafer", "38").Reserved);
+    // Paid: the hold at the warehouse is sold, the counter's still held.
+    MarkPaid(sent, "");
+    Workflow.Settle(sent);
+    Assert.Equal(0, StockLevel.Single(s => s.Location == w).Reserved);
+    Assert.Equal(1, Pick("Loafer", "38").Reserved);
+    // The carrier books it from the warehouse's address, not its own sender.
+    MarkSent(sent, "");
+    Workflow.Settle(sent);
+    Assert.Contains("#from=12030", sent.TrackingUrl);
+  }
+}
+
+[Test(Floor)]
+void a_delivery_that_no_one_place_can_fill_says_why_and_is_not_placed() {
+  var w = Warehouse();
+  Move("Loafer", "39", w, 1);
+  Bag("v-split", "Loafer", "38", 1);
+  Bag("v-split", "Loafer", "39", 1);
+  runas (new Visitor { Id = "v-split" }) {
+    var ways = DeliveryChoices("SE");
+    // The counter has the 38, not the 39; only the warehouse sends, and it has the 39, not the 38.
+    Assert.Equal("Loafer (39) is not in stock there", ways.Single(d => d.Id == "collect").Problem);
+    Assert.Equal("Loafer (38) is not in stock to send", ways.Single(d => d.Id == "courier").Problem);
+    Assert.Contains("Loafer (38) is not in stock to send",
+      Assert.Throws<Exception>(() => PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer", "Storgatan 1", "11122", "Stockholm", "SE")).Message);
+  }
+  runas (Desk) {
+    Assert.Equal(0, Order.Count());
+    // Both places send now: each holds one of them — still not one parcel.
+    var counter = Counter();
+    UpdateLocation(counter, counter.Name, "Storgatan 1", "11122", "Stockholm", "", true, true, true);
+  }
+  runas (new Visitor { Id = "v-split" }) {
+    Assert.StartsWith("No one place has all of it together", DeliveryChoices("SE").Single(d => d.Id == "courier").Problem);
+  }
+}
+
+[Test(Floor)]
+void each_counter_that_hands_orders_over_is_its_own_choice() {
+  Warehouse();
+  runas (Desk) { AddLocation("The pop-up", "popup", "Torget 2", "11130", "Stockholm", "SE", false, true); }
+  Bag("v-two-counters", "Super", "", 1);
+  runas (new Visitor { Id = "v-two-counters" }) {
+    var ways = DeliveryChoices("");
+    Assert.Equal(new List<string> { "collect@shop", "collect@popup" },
+                 ways.Where(d => d.Id.StartsWith("collect")).Select(d => d.Id).ToList());
+    Assert.Contains("Storgatan 1, 11122 Stockholm. Weekdays 10–18", ways.Single(d => d.Id == "collect@shop").Description);
+    // The pop-up holds none of it.
+    Assert.Equal("", ways.Single(d => d.Id == "collect@shop").Problem);
+    Assert.Equal("Super is not in stock there", ways.Single(d => d.Id == "collect@popup").Problem);
+  }
+  var order = PlaceTo("v-two-counters", "collect@shop");
+  runas (Desk) { Assert.Equal("The counter", order.Location!.Name); }
+}
+
+[Test(Floor)]
+void a_lapsed_order_puts_its_goods_back_where_they_were_taken() {
+  var w = Warehouse();
+  Move("Loafer", "38", w, 2);
+  Bag("v-lapse-at", "Loafer", "38", 2);
+  var order = PlaceTo("v-lapse-at", "courier");
+  runas (Desk) {
+    Assert.Equal(0, StockAt(w, Pick("Loafer", "38")));
+    TestClock.Advance(TimeSpan.FromDays(4));
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Lapsed, order.Status);
+    Assert.Equal(2, StockAt(w, Pick("Loafer", "38")));
+    Assert.Equal(0, StockAt(Counter(), Pick("Loafer", "38")));
+    Assert.Equal(0, StockLevel.Single(s => s.Location == w).Reserved);
+    Assert.Equal(0, Pick("Loafer", "38").Reserved);
+  }
+}
+
+[Test(Floor)]
+void a_transfer_is_on_the_road_until_it_is_received_and_every_step_is_recorded() {
+  var w = Warehouse();
+  runas (Desk) {
+    var v = Pick("Loafer", "38");
+    var t = SendTransfer(v, Counter(), w, 2, "Van on Tuesday");
+    // On the road: out of the counter, in no location, sold from nowhere.
+    Assert.Equal(TransferStatus.InTransit, t.Status);
+    Assert.Equal(0, v.Stock);
+    Assert.Equal(0, Buyable(v));
+    Assert.Equal(2, StockByLocation().Single(r => r.Name == "Loafer (38)").InTransit);
+    Assert.Throws<Exception>(() => SendTransfer(v, Counter(), w, 1, ""));   // nothing left to send
+    ReceiveTransfer(t);
+    Assert.Equal(2, StockAt(w, v));
+    Assert.Equal(2, v.Stock);
+    Assert.Throws<Exception>(() => ReceiveTransfer(t));
+    Assert.Equal(new List<string> { "The counter -2 TransferOut", "The warehouse 2 TransferIn" },
+      StockMove.Where(m => m.Variant == v).OrderBy(m => m.Change).ToList().Select(m => $"{m.Location!.Name} {m.Change} {m.Reason}").ToList());
+    // Called off: back where it left.
+    var back = SendTransfer(v, w, Counter(), 1, "");
+    CancelTransfer(back);
+    Assert.Equal(TransferStatus.Cancelled, back.Status);
+    Assert.Equal(2, StockAt(w, v));
+  }
+  // Only staff move stock between places.
+  runas (Packer) { Assert.Throws<Exception>(() => SendTransfer(Pick("Loafer", "38"), w, Counter(), 1, "")); }
+}
+
+[Test(Floor)]
+void stock_is_counted_and_corrected_per_location_and_alerts_follow_the_whole_shop() {
+  var w = Warehouse();
+  Buy("v-last-chelsea", "Chelsea", "38", 1);
+  Assert.Equal("We will mail you when it is back.", NotifyMe(Pick("Chelsea", "38"), "wait@example.test"));
+  runas (Desk) {
+    var v = Pick("Chelsea", "38");
+    Assert.Contains("The warehouse has only 0", Assert.Throws<Exception>(() => AdjustStockAt(w, v, -1, StockReason.Damaged, "")).Message);
+    Assert.Equal(3, AdjustStockAt(w, v, 3, StockReason.Received, "Delivery 14"));
+    Assert.Equal(3, v.Stock);
+    Assert.Equal("The warehouse", StockMove.Single(m => m.Note == "Delivery 14").Location!.Name);
+    // Back in the shop — anywhere — is back for whoever waited.
+    Assert.Equal(1, ShopMail.Count(m => m.To == "wait@example.test"));
+    // A spreadsheet's count is the whole shop's, and the difference is the default's; it cannot count below the rest.
+    Assert.Equal(0, StockAt(Counter(), v));
+  }
+}
+
+[Test(Floor)]
+void a_return_goes_back_to_the_location_staff_choose() {
+  var w = Warehouse();
+  var reference = "";
+  runas (Maja) {
+    Bag("v-ret-at", "Loafer", "39", 1);
+    reference = Checkout("v-ret-at").Reference;
+  }
+  runas (Desk) { PayAndSend(reference); }
+  runas (Maja) { ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, ""); }
+  runas (Desk) {
+    var ret = ReturnRequest.Single();
+    // Handed in at the counter it was collected from, and put in the van for the warehouse.
+    ReceiveReturnAt(ret, true, w);
+    Assert.Equal(1, StockAt(w, Pick("Loafer", "39")));
+    Assert.Equal(0, StockAt(Counter(), Pick("Loafer", "39")));
+    Assert.Equal("The warehouse", StockMove.Single(m => m.Reason == StockReason.Returned).Location!.Name);
+  }
+}
+
+// SECURITY-INVARIANT(a-packer-sees-only-their-locations-orders) is guarded here: a packer limited to one location reads
+// that location's orders and their addresses, and no other's.
+[Test(Floor)]
+void a_packer_limited_to_a_location_sees_only_its_orders() {
+  var w = Warehouse();
+  Move("Loafer", "38", w, 1);
+  Bag("v-pack-counter", "Loafer", "38", 1);
+  var atCounter = PlaceTo("v-pack-counter", "collect");
+  Bag("v-pack-post", "Loafer", "38", 1);
+  var byPost = PlaceTo("v-pack-post", "courier");
+  runas (Desk) {
+    var grant = ShopRoleGrant.Single(g => g.Member.Email == "pia@shop.test");
+    grant.Location = w;
+    UnitOfWork.Commit();
+  }
+  runas (Packer) {
+    Assert.Equal(new List<string> { byPost.Reference }, Order.ToList().Select(o => o.Reference).ToList());
+    Assert.Equal(1, OrderContact.Count());
+    Assert.Equal(1, OrderLine.Count());
+  }
+  // A packer for every location, as before, sees both.
+  runas (Desk) {
+    ShopRoleGrant.Single(g => g.Member.Email == "pia@shop.test").Location = null;
+    UnitOfWork.Commit();
+  }
+  runas (Packer) { Assert.Equal(2, Order.Count()); }
+}

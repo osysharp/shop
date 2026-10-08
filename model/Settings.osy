@@ -1,0 +1,130 @@
+// The shop itself — its name, its money, how it hands goods over and how it is paid. One row, which the desk edits:
+// a shop owner changes the delivery fee or the bank details without a developer and without a recompile.
+
+namespace Osysharp.Shop;
+
+/// THE SHOP — one row. Seed it with the app's data (`data/shop.json`) or from the desk; every function that needs a
+/// name, a currency or a rule reads it through `TheShop()`.
+public entity ShopSettings {
+  [Required, MaxLength(80)] string Name;
+  /// ISO 4217: "EUR", "SEK", "USD".
+  [Required, MaxLength(3)] string Currency = "EUR";
+  /// How a price is written: "€" before the number, or "kr" after it (`SymbolAfter`).
+  [Required, MaxLength(6)] string CurrencySymbol = "€";
+  bool SymbolAfter = false;
+  /// Put in front of every order number — "RC-" makes order 1041 read "RC-1041".
+  [MaxLength(8)] string OrderPrefix = "";
+  /// How long an unpaid order holds its goods before they go back on sale.
+  int HoldDays = 3;
+  /// What a `FlatRateDelivery` the app gives no `Price` charges (Setup.osy, `FillFromTheDesk`) — read by the shop where
+  /// it quotes, so a fee staff change here applies to the next order without a recompile.
+  decimal DeliveryFee = 0;
+  /// A `FlatRateDelivery` the app gives no `FreeFrom` is free from this subtotal up. Zero: never free.
+  decimal FreeDeliveryFrom = 0;
+  /// What a customer paying by transfer is told — for a `ManualPayment` the app gives no `Instructions` (Setup.osy,
+  /// `HandPayInstructions`).
+  [MaxLength(400)] string? BankDetails;
+  /// The seller as every invoice and credit note must name it: the company's registration number, its VAT number and
+  /// its registered address.
+  [MaxLength(40)] string? CompanyNumber;
+  /// The EORI number customs knows the shop by — needed to send a parcel out of the EU.
+  [MaxLength(17)] string? Eori;
+  [MaxLength(40)] string? VatNumber;
+  [MaxLength(300)] string? CompanyAddress;
+  /// Where a `CollectInStore` the app gives no `Address` is collected from (Setup.osy, `FillFromTheDesk`).
+  [MaxLength(300)] string? CollectionAddress;
+  [MaxLength(200)] string? ContactEmail;
+  /// Where a new order is announced, and a paid one — the shop's own inbox. Empty: nobody is mailed.
+  [MaxLength(200)] string? OrderAlertEmail;
+  /// Where the shop lives on the web — "https://shop.example" — so a mail can link back to it. Without it a
+  /// password-reset mail carries a code to type instead of a link.
+  [MaxLength(200)] string? SiteUrl;
+  /// Who the shop's mail comes from — "Rust & Chrome <orders@rustandchrome.se>". Mail is sent through Resend once
+  /// this and the `ResendApiKey` secret are both set; until then it waits in the outbox, where the desk can read it.
+  [MaxLength(200)] string? MailFrom;
+  /// How many days after an order is sent the customer may return it. The law's floor in the EU is 14 from delivery.
+  int ReturnDays = 30;
+  /// The VAT a price INCLUDES, in percent, for a product of the STANDARD class — 25 in Sweden. A receipt states the VAT
+  /// part of the total, per rate. Zero: none shown.
+  decimal VatPercent = 0;
+  /// The reduced and the lower rates, for products classed so — 12 and 6 in Sweden (food and hotels; books and
+  /// transport). Zero where the country has none.
+  decimal VatReducedPercent = 0;
+  decimal VatLowerPercent = 0;
+  /// Where the shop is registered for VAT — ISO 3166 alpha-2.
+  [MaxLength(2)] string HomeCountry = "SE";
+  /// The shop's own time zone — what a DAY means to it: a code "valid until 9 October" ends at midnight here, not in
+  /// UTC. Stockholm until staff say otherwise.
+  Zone TimeZone = Zone.Of("Europe/Stockholm");
+  /// Registered for the EU's One-Stop Shop: a consumer sale delivered to another EU country carries THAT country's
+  /// VAT (`VatCountry`), not the shop's. Required once cross-border consumer sales pass €10,000 a year.
+  bool OssRegistered = false;
+  /// For a shop that sells to BUSINESSES: prices are SHOWN without VAT, marked "excl. VAT". What is stored and charged
+  /// does not change — a price is still entered with VAT in it. ⚠ A shop selling to consumers in the EU must show
+  /// prices WITH VAT (Directive 98/6/EC), so this stays off unless the customers are businesses.
+  bool PricesExcludeVat = false;
+  /// How an amount converted INTO the shop's own currency is made a price the shop would set — the rule of its own
+  /// currency, as `ExchangeRate.Rounding` is a sold currency's. Used when something agreed in a currency the shop stops
+  /// selling moves to its own (a subscription, D-SELLCURRENCY1). To the cent until staff say otherwise.
+  PriceRounding Rounding = PriceRounding.Cents;
+  /// The shop's own words for its terms, its privacy notice and its returns policy — shown on their own pages and
+  /// edited from the desk. Paragraphs are separated by a blank line.
+  string? Terms;
+  string? Privacy;
+  string? ReturnsPolicy;
+  /// How long a gift card is valid, in months from the day it is issued. ⚠ Sold to a consumer in Sweden it must be
+  /// valid for at least a year (see the kit README), so the shop refuses less than 12.
+  int GiftCardMonths = 24;
+  /// What a buyer may choose as a gift card's amount, when the card lets them (`Variant.AnyAmount`).
+  decimal GiftCardMin = 100;
+  decimal GiftCardMax = 5000;
+  /// Gift cards sold from now on are SINGLE-PURPOSE vouchers (EU VAT Directive 2006/112/EC art. 30a(2) and 30b(1), as
+  /// amended by Directive 2016/1065): the VAT, at the standard rate (`VatPercent`), is due when a card is SOLD, and
+  /// what the card later pays for carries no second VAT. Off: multi-purpose vouchers — no VAT when sold, the goods'
+  /// own VAT when spent. Only right for a shop whose goods all carry ONE rate and which sells in ONE country — the desk
+  /// warns otherwise (`GiftCardKindWarnings`). Each card keeps the kind it was sold as (`GiftCard.SinglePurpose`), so
+  /// turning this on or off never re-books a card already sold.
+  bool GiftCardsAreSinglePurpose = false;
+  /// How many times a bought file may be downloaded, and for how many days after the order is paid.
+  int DownloadLimit = 5;
+  int DownloadDays = 30;
+  invariant GiftCardMonths >= 12 message "A gift card sold to a consumer is valid for at least a year.";
+  invariant DownloadLimit >= 1 && DownloadDays >= 1 message "A download is allowed at least once, for at least a day.";
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update when IsShopStaff;
+  }
+}
+
+/// The shop's one settings row. A shop with none has not been set up, and says so rather than inventing a name.
+[AllowAnonymous]
+/// An address on the store for a mail's link: after the shop's own `SiteUrl` when it has one, else after the address
+/// the app is served at — so every mail links back, whether or not the desk has filled in "Web address". A mail whose
+/// button quietly vanished because one setting was empty (the bag reminder, "See your order", a password reset) is the
+/// failure this exists to end.
+public string ShopLink(string path) {
+  // Not `TheShop()`: a sign-up's or a reset's mail links back before the shop has been set up, too.
+  var root = ShopSettings.FirstOrDefault()?.SiteUrl;
+  return (root == null || root.Trim() == "" ? App.BaseUrl : root).TrimEnd('/') + path;
+}
+
+/// Make the shop's one settings row from its name — what the desk does on a shop's first day; every other setting reads
+/// its default until the desk changes it. Staff only, by the row's own `security`. A shop already set up is refused.
+public void SetUpTheShop(string name) {
+  if (ShopSettings.Any()) { throw new Exception("This shop is already set up — change its settings on the desk."); }
+  if (name.Trim() == "") { throw new Exception("Give the shop a name."); }
+  new ShopSettings { Name = name.Trim() };
+  UnitOfWork.Commit();
+}
+
+public ShopSettings TheShop() {
+  var shop = ShopSettings.FirstOrDefault();
+  if (shop == null) { throw new Exception("This shop has not been set up yet — it has no ShopSettings row. Staff add it: signed in, on the desk's settings, or with `osy import --as <staff login>`. The app's setup (`app.Shop`) does not read it — the shop reads what it needs where it uses it."); }
+  return shop;
+}
+
+/// A price as the shop writes it: "€1,200", "€24.50", "349 kr". Whole amounts drop the cents.
+public string Money(decimal amount, ShopSettings shop) {
+  var number = amount == Math.Round(amount) ? $"{amount:N0}" : $"{amount:N2}";
+  return shop.SymbolAfter ? $"{number} {shop.CurrencySymbol}" : $"{shop.CurrencySymbol}{number}";
+}

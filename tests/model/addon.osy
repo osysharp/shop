@@ -1,0 +1,41 @@
+using Osysharp.Shop;
+using Osysharp.Seo;
+
+/// What the test add-on heard, one row per hook.
+public entity AddOnHeard {
+  [MaxLength(80)] string What;
+  security { allow read, create when IsAnonymous || IsAuthenticated; }
+}
+
+/// An add-on written in the test app, as any kit would write one — found by the shop, never listed: 10% off a bag whose
+/// visit starts `v-promo`, free delivery for `v-freeship`, and a failure for `v-broken` — which must not stop the order.
+public class Promo : IShopAddOn {
+  public string Key() { return "promo"; }
+  public List<Adjustment> Adjust(Basket basket) {
+    var visit = basket.Bag?.VisitId ?? "";
+    if (visit.StartsWith("v-broken")) { throw new Exception("the promo service is down"); }
+    if (visit.StartsWith("v-freeship")) { return [new Adjustment { Label = "Free delivery", FreeDelivery = true, Reference = "ship" }]; }
+    if (visit.StartsWith("v-promo")) { return [new Adjustment { Label = "PROMO10 — 10% off", Amount = Math.Round(basket.Subtotal * 0.1m, 2, MidpointRounding.AwayFromZero), Reference = "promo10" }]; }
+    return [];
+  }
+  /// A rating for the bike alone — as a reviews kit would give one for a product that has reviews.
+  public SeoRating? Rating(Product product) {
+    return product.Name == "Super" ? new SeoRating { Value = 4.5m, Count = 2 } : null;
+  }
+  public void CustomerErased(ShopAccount account) {
+    // A customer whose saved phone is this stands for one whose reviews a locked service cannot delete.
+    if (account.Phone == "000-cannot-erase") { throw new Exception("the reviews service is down"); }
+    new AddOnHeard { What = "erased " + account.Id.ToString() };
+  }
+  /// The shop stopped selling a currency — heard while its rate still stands, so the rate is there to convert at.
+  public void CurrencyNoLongerSold(ExchangeRate rate) { new AddOnHeard { What = $"not sold {rate.Currency} at {rate.PerUnit:0.####}" }; }
+}
+
+// What happens to an order, heard as any kit hears it — after the order's work is committed.
+[On] void HeardPlaced(OrderPlaced e) { new AddOnHeard { What = "placed " + e.Order.Reference }; }
+[On] void HeardPaid(OrderPaid e) { new AddOnHeard { What = "paid " + e.Order.Reference }; }
+[On] void HeardSent(OrderSent e) { new AddOnHeard { What = "sent " + e.Order.Reference }; }
+[On] void HeardDelivered(OrderDelivered e) { new AddOnHeard { What = "delivered " + e.Order.Reference }; }
+[On] void HeardCancelled(OrderCancelled e) { new AddOnHeard { What = "cancelled " + e.Order.Reference }; }
+[On] void HeardRefunded(OrderRefunded e) { new AddOnHeard { What = "refunded " + e.Order.Reference }; }
+[On] void HeardReturn(ReturnRefunded e) { new AddOnHeard { What = "return " + e.Return.Order.Reference }; }

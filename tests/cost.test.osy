@@ -1,0 +1,89 @@
+// WHAT AN ORDER COSTS — the statements one more order sends to the database, and what a member of staff waits for when
+// they place one from the desk. The shop tells what happens to an order as events (Events.osy), which the test app's add-on
+// hears (model/addon.osy) as any add-on kit does; a change that makes an order dearer turns these red with both numbers.
+//
+// ⚑ ONE MORE, NOT THE FIRST: each test places one order before its mark — the first pays what only the first pays (a
+//   counter row, a first run of each workflow). A test settles at once the background work a deployed app queues, so
+//   these are upper bounds on production.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+void Said(string what, string mark) {
+  Log.Information(what + ": " + Cost.StatementsSince(mark) + " statements, " + Cost.RoundTripsSince(mark) + " round trips, "
+    + Cost.RequestsSince(mark) + " requests, " + Cost.ServerCallsSince(mark) + " server calls");
+}
+
+/// One more order placed at the checkout, and the add-on hearing it.
+[Test(Floor)]
+void one_more_order_placed_stays_within_its_budget() {
+  Buy("v-cost-first", "Loafer", "38", 1);
+  Bag("v-cost-next", "Loafer", "39", 1);
+  var mark = Cost.Mark();
+  var reference = Checkout("v-cost-next").Reference;
+  Said("Placed", mark);
+  runas (Desk) { Assert.True(AddOnHeard.Any(h => h.What == "placed " + reference)); }
+  // Measured 98 statements and 85–86 round trips on 2026-10-07, three runs (D-SETTINGCACHE1), from 355 / 342–343 the same
+  // morning: the setup is configuration, worked out once and kept (it had been re-run at every `App.Setting<ShopSetup>()`,
+  // reading the settings row each time — 165); the shop reads the desk's settings where it uses them; and a unit of work
+  // sends a read once while nothing it read has changed (`TheShop()` had read the row 44 times in one checkout). 421 /
+  // 407–408 before the news went out as events. 5%.
+  Assert.AtMost(103, Cost.StatementsSince(mark));
+  Assert.AtMost(91, Cost.RoundTripsSince(mark));
+  Assert.Equal(0, Cost.RequestsSince(mark));
+}
+
+/// …paid and sent from the desk, the add-on hearing each.
+[Test(Floor)]
+void one_more_order_paid_and_sent_stays_within_its_budget() {
+  var first = Buy("v-cost-pay-1", "Loafer", "38", 1);
+  var next = Buy("v-cost-pay-2", "Loafer", "39", 1);
+  runas (Desk) {
+    PayAndSend(first);
+    var mark = Cost.Mark();
+    PayAndSend(next);
+    Said("Paid and sent", mark);
+    Assert.True(AddOnHeard.Any(h => h.What == "sent " + next));
+    // Measured 95 statements, 76 round trips, three runs (D-SETTINGCACHE1), from 182 / 163: the setup kept (132), reads
+    // sent once a unit of work (119), and a workflow leaving or arming a state reading its slots and their clocks once
+    // instead of once per slot definition. 205 / 184 before the events. 5%.
+    Assert.AtMost(100, Cost.StatementsSince(mark));
+    Assert.AtMost(80, Cost.RoundTripsSince(mark));
+  }
+}
+
+/// An order taken on the phone and placed from the desk's page — one more, after the first: what staff wait for.
+[Test(Floor)]
+void one_more_order_placed_from_the_desk_stays_within_its_request_budget() {
+  Ui.Visit("/account/sign-in");
+  Ui.Fill("Email", "anna@shop.test");
+  Ui.Fill("Password", "desk-pass-1");
+  Ui.Click("Sign in");
+  ReadyAnOrderOnThePhone("first@example.test");
+  Ui.Click("Place the order");
+  Assert.Visible("is placed and reserved");
+  ReadyAnOrderOnThePhone("next@example.test");
+  var mark = Cost.Mark();
+  Ui.Click("Place the order");
+  Assert.Visible("is placed and reserved");
+  Said("Placed from the desk", mark);
+  // Measured 5 requests, 3 server calls, 117 statements, 82–83 round trips, three runs (D-SETTINGCACHE1), from 5 / 3 / 270
+  // / 235–236: the setup kept (150), reads sent once a unit of work. The requests are what the page asks for and did not
+  // move. 5 / 3 / 306 / 270 before the events. One request of margin, the calls held exactly, 5% on the statements.
+  Assert.AtMost(6, Cost.RequestsSince(mark));
+  Assert.AtMost(3, Cost.ServerCallsSince(mark));
+  Assert.AtMost(123, Cost.StatementsSince(mark));
+}
+
+/// The desk's New order, filled in to the last click.
+void ReadyAnOrderOnThePhone(string email) {
+  Ui.Visit("/desk");
+  Ui.Click("New order…");
+  Ui.Fill("Find a product", "loaf");
+  Ui.Click("Search");
+  Ui.Click("Add", within: "Loafer (38)");
+  Ui.Fill("Name", "Kim Lind");
+  Ui.Fill("Email", email);
+  Ui.Click("Collect from the shop");
+  Ui.Click("Bank transfer");
+}

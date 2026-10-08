@@ -1,0 +1,88 @@
+// Invoices and credit notes: a paid order is invoiced from a gap-free series, and money given back is a credit note.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Floor)]
+void a_paid_order_is_invoiced_in_sequence_and_an_unpaid_one_is_not() {
+  var first = Buy("v-inv-1", "Loafer", "38", 1);
+  var second = Buy("v-inv-2", "Loafer", "39", 1);
+  var unpaid = Buy("v-inv-3", "Chelsea", "38", 1);
+  runas (Desk) {
+    PayAndSend(first);
+    PayAndSend(second);
+    var a = Invoice.Single(i => i.Order.Reference == first);
+    var b = Invoice.Single(i => i.Order.Reference == second);
+    Assert.Equal(a.Number + 1, b.Number);                           // one series, no gaps
+    Assert.Equal(120m, a.Total);
+    Assert.False(Invoice.Any(i => i.Order.Reference == unpaid));
+  }
+}
+
+[Test(Floor)]
+void a_full_refund_is_a_credit_note_against_the_invoice_rate_by_rate() {
+  runas (Desk) { var shop = TheShop(); shop.VatPercent = 25m; UnitOfWork.Commit(); }
+  var reference = Buy("v-inv-refund", "Loafer", "38", 1);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    MarkPaid(order, "");
+    Workflow.Settle(order);
+    RefundOrder(order, "Changed their mind", true);
+    Workflow.Settle(order);
+    var note = CreditNote.Single(c => c.Invoice.Order == order);
+    Assert.Equal(120m, note.Total);
+    Assert.Equal(24m, note.Vat);
+    Assert.Equal(24m, note.VatRates.Single(v => v.Percent == 25m).Vat);
+    Assert.Equal("Changed their mind", note.Reason);
+    Assert.Equal(120m, Invoice.Single(i => i.Order == order).Total);   // the invoice is never edited
+  }
+}
+
+[Test(Floor)]
+void a_return_is_credited_at_the_rates_its_lines_were_sold_at() {
+  runas (Desk) {
+    var shop = TheShop(); shop.VatPercent = 25m; shop.VatReducedPercent = 12m; UnitOfWork.Commit();
+    SetProductVat(Product.Single(p => p.Name == "Chelsea"), VatClass.Reduced);
+  }
+  var reference = "";
+  runas (Maja) {
+    Bag("v-promo-cn", "Loafer", "38", 1);
+    Bag("v-promo-cn", "Chelsea", "38", 1);
+    reference = Checkout("v-promo-cn").Reference;             // 10 % off from the test add-on
+  }
+  runas (Desk) { PayAndSend(reference); }
+  runas (Maja) { ReturnItem(OrderLine.Single(l => l.Order.Reference == reference && l.ProductName == "Chelsea"), 1, ""); }
+  runas (Desk) {
+    var ret = ReturnRequest.Single();
+    ReceiveReturn(ret, true);
+    Workflow.Settle(ret);
+    var note = CreditNote.Single(c => c.Return == ret);
+    Assert.Equal(171m, note.Total);                             // 190 less its 10 %
+    Assert.Equal(171m, note.VatRates.Single().Gross);
+    Assert.Equal(12m, note.VatRates.Single().Percent);
+    Assert.Equal(18.32m, note.Vat);                             // 171 × 12/112
+  }
+  runas (Maja) {
+    var note = CreditNote.Single();
+    var hex = Crypto.ToHex(CreditNotePdf(note)).ToUpper();
+    Assert.Contains(Crypto.ToHex(Text.ToBytes("Credit note")).ToUpper(), hex);
+    Assert.NotEqual("", CreditNoteLink(note));
+  }
+  runas (Olle) { Assert.Empty(CreditNote.ToList()); }           // nobody else's
+}
+
+[Test(Floor)]
+void the_receipt_of_a_paid_order_is_its_invoice_and_names_the_seller() {
+  runas (Desk) {
+    var shop = TheShop(); shop.CompanyNumber = "556677-8899"; shop.VatNumber = "SE556677889901"; UnitOfWork.Commit();
+  }
+  var reference = "";
+  runas (Maja) { reference = Buy("v-inv-pdf", "Loafer", "38", 1); }
+  runas (Desk) {
+    PayAndSend(reference);
+    var hex = Crypto.ToHex(ReceiptPdf(Order.Single(o => o.Reference == reference))).ToUpper();
+    Assert.Contains(Crypto.ToHex(Text.ToBytes("Receipt / invoice")).ToUpper(), hex);
+    Assert.Contains(Crypto.ToHex(Text.ToBytes("VAT no. SE556677889901")).ToUpper(), hex);
+    Assert.Contains(Crypto.ToHex(Text.ToBytes("Company no. 556677-8899")).ToUpper(), hex);
+  }
+}

@@ -1,0 +1,167 @@
+// Wholesale (Wholesale.osy): an account staff made a business customer buys at its price list — the list's own price,
+// else a percentage off — within the list's minimums, and may pay by invoice on the list's terms. Nobody else sees a
+// wholesale price, and nobody else is offered an invoice.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// A list for cafés — 20 % off, the Loafer 38 at 90 by two or more, orders from 300, 30 days to pay — with Olle's
+/// account on it, its VAT number checked.
+PriceList Cafes() {
+  runas (Desk) {
+    var list = SavePriceList(null, "Cafés", 20m, 300m, 30);
+    SetListPrice(list, Pick("Loafer", "38"), "", 90m, 2);
+    Assert.Equal("Muster GmbH", MakeWholesale(Olle(), list, "SE 5566778899 01", true));
+    return list;
+  }
+}
+
+/// What a customer would try: a price list of their own.
+void MakeMyOwnList() {
+  new PriceList { Name = "Mine", PercentOff = 90m };
+  UnitOfWork.Commit();
+}
+
+ShopAccount Olle() {
+  runas (Desk) { return ShopAccount.Single(a => a.Email == "olle@example.test"); }
+}
+
+/// Olle's bag placed as a collection paid `payment` — answers the order, read as staff.
+Order OlleOrders(string visit, string payment) {
+  runas (Olle) {
+    var reference = CheckoutWith(visit, payment).Reference;
+    runas (Desk) { return Order.Single(o => o.Reference == reference); }
+  }
+}
+
+[Test(Floor)]
+void a_wholesale_account_buys_at_its_price_list() {
+  Cafes();
+  runas (Olle) {
+    Bag("v-olle", "Loafer", "38", 2);
+    var bag = BagFor(false)!;
+    // Its own price on the list; the Loafer 39 and the Chelsea (190 as a size) at 20 % off.
+    Assert.Equal(90m, LinePrice(bag.Lines.Single()));
+    var quote = CheckoutQuote("collect", "");
+    Assert.Equal("Cafés", quote.PriceList);
+    Assert.Equal(180m, quote.Goods);
+    Assert.Equal("An order on your price list is at least €300. Add €120 more.", quote.Problem);
+    Assert.Contains("at least €300", Assert.Throws<Exception>(() => CheckoutWith("v-olle", "banktransfer")).Message);
+    Bag("v-olle", "Chelsea", "38", 1);
+    Assert.Equal("", CheckoutQuote("collect", "").Problem);
+    Assert.Equal(332m, CheckoutQuote("collect", "").Goods);
+    var mine = MyPriceList()!;
+    Assert.Equal(20m, mine.PercentOff);
+    Assert.Equal(96m, ListUnit(mine, Pick("Loafer", "39").Id, 120m, ""));
+    Assert.Equal(2, ListMinimum(mine, Pick("Loafer", "38").Id));
+  }
+  var order = OlleOrders("v-olle", "banktransfer");
+  runas (Desk) {
+    Assert.Equal(OrderStatus.Reserved, order.Status);
+    Assert.Equal(332m, order.Subtotal);
+    Assert.Equal(90m, order.Lines.Single(l => l.VariantLabel == "38" && l.ProductName == "Loafer").Price);
+    // The invoice is made out to the company the register named.
+    Assert.Equal("Muster GmbH", order.BuyerCompany);
+    Assert.Equal("SE556677889901", order.BuyerVatNumber);
+  }
+}
+
+[Test(Floor)]
+void a_line_under_the_lists_minimum_is_refused() {
+  Cafes();
+  runas (Olle) {
+    Bag("v-olle-min", "Loafer", "38", 1);
+    Bag("v-olle-min", "Super", "", 1);
+    Assert.Equal("Loafer (38) is sold to you by 2 or more. Your bag has 1.", CheckoutQuote("collect", "").Problem);
+    Assert.Contains("by 2 or more", Assert.Throws<Exception>(() => CheckoutWith("v-olle-min", "banktransfer")).Message);
+  }
+}
+
+// SECURITY-INVARIANT(wholesale-prices-are-their-accounts-alone)'s guard.
+[Test(Floor)]
+void a_retail_visitor_never_sees_a_wholesale_price() {
+  Cafes();
+  // A visitor, and a customer who is not on the list, read no list and no price on one…
+  Assert.Equal(0, PriceList.Count());
+  Assert.Equal(0, PriceListPrice.Count());
+  Assert.Null(MyPriceList());
+  runas (Maja) {
+    Assert.Equal(0, PriceList.Count());
+    Assert.Equal(0, PriceListPrice.Count());
+    Assert.Equal(0, WholesaleAccount.Count());
+    Assert.Null(MyPriceList());
+    // …buy at the retail price…
+    Bag("v-maja-retail", "Loafer", "38", 1);
+    Assert.Equal(120m, LinePrice(BagFor(false)!.Lines.Single()));
+    // …and cannot put themselves on it.
+    Assert.Throws<Exception>(() => MakeMyOwnList());
+  }
+  // The account on it reads its own list; staff read all of it.
+  runas (Olle) { Assert.Equal(1, PriceListPrice.Count()); }
+  runas (Desk) { Assert.Equal(1, PriceList.Count()); }
+}
+
+[Test(Floor)]
+void only_a_wholesale_account_is_offered_an_invoice_and_its_order_goes_out_before_it_is_paid() {
+  Cafes();
+  runas (Maja) {
+    Assert.False(PaymentChoices(true).Any(p => p.Key == "invoice"));
+    Bag("v-maja-inv", "Super", "", 1);
+    Assert.Contains("not on offer", Assert.Throws<Exception>(() => CheckoutWith("v-maja-inv", "invoice")).Message);
+  }
+  runas (Olle) {
+    Bag("v-olle-inv", "Super", "", 1);
+    Assert.True(PaymentChoices(true).Any(p => p.Key == "invoice"));
+  }
+  var order = OlleOrders("v-olle-inv", "invoice");
+  runas (Desk) {
+    // Confirmed on its terms: sold, invoiced with the day it is due, ready to pick — and not paid.
+    Assert.Equal(OrderStatus.Paid, order.Status);
+    Assert.Null(order.PaidAt);
+    Assert.Equal(30, order.PaymentTermsDays);
+    Assert.Equal(DateOnly.FromDateTime(DateTime.UtcNow.AddDays(30)), DateOnly.FromDateTime(order.InvoiceDueAt!.Value));
+    var invoice = Invoice.Single(i => i.Order == order);
+    Assert.Equal(30, invoice.TermsDays);
+    Assert.NotNull(invoice.DueAt);
+    Assert.Equal(0, Pick("Super", "").Stock);
+    Assert.Equal(0, Pick("Super", "").Reserved);
+    Assert.Equal(new List<string> { order.Reference }, UnpaidInvoices().Select(o => o.Reference).ToList());
+    Assert.True(ShopMail.Any(m => m.Subject.StartsWith("Confirmed — order " + order.Reference)));
+    // It goes out…
+    MarkPacked(order);   Workflow.Settle(order);
+    MarkSent(order, ""); Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Delivered, order.Status);
+    // …and is paid when the money comes.
+    MarkInvoicePaid(order, "Bank transfer");
+    Assert.NotNull(order.PaidAt);
+    Assert.Equal(0, UnpaidInvoices().Count);
+    Assert.Throws<Exception>(() => MarkInvoicePaid(order, ""));
+  }
+}
+
+[Test(Floor)]
+void a_customer_cannot_write_their_own_invoice_terms() {
+  runas (Maja) {
+    Bag("v-forge-terms", "Loafer", "38", 1);
+    new Order { Fulfilment = Fulfilment.Collect, DeliveryMethod = "collect", PaymentMethod = "invoice", Subtotal = 120m, Total = 120m,
+                Account = Me(), PlacedAt = DateTime.UtcNow, Reference = "KT-TERMS", InvoiceDueAt = DateTime.UtcNow.AddDays(90), PaymentTermsDays = 90 };
+    Assert.Throws<Exception>(() => UnitOfWork.Commit());
+  }
+  runas (Desk) { Assert.Equal(0, Order.Count()); }
+}
+
+[Test(Floor)]
+void a_wholesale_account_that_ends_buys_at_retail_again() {
+  var list = Cafes();
+  runas (Desk) { EndWholesale(Olle()); }
+  runas (Olle) {
+    Bag("v-olle-ended", "Loafer", "38", 1);
+    Assert.Equal(120m, LinePrice(BagFor(false)!.Lines.Single()));
+    Assert.Null(MyPriceList());
+    Assert.Equal(0, PriceListPrice.Count());
+  }
+  runas (Desk) {
+    // A number the register does not know is refused.
+    Assert.Contains("not a valid VAT number", Assert.Throws<Exception>(() => MakeWholesale(Olle(), list, "SE000000000", true)).Message);
+  }
+}

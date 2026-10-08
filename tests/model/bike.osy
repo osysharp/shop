@@ -1,0 +1,21 @@
+// The test app's OWN product type — what the kit's Catalogue.osy promises any shop can write: `entity Bike : Product`
+// carries every field a Product has, adds the ones every bike has, and is a Product to every page, query and order
+// the kit ships (one table, the language's own inheritance). subtypes.test.osy proves that promise; the site's
+// features page names that test as the row's proof.
+using Osysharp.Shop;
+
+public entity Bike : Product {
+  /// The frame size every bike is sold by — a field no other product has.
+  [MaxLength(20)] string? FrameSize;
+  /// What the frame is made of.
+  [MaxLength(40)] string? Material;
+
+  // ⚠ A SUBTYPE'S SECURITY IS ITS OWN — nothing in this block is inherited from Product (the language doc says so, and
+  //   the first run of subtypes.test.osy measured it: "Create of 'Bike' denied — no security policy grants it"). So a
+  //   type of your own restates the shop's two rules. Anything less and no page can create or read a Bike.
+  security {
+    allow read when IsAnonymous || IsAuthenticated where Status != ProductStatus.Draft;
+    allow read when IsShopStaff;
+    allow create, update, delete when IsShopStaff;
+  }
+}

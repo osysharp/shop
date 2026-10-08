@@ -1,0 +1,136 @@
+// The kit's account components, driven through the screen: sign up and in, keep details, see orders, send one back.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// ⭐ THE SHOP LANDS A NEW CUSTOMER ON THE APP'S ACCOUNT PAGE (`appPage "/account"`): the kit's sign-up navigates to
+/// `/account`, which the APP serves (model/pages/account.osy, around `ShopAccountPanel()`).
+[Test(Floor)]
+void a_visitor_signs_up_and_lands_in_their_account() {
+  Ui.Visit("/account/new");
+  Ui.Fill("Your name", "Nils");
+  Ui.Fill("Email", "nils@example.test");
+  Ui.Fill("Password", "long-enough-1");
+  Ui.Click("Create account");
+  Assert.OnPage("/account");
+  Assert.Visible("Your account");
+  Assert.Visible("nils@example.test");
+  Assert.Visible("No orders yet");
+}
+
+[Test(Floor)]
+void signing_up_with_a_taken_address_says_a_message_is_on_its_way_and_never_that_it_is_taken() {
+  Ui.Visit("/account/new");
+  Ui.Fill("Your name", "Somebody");
+  Ui.Fill("Email", "maja@example.test");
+  Ui.Fill("Password", "not-majas-password");
+  Ui.Click("Create account");
+  Assert.Visible("We have sent a message to maja@example.test — it says what to do next.");
+  Assert.Hidden("There is already an account for that address — sign in, or reset the password.");
+}
+
+[Test(Floor)]
+void a_wrong_password_is_told_and_the_right_one_signs_in() {
+  Ui.Visit("/account/sign-in");
+  Ui.Fill("Email", "maja@example.test");
+  Ui.Fill("Password", "nope");
+  Ui.Click("Sign in");
+  Assert.Visible("That email and password do not match an account.");
+  Ui.Fill("Password", "maja-pass-1");
+  Ui.Click("Sign in");
+  Assert.Visible("Your account");
+}
+
+/// Signs in through the kit's own sign-in page, as a person would.
+void SignInThroughTheUi(string email, string password) {
+  Ui.Visit("/account/sign-in");
+  Ui.Fill("Email", email);
+  Ui.Fill("Password", password);
+  Ui.Click("Sign in");
+  Assert.Visible("Your account");
+}
+
+[Test(Floor)]
+void details_saved_are_there_next_time() {
+  SignInThroughTheUi("maja@example.test", "maja-pass-1");
+  Ui.Click("Details");
+  Ui.Fill("City", "Göteborg");
+  Ui.Click("Save details");
+  Assert.Visible("Saved.");
+  runas (Maja) { Assert.Equal("Göteborg", Me().City); }
+}
+
+[Test(Floor)]
+void a_sent_order_is_returned_from_the_history() {
+  var reference = "";
+  runas (Maja) { reference = Buy("v-ui-ret", "Loafer", "38", 1); }
+  runas (Desk) { PayAndSend(reference); }
+  SignInThroughTheUi("maja@example.test", "maja-pass-1");
+  Assert.Visible(reference);
+  Assert.Visible("Collected");
+  Ui.Click("Return…");
+  Ui.Fill("Why? (optional)", "Too small");
+  Ui.Click("Send it back");
+  Assert.Visible("Returns");
+  Assert.Visible("Waiting for the parcel");
+  runas (Desk) { Assert.Equal(1, ReturnRequest.Count()); }
+}
+
+[Test(Floor)]
+void a_return_sent_with_the_carrier_shows_its_code_in_the_history() {
+  runas (new Visitor { Id = "v-ui-code" }) {
+    var reference = "";
+    runas (Maja) {
+      Bag("v-ui-code", "Loafer", "39", 1);
+      reference = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                             "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+    }
+    runas (Desk) { PayAndSend(reference); }
+    runas (Maja) { ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, "Too big"); }
+    SignInThroughTheUi("maja@example.test", "maja-pass-1");
+    Ui.Click("Get a return code");
+    Assert.Visible("Hand the parcel in and show this code:");
+    Assert.Visible("CODE-" + reference + "-R");
+    Assert.Visible("Follow the parcel");
+  }
+}
+
+[Test(Floor)]
+void a_refunded_order_offers_its_credit_note() {
+  var reference = "";
+  runas (Maja) { reference = Buy("v-ui-cn", "Loafer", "38", 1); }
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    MarkPaid(order, "");
+    Workflow.Settle(order);
+    RefundOrder(order, "Out of stock after all", true);
+    Workflow.Settle(order);
+  }
+  SignInThroughTheUi("maja@example.test", "maja-pass-1");
+  Ui.Click("Credit note −€120");
+  Assert.Visible("Open the credit note (PDF)");
+}
+
+[Test(Floor)]
+void a_customer_takes_a_copy_of_their_data_from_the_account() {
+  SignInThroughTheUi("maja@example.test", "maja-pass-1");
+  Ui.Click("Your data");
+  Ui.Click("Download my data");
+  Assert.Visible("Open the file (JSON)");
+  Assert.Visible("Erase my account…");
+}
+
+[Test(Floor)]
+void the_forgotten_password_page_says_the_same_for_any_address() {
+  Ui.Visit("/account/forgot");
+  Ui.Fill("Email", "nobody@example.test");
+  Ui.Click("Send the link");
+  Assert.Visible("If there is an account for nobody@example.test, a link is on its way.");
+}
+
+[Test(Floor)]
+void the_details_form_opens_with_what_the_account_holds() {
+  SignInThroughTheUi("maja@example.test", "maja-pass-1");
+  Ui.Click("Details");
+  Assert.Value("Name", "Maja Berg");
+}

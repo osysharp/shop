@@ -1,0 +1,27 @@
+using Osysharp.Payments;
+
+/// A way to pay that moves Swedish kronor only — as Swish does — listed in a shop that sells in euros. It is set up and
+/// never offered: the checkout leaves it out, and the desk says why.
+public class KronorOnly : IPaymentProvider {
+  public string Key { get; } = "kronor";
+  public string Label { get; } = "Kronor";
+  public string Description { get; } = "A payment in kronor.";
+  public bool CapturesLater { get; } = false;
+  public bool IsManual { get; } = false;
+  public List<string> EventHeaders { get; } = [];
+  public bool SavesMethods { get; } = false;
+
+  public bool IsReady() { return true; }
+  public string CurrencyRefusal(string currency, string country, string sellers) {
+    return currency == "SEK" ? "" : $"This moves Swedish kronor only, and this shop sells in {currency}.";
+  }
+  public PaymentStart Start(PaymentRequest request) { throw new ExternalServiceException(CurrencyRefusal(request.Currency, "", "SEK")); }
+  public PaymentCheck Check(string reference, long amount, string token) { return new PaymentCheck { Message = "Not paid." }; }
+  public PaymentCheck ChargeSaved(string savedMethod, PaymentRequest request) { return new PaymentCheck { State = PaymentState.Failed }; }
+  public void ForgetMethod(string savedMethod) { }
+  public void Capture(string providerRef, long amount) { }
+  public PaymentRefund Refund(string providerRef, long amount, string reason, string idempotencyKey) { return new PaymentRefund(); }
+  public void Cancel(string providerRef) { }
+  public List<Payout> Payouts(DateTime from, DateTime to) { return []; }
+  public List<PaymentEvent> HandleEvent(string body, Dictionary<string, string> headers) { return []; }
+}

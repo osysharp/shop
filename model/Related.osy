@@ -1,0 +1,144 @@
+// "You may also like" — what a product page offers beside the product: first what people who bought it bought with
+// it, then what sits on the same shelf.
+//
+// ⚑ BOUGHT TOGETHER MEANS PAID FOR TOGETHER. An order that was only reserved, lapsed or called off says nothing about
+//   what goes with what; one that was paid (and is being packed, is on its way, or arrived) does — until it is
+//   refunded or voided.
+//
+// ⚑ IT IS READ FROM A TALLY, NOT FROM THE ORDERS. A visitor may not read other people's orders (an order is read
+//   through its link, D-ORDERLINK1), and a product page is read by everybody. So the order's workflow, as the shop,
+//   keeps `BoughtTogether` — for each pair of products, how many paid orders held both — and the page reads that:
+//   what goes with what, and never whose basket it was.
+//
+// ⚑ THE ORDER IS DETERMINISTIC, so a page does not reshuffle on every visit and a test can say what comes first: most
+//   orders in common first, then the shop's own `Rank`, then the name, then the address.
+
+namespace Osysharp.Shop;
+
+/// Whether an order counts as bought: paid, and not given back or called off.
+public bool CountsAsBought(OrderStatus status) {
+  return status == OrderStatus.Paid || status == OrderStatus.Picking || status == OrderStatus.Packed
+      || status == OrderStatus.Fulfilled || status == OrderStatus.Delivered;
+}
+
+/// Whether a customer could put some of `product` in their bag right now: listed, and a variant with stock (or one that
+/// never runs out).
+public bool CanBuyNow(Product product, Variant[] variants) {
+  return product.Status == ProductStatus.Listed && variants.Any(v => v.Unlimited || v.Stock > 0);
+}
+
+/// For two products, how many paid orders held both — kept by the order's workflow (`CountBoughtTogether`), one row
+/// per direction so a product's page reads its own rows. Anybody may read it: it says what sells together, never who
+/// bought what.
+public entity BoughtTogether {
+  [Required] Product Product;
+  [Required] Product With;
+  [ConcurrencyCheck] int Orders = 0;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+  }
+}
+
+/// Counts `order`'s products as bought together (`by` 1: it was paid) or takes them off again (`by` -1: a paid order
+/// was refunded or voided). Called by the order's workflow, as the shop. Each order is on the tally at most once
+/// (`Order.CountedTogether`): a second count is nothing, and so is taking off one that was never counted — an order
+/// paid before the tally existed and refunded after, until the recount below has counted it.
+void CountBoughtTogether(Order order, int by) {
+  if ((by > 0) == order.CountedTogether) { return; }
+  order.CountedTogether = by > 0;
+  var products = order.Lines.ToList().Select(l => l.Variant.Product).DistinctBy(p => p.Id).ToList();
+  foreach (var p in products) {
+    foreach (var q in products.Where(x => x.Id != p.Id)) {
+      var row = BoughtTogether.FirstOrDefault(b => b.Product == p && b.With == q);
+      if (row == null) { row = new BoughtTogether { Product = p, With = q }; }
+      row.Orders = Math.Max(row.Orders + by, 0);
+    }
+  }
+}
+
+// ── counting the orders paid before the tally existed ─────────────────────────────────────────────────────────────
+
+public enum TallyRecountStatus { Asked, Done }
+
+/// A recount of the "bought together" tally from every order there is — the one-off that counts the orders paid before
+/// the tally existed (D-ORDERLINK1), and safe to ask for again whenever: a recount starts from nothing and ends where
+/// the orders are, so a second one changes nothing. A store asks for it once by listing a row in its data
+/// (`{ "Key": "bought-together" }`), or staff do (`RecountBoughtTogether`); its workflow counts, as the shop.
+public entity BoughtTogetherRecount {
+  [Required, Unique, MaxLength(80)] string Key;
+  TallyRecountStatus Status;                           // no default — BoughtTogetherRecounting owns it
+  /// How many orders it found paid for (and not given back) — what the tally now counts.
+  int Orders = 0;
+  DateTime? DoneAt;
+  security {
+    allow read, create when IsShopStaff;
+  }
+}
+
+public workflow BoughtTogetherRecounting {
+  Tracks    = BoughtTogetherRecount.Status;
+  Autostart = true;
+  Initial   = Asked;
+  state Asked {
+    enter {
+      this.Item.Orders = RecountTally();
+      this.Item.DoneAt = DateTime.UtcNow;
+      goto Done;
+    }
+  }
+  terminal success Done { }
+}
+
+/// Counts the tally again from the orders: every row to nothing, then each order that counts as bought, once. Answers
+/// how many orders it counted. Idempotent: from any tally — empty, half-counted, counted twice — it ends at the same one.
+int RecountTally() {
+  foreach (var row in BoughtTogether.ToList()) { row.Orders = 0; }
+  var counted = 0;
+  foreach (var order in Order.Include(o => o.Lines).ToList()) {
+    order.CountedTogether = false;
+    if (CountsAsBought(order.Status)) {
+      CountBoughtTogether(order, 1);
+      counted = counted + 1;
+    }
+  }
+  return counted;
+}
+
+/// Staff recount the tally now — the same one-off a store's data asks for, run again. Answers how many orders it counted.
+[Authorize(IsShopStaff)]
+public int RecountBoughtTogether() {
+  var job = new BoughtTogetherRecount { Key = $"desk-{DateTime.UtcNow.ToString("yyyyMMddHHmmss")}-{Security.RandomHex(4)}" };
+  UnitOfWork.Commit();
+  return job.Orders;
+}
+
+/// Up to `count` products to show beside `product`: those bought together with it on paid orders — the most orders in
+/// common first — then the rest of its category. Never the product itself, and only what is listed and can be bought
+/// now. Loaded with their `Variants` and `Images`, ready for a card.
+[AllowAnonymous]
+public List<Product> RelatedProducts(Product product, int count) {
+  if (count <= 0) { return []; }
+  var tally = BoughtTogether.Where(b => b.Product == product && b.Orders > 0).ToList();
+
+  List<Product> picked = [];
+  if (tally.Count > 0) {
+    var ids = tally.Select(b => b.With.Id).ToList();
+    var together = Product.Where(p => ids.Contains(p.Id)).Include(p => p.Variants).Include(p => p.Images).ToList()
+      .Where(p => CanBuyNow(p, p.Variants))
+      .OrderByDescending(p => tally.Where(b => b.With.Id == p.Id).Select(b => b.Orders).Sum())
+      .ThenBy(p => p.Rank).ThenBy(p => p.Name).ThenBy(p => p.Slug)
+      .ToList();
+    foreach (var p in together) { if (picked.Count < count) { picked.Add(p); } }
+  }
+
+  if (picked.Count < count && product.Category != null) {
+    var shelf = product.Category;
+    var taken = picked.Select(p => p.Id).ToList();
+    var same = Product.Where(p => p.Category == shelf && p.Id != product.Id).Include(p => p.Variants).Include(p => p.Images).ToList()
+      .Where(p => CanBuyNow(p, p.Variants) && !taken.Contains(p.Id))
+      .OrderBy(p => p.Rank).ThenBy(p => p.Name).ThenBy(p => p.Slug)
+      .ToList();
+    foreach (var p in same) { if (picked.Count < count) { picked.Add(p); } }
+  }
+  return picked;
+}

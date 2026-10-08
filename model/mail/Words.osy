@@ -1,0 +1,103 @@
+// The words staff wrote into the shop's mail BEFORE its mails held regions of blocks (D-BLOCKS1 slice 3), and the one
+// move that carries them over.
+//
+// Until slice 3 a mail's editable paragraph was an `Editable` part, its words kept here — one row per template, part and
+// language, published (`ShopMailWords`) or still being written (`ShopMailDraft`). Those paragraphs are now the words
+// block of a region (the confirmation's "shop-order-confirmation", on its way's "shop-shipped", collected's
+// "shop-collected", refunded's "shop-refunded"), kept by Osysharp.Blocks like any page's words.
+//
+// ⚑ NOTHING A SHOP WROTE IS LOST. `MoveShopMailWordsOntoBlocks` puts each published paragraph into the live arrangement of
+//   its region, in every language it was written in, and each unfinished one into a draft beside it — then empties
+//   these two tables. It runs for a member of staff the first time the desk opens after the upgrade (ShopDesk), since it
+//   writes what staff own; until then a mail says the code's default words.
+// ⚑ THE TWO ENTITIES STAY until every shop has moved: a table is where its rows are, and a row cannot be moved out of a
+//   table that is gone. Drop them with a migration once nothing is left in them (ledger D-BLOCKS1, "as built — slice 3").
+
+namespace Osysharp.Shop;
+
+using Osysharp.Blocks;
+
+/// A paragraph's words, as published before the mails held regions — moved onto the region by
+/// `MoveShopMailWordsOntoBlocks`, and empty after.
+[Unique(Template, Part, Language)]
+public entity ShopMailWords {
+  [Required, MaxLength(200)] string Template;
+  [Required, MaxLength(80)] string Part;
+  [Required, MaxLength(35)] string Language;
+  [Required] string Words;
+  DateTime UpdatedAt;
+  security {
+    allow read, create, delete when IsShopStaff;
+  }
+}
+
+/// A paragraph's words that were still being written — moved into a draft of the region, and empty after.
+[Unique(Template, Part, Language)]
+public entity ShopMailDraft {
+  [Required, MaxLength(200)] string Template;
+  [Required, MaxLength(80)] string Part;
+  [Required, MaxLength(35)] string Language;
+  Markdown Body;
+  security {
+    allow read, create, update, delete when IsShopStaff;
+  }
+}
+
+/// Which region a paragraph of the old mails is now — "" for one no mail has any more.
+string RegionOfPart(string template, string part) {
+  if (template == "Osysharp.Shop.ShopOrderConfirmation" && part == "Intro") { return "shop-order-confirmation"; }
+  if (template == "Osysharp.Shop.ShopShipped" && part == "Sent") { return "shop-shipped"; }
+  if (template == "Osysharp.Shop.ShopShipped" && part == "Collected") { return "shop-collected"; }
+  if (template == "Osysharp.Shop.ShopRefunded" && part == "Intro") { return "shop-refunded"; }
+  return "";
+}
+
+/// Moves the words staff wrote into the shop's mails before they held regions onto those regions — the published
+/// words into each region's live arrangement, in every language they were written in, and the unfinished words into a
+/// draft of it — and empties the old tables. Answers how many paragraphs it moved; 0 once there is nothing left.
+/// Idempotent: it moves what is there and nothing twice.
+[Authorize(IsShopStaff)]
+public int MoveShopMailWordsOntoBlocks() {
+  var published = ShopMailWords.ToList();
+  var unfinished = ShopMailDraft.ToList();
+  if (published.Count == 0 && unfinished.Count == 0) { return 0; }
+  var main = MainVersion();
+  var moved = 0;
+  var parts = published.Select(w => w.Template + "|" + w.Part).Concat(unfinished.Select(d => d.Template + "|" + d.Part)).Distinct().ToList();
+  foreach (var key in parts) {
+    var template = key.Substring(0, key.IndexOf("|"));
+    var part = key.Substring(key.IndexOf("|") + 1);
+    var region = RegionOfPart(template, part);
+    if (region != "") {
+      var live = published.Where(w => w.Template == template && w.Part == part).ToList();
+      if (live.Count > 0) {
+        var draft = EditRegion(main.Id, region, "");
+        var words = WordsBlockOf(draft);
+        foreach (var w in live) { SaveBlockValue(words, w.Language, new BlockValue { Name = "words", Text = w.Words }); }
+        PublishRegion(draft);
+      }
+      var writing = unfinished.Where(d => d.Template == template && d.Part == part).ToList()
+        .Where(d => !live.Any(w => w.Language == d.Language && w.Words == $"{d.Body}".Trim())).ToList();
+      if (writing.Count > 0) {
+        var draft = EditRegion(main.Id, region, "");
+        var words = WordsBlockOf(draft);
+        foreach (var d in writing) {
+          var text = $"{d.Body}".Trim();
+          if (text != "") { SaveBlockValue(words, d.Language, new BlockValue { Name = "words", Text = text }); }
+        }
+      }
+      moved = moved + 1;
+    }
+    foreach (var w in published.Where(w => w.Template == template && w.Part == part).ToList()) { w.Delete(); }
+    foreach (var d in unfinished.Where(d => d.Template == template && d.Part == part).ToList()) { d.Delete(); }
+    UnitOfWork.Commit();
+  }
+  return moved;
+}
+
+/// The words block of a region's draft — the paragraph an old mail's part was — put back at the top if staff had taken
+/// it out.
+Guid WordsBlockOf(Guid draft) {
+  var words = DraftOf(draft, App.Languages[0]).Blocks.FirstOrDefault(b => b.Block == "Osysharp.EmailTemplates.EmailWords");
+  return words != null ? words.Id : AddBlock(draft, "Osysharp.EmailTemplates.EmailWords", 0);
+}

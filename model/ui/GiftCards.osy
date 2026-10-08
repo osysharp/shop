@@ -1,0 +1,377 @@
+// The parts of a store's pages gift cards and downloads need — in the store's theme, like the rest of the kit's
+// components: a gift card at the checkout, a balance anybody can check, the account's cards and downloads, a download
+// link's page, and the desk's gift cards.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Ui;
+using Osysharp.Storage;
+
+/// The checkout's gift card field: type a code, it goes on the bag, and the order pays with it first. `onChange`
+/// re-prices the checkout — its `CheckoutQuote` then carries `GiftCards`, card by card, and `ToPay`.
+[Composable]
+[AllowAnonymous]
+public component CheckoutGiftCard(Action onChange) {
+  live var shop = ShopSettings.FirstOrDefault();
+  List<BagGiftCard> cards = [];
+  string code = "";
+  string problem = "";
+  bool open = false;
+  on mount { cards = BagGiftCards(); open = cards.Count > 0; }
+  action Open() { open = true; }
+  action Apply() {
+    problem = "";
+    try { ApplyGiftCard(code); code = ""; cards = BagGiftCards(); onChange(); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action Remove(BagGiftCard c) { RemoveGiftCard(c); cards = BagGiftCards(); onChange(); }
+  render {
+    Stack(gap: 2, label: "Gift card") {
+      if (!open) {
+        Row() { Button("Pay with a gift card", onPress: Open, tone: Tone.Ghost, size: Size.Sm); }
+      } else {
+        foreach (var c in cards) {
+          Row(justify: Justify.Between, align: Align.Center, gap: 3) {
+            Text($"Gift card ending {c.Last4}, {MoneyIn(c.Available, c.Currency, shop)}", fontWeight: FontWeight.Semibold);
+            Button("Remove", onPress: () => Remove(c), tone: Tone.Ghost, size: Size.Sm);
+          }
+        }
+        Row(gap: 2, align: Align.End, wrap: Wrapping.Wrap) {
+          Box(grow: 1, minW: "220px") { Field("Gift card code", value: code, placeholder: "ABCD-EFGH-JKLM-NPQR", onEnter: Apply); }
+          Button("Use it", onPress: Apply);
+        }
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      }
+    }
+  }
+}
+
+/// What is left on a gift card — anybody may ask, by its code.
+[Composable]
+[AllowAnonymous]
+public component ShopGiftCardBalance() {
+  live var shop = ShopSettings.FirstOrDefault();
+  string code = "";
+  GiftCardBalanceView? answer = null;
+  string problem = "";
+  action Check() {
+    problem = "";
+    try { answer = GiftCardBalance(code); }
+    catch (Exception ex) { problem = ex.Message; answer = null; }
+  }
+  render {
+    Stack(gap: 4, label: "Check a gift card") {
+      Row(gap: 2, align: Align.End, wrap: Wrapping.Wrap) {
+        Box(grow: 1, minW: "220px") { Field("Gift card code", value: code, placeholder: "ABCD-EFGH-JKLM-NPQR", onEnter: Check); }
+        Button("Check", onPress: Check, tone: Tone.Primary);
+      }
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      if (answer != null && !answer!.Found) { Alert(answer!.Problem, tone: Tone.Danger); }
+      if (answer != null && answer!.Found) {
+        Stack(gap: 1) {
+          Text($"Gift card ending {answer!.Ending}", color: Colors.TextMuted);
+          Text(MoneyIn(answer!.Balance, answer!.Currency, shop), fontSize: FontSize.Title, fontWeight: FontWeight.Bold, lineHeight: "1");
+          Text(answer!.Problem != "" ? answer!.Problem : $"To spend until {answer!.ValidUntil}.", color: Colors.TextSecondary);
+        }
+      }
+    }
+  }
+}
+
+/// The gift cards the signed-in customer bought: to whom, for how much, when they were sent.
+[Composable]
+public component ShopMyGiftCards() {
+  live var shop = ShopSettings.FirstOrDefault();
+  List<BoughtGiftCard> cards = [];
+  on mount { cards = MyGiftCards(); }
+  render {
+    Stack(gap: 3, label: "Gift cards you bought") {
+      if (cards.Count == 0) { Text("You have not bought a gift card.", color: Colors.TextMuted); }
+      foreach (var c in cards) {
+        Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 3, borderTW: 1, border: Colors.Border) {
+          Stack(gap: 0, minW: "0") {
+            Text($"For {c.To}", fontWeight: FontWeight.Semibold);
+            Text($"{c.State} · valid until {c.ValidUntil}" + (c.OrderReference == "" ? "" : $" · order {c.OrderReference}"),
+                 color: Colors.TextMuted, fontSize: FontSize.Label);
+          }
+          Text(MoneyIn(c.Amount, c.Currency, shop), fontWeight: FontWeight.Semibold, whiteSpace: WhiteSpace.Nowrap);
+        }
+      }
+    }
+  }
+}
+
+/// The signed-in customer's downloads, each with a button while it still opens.
+[Composable]
+public component ShopMyDownloads() {
+  List<DownloadView> downloads = [];
+  string problem = "";
+  on mount { downloads = MyDownloads(); }
+  action Fetch(Download d) {
+    problem = "";
+    try { Navigation.Open(DownloadMine(d)); downloads = MyDownloads(); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    Stack(gap: 3, label: "Downloads") {
+      if (downloads.Count == 0) { Text("Nothing to download yet. What you buy as a file is here once it is paid.", color: Colors.TextMuted); }
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      foreach (var d in downloads) {
+        Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 3, borderTW: 1, border: Colors.Border, wrap: Wrapping.Wrap) {
+          Stack(gap: 0, minW: "0") {
+            Text(d.Product, fontWeight: FontWeight.Semibold);
+            Text(d.Problem != "" ? d.Problem : $"{d.File} · {d.Left} downloads left, until {d.Until}", color: Colors.TextMuted, fontSize: FontSize.Label);
+          }
+          if (d.Problem == "") { Button("Download", onPress: () => Fetch(d.Download!), size: Size.Sm); }
+        }
+      }
+    }
+  }
+}
+
+/// A download link's page: what it is, how many times it still opens, and the button. A store puts it on the route
+/// `ShopSetup.DownloadPath` names: `[Page("/download/{link}")] component P(DownloadLink link)`.
+[Composable]
+[AllowAnonymous]
+public component ShopDownload(DownloadLink link) {
+  DownloadView view = new DownloadView();
+  string problem = "";
+  on mount { view = DownloadFor(link); }
+  action Fetch() {
+    problem = "";
+    try { Navigation.Open(StartDownload(link)); view = DownloadFor(link); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    Stack(gap: 4, label: "Your download") {
+      Stack(gap: 1) {
+        Text(view.Product, fontSize: FontSize.Title, fontWeight: FontWeight.Bold, lineHeight: "1.1");
+        Text($"{view.File} · order {view.OrderReference}", color: Colors.TextMuted);
+      }
+      if (view.Problem != "") {
+        Alert(view.Problem, tone: Tone.Warning);
+      } else {
+        Text($"It opens {view.Left} more {(view.Left == 1 ? "time" : "times")}, until {view.Until}.", color: Colors.TextSecondary);
+        Row() { Button($"Download {view.File}", onPress: Fetch, tone: Tone.Primary, size: Size.Lg); }
+      }
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+    }
+  }
+}
+
+// ── the desk ────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The desk's gift cards: every card, found by its code or its last four characters; issue one; and for a card — its
+/// ledger, add or take, a new code, send it now, void it. Every change asks why, and the ledger keeps who.
+/// `onStoreCredit` opens where staff give store credit — usually simpler than a free card, which the issue dialog points
+/// to first, beside what the add-ons offer instead (`GiftCardGoodwill`: the discount codes kit's codes page).
+[Composable]
+[Authorize(IsShopStaff)]
+public component DeskGiftCards(Action onStoreCredit) {
+  live var shop = ShopSettings.FirstOrDefault();
+  List<string> kindWarnings = [];
+  string search = "";
+  List<GiftCardRow> rows = [];
+  GiftCardRow? showing = null;
+  List<GiftCardLedgerLine> ledger = [];
+  string problem = "";
+  string note = "";
+  // A new card.
+  bool issuing = false;
+  decimal issueAmount = 0;
+  string issueEmail = "";
+  string issueName = "";
+  string issueMessage = "";
+  string issueReason = "";
+  // A change to the card being shown.
+  decimal adjustBy = 0;
+  string why = "";
+
+  on mount { Find(); kindWarnings = GiftCardKindWarnings(); }
+  action Find() { rows = DeskGiftCardRows(search); }
+  action AskIssue() { issuing = true; problem = ""; }
+  action CloseIssue() { issuing = false; }
+  action StoreCreditInstead() { issuing = false; onStoreCredit(); }
+  action Issue() {
+    problem = "";
+    try {
+      IssueGiftCard(issueAmount, issueEmail, issueName, issueMessage, issueReason);
+      issuing = false; issueAmount = 0; issueEmail = ""; issueName = ""; issueMessage = ""; issueReason = "";
+      note = "Issued and mailed."; Find();
+    }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action Show(GiftCardRow r) { showing = r; ledger = GiftCardLedger(r.Card!); problem = ""; why = ""; adjustBy = 0; }
+  action Close() { showing = null; }
+  action Refresh() {
+    Find();
+    var id = showing!.Card!.Id;
+    showing = rows.FirstOrDefault(r => r.Card!.Id == id);
+    if (showing != null) { ledger = GiftCardLedger(showing!.Card!); }
+    why = ""; adjustBy = 0;
+  }
+  action Adjust() {
+    problem = "";
+    try { AdjustGiftCard(showing!.Card!, adjustBy, why); Refresh(); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action Void() {
+    problem = "";
+    try { VoidGiftCard(showing!.Card!, why); Refresh(); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action Replace() {
+    problem = "";
+    try { ReplaceGiftCardCode(showing!.Card!, why); Refresh(); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action SendNow() {
+    problem = "";
+    try { SendGiftCardNow(showing!.Card!); Refresh(); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  // A card in a currency the shop no longer sells: what is left, in the shop's own, at the rate it was sold at.
+  action Reissue() {
+    problem = "";
+    try {
+      var again = ReissueGiftCard(showing!.Card!, why);
+      note = $"Reissued as …{again.Last4} and mailed to {again.SendTo}.";
+      Refresh();
+    }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+
+  render {
+    Stack(gap: 3) {
+      Row(gap: 2, align: Align.End, wrap: Wrapping.Wrap) {
+        Box(grow: 1, minW: "220px") { Field("Find a card: its code, its last four, or where it went", value: search, onEnter: Find); }
+        Button("Find", onPress: Find);
+        Button("Issue a gift card…", onPress: AskIssue, tone: Tone.Primary);
+      }
+      if (note != "") { Alert(note, tone: Tone.Success); }
+      // How a card sold now is taxed — the settings' choice — and why it is wrong for this shop, when it is.
+      Text(shop != null && shop.GiftCardsAreSinglePurpose
+             ? $"Cards sold now are single-purpose vouchers: their VAT ({shop.VatPercent:0.##} %) is paid when they are sold, and none when they are spent. Change it in the settings."
+             : "Cards sold now are multi-purpose vouchers: no VAT when they are sold — what they pay for carries its own. Change it in the settings.",
+           color: Colors.TextMuted, fontSize: FontSize.Label);
+      foreach (var w in kindWarnings) { Alert(w, tone: Tone.Warning); }
+      if (rows.Count == 0) { Text("No gift cards yet.", color: Colors.TextMuted); }
+      foreach (var r in rows) {
+        Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 2, borderTW: 1, border: Colors.Border, label: $"Card ending {r.Ending}") {
+          Stack(gap: 0, minW: "0") {
+            Text($"…{r.Ending} · {r.Status}", fontWeight: FontWeight.Semibold);
+            Text($"{r.SentTo} · {r.Source} · until {r.ValidUntil}" + (r.SendsOn == "" ? "" : $" · goes on {r.SendsOn}"),
+                 color: Colors.TextMuted, fontSize: FontSize.Label);
+            if (r.Reissue != "") { Text(r.Reissue, color: Colors.TextMuted, fontSize: FontSize.Label); }
+            if (r.CanReissue) { Text($"{r.Currency} is no longer sold — it cannot be spent until it is reissued.", color: Colors.Danger, fontSize: FontSize.Label); }
+          }
+          Row(gap: 3, align: Align.Center) {
+            Text($"{MoneyIn(r.Balance, r.Currency, shop)} left", whiteSpace: WhiteSpace.Nowrap);
+            Button("Open", onPress: () => Show(r), size: Size.Sm);
+          }
+        }
+      }
+    }
+    if (issuing) {
+      Dialog("Issue a gift card", onDismiss: CloseIssue, subtitle: "Mailed at once, with its code. The reason stays with the card.") {
+        Stack(gap: 3) {
+          // A free card's goods still carry their VAT when it is spent (D-GIFTCARD-FREECARDS1) — for a sorry or a thank
+          // you, money off or credit on their account is usually the simpler gift.
+          Stack(gap: 2, p: 3, borderW: 1, border: Colors.Border, label: "Usually simpler") {
+            Text("For goodwill — a sorry, a thank-you — a discount code or store credit is usually simpler. A gift card given away is still a multi-purpose voucher: what it pays for carries its VAT when it is spent.",
+                 fontSize: FontSize.Label, color: Colors.TextSecondary);
+            Row(gap: 3, wrap: Wrapping.Wrap, align: Align.Center) {
+              GiftCardGoodwill();
+              Button("Give store credit instead", onPress: StoreCreditInstead, size: Size.Sm, tone: Tone.Ghost);
+            }
+          }
+          DecimalField(label: "Amount", value: issueAmount);
+          Field("Email", value: issueEmail, type: "email", placeholder: "anna@example.com");
+          Field("Their name", value: issueName, hint: "Optional — the mail greets them by it.");
+          Field("A message in the mail", value: issueMessage, hint: "Optional.");
+          Field("Why — for whoever reads the card next", value: issueReason, placeholder: "Sorry about the broken cup.");
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+          Row(gap: 3, justify: Justify.End) {
+            Button("Cancel", onPress: CloseIssue);
+            Button("Issue and mail it", onPress: Issue, tone: Tone.Primary);
+          }
+        }
+      }
+    }
+    if (showing != null) {
+      Dialog($"Gift card ending {showing!.Ending}", onDismiss: Close,
+             subtitle: $"{showing!.Status} · {MoneyIn(showing!.Balance, showing!.Currency, shop)} left · issued for {MoneyIn(showing!.Amount, showing!.Currency, shop)} · until {showing!.ValidUntil}") {
+        Stack(gap: 3) {
+          Text($"{showing!.SentTo} · {showing!.Source} · {showing!.Kind}", color: Colors.TextMuted);
+          if (showing!.Reissue != "") { Text(showing!.Reissue, color: Colors.TextMuted); }
+          // Its currency is no longer sold, so it pays for nothing: the same money on a card in the shop's own.
+          if (showing!.CanReissue && shop != null) {
+            Stack(gap: 2, p: 3, borderW: 1, border: Colors.Border, label: "Reissue it") {
+              Text($"The shop no longer sells in {showing!.Currency}, so this card cannot be spent. Reissued, what is left becomes {MoneyIn(showing!.InShopMoney, null, shop)} on a new card in {shop!.Currency} — at the rate it was sold at, so nothing is gained or lost — of the same kind and valid to the same day. The old code stops working; the new one is mailed to {showing!.SentTo}.",
+                   fontSize: FontSize.Label, color: Colors.TextSecondary);
+              Row(justify: Justify.End) {
+                Button($"Reissue in {shop!.Currency} and mail it", onPress: Reissue, tone: Tone.Primary, size: Size.Sm);
+              }
+            }
+          }
+          Stack(gap: 0, label: "Ledger") {
+            foreach (var l in ledger) {
+              Row(justify: Justify.Between, gap: 3, py: 2, borderTW: 1, border: Colors.Border) {
+                Stack(gap: 0, minW: "0") {
+                  Text(l.What, fontWeight: FontWeight.Semibold);
+                  Text(string.Join(" · ", new List<string> { l.At.ToString("d MMM yyyy HH:mm"), l.Note, l.Who, l.OrderReference }.Where(x => x != "").ToList()),
+                       color: Colors.TextMuted, fontSize: FontSize.Label);
+                }
+                Text((l.Amount >= 0 ? "+" : "−") + MoneyIn(Math.Abs(l.Amount), showing!.Currency, shop), whiteSpace: WhiteSpace.Nowrap);
+              }
+            }
+          }
+          if (showing!.Status == "Active" || showing!.Status == "Waiting to be sent") {
+            Stack(gap: 3, pt: 3, borderTW: 1, border: Colors.Border, label: "Change it") {
+              Field("Why", value: why, placeholder: "Made up for a late parcel");
+              Row(gap: 2, align: Align.End, wrap: Wrapping.Wrap) {
+                Box(w: "140px") { DecimalField(label: "Add (or take, below 0)", value: adjustBy); }
+                Button("Change the balance", onPress: Adjust, size: Size.Sm);
+              }
+              Row(gap: 2, wrap: Wrapping.Wrap) {
+                if (showing!.Status == "Active") { Button("New code, and send it again", onPress: Replace, size: Size.Sm); }
+                if (showing!.Status == "Waiting to be sent") { Button("Send it now", onPress: SendNow, size: Size.Sm); }
+                Button("Void it", onPress: Void, tone: Tone.Danger, size: Size.Sm);
+              }
+            }
+          }
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+        }
+      }
+    }
+  }
+}
+
+/// A variant's file on the desk: what it sells, and uploading it — privately, never under public/.
+[Composable]
+[Authorize(IsShopStaff)]
+public component DeskDownloadFile(Variant variant) {
+  string file = variant.DownloadName ?? "";
+  string link = "";
+  string problem = "";
+  action Keep(UploadedFile f) {
+    problem = "";
+    try { SetDownloadFile(variant, f, ""); file = f.FileName; link = ""; }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action Look() { link = DownloadFileLink(variant); }
+  render {
+    Stack(gap: 1) {
+      Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+        if (file != "") { Text($"Sold as a file: {file}", color: Colors.TextMuted, fontSize: FontSize.Label); }
+        Upload(accept: "application/pdf,application/zip,audio/*,application/epub+zip", privately: true, onUploaded: Keep) {
+          Text(file == "" ? "Sell as a file…" : "Replace the file…", px: 3, py: 1, borderW: 1, border: Colors.Border, rounded: Radius.Md,
+               color: Colors.Primary, fontSize: FontSize.Label);
+        }
+        if (file != "" && link == "") { Button("Check it", onPress: Look, size: Size.Sm, tone: Tone.Ghost); }
+        if (link != "") { TextLink("Open the file", to: link); }
+      }
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+    }
+  }
+}

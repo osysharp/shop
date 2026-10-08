@@ -1,0 +1,274 @@
+// A VERIFIED AGE — the buyer proves it with an identity provider (BankID in Sweden) instead of typing a date of birth.
+//
+// The provider is the app's choice, like payment and delivery: it lists one in `ShopSetup.AgeVerifier` — a class
+// derived from `AgeVerifier`, which `Osysharp.Shop.BankId` provides for BankID and another country's e-ID would provide
+// for its own. With none listed (or one not ready — its certificate not set) the checkout asks for the date of birth as
+// before, and the order says the age was DECLARED: the parcel is handed over against ID.
+//
+// ⚑ WHAT THE SHOP KEEPS IS THE LEAST THAT ANSWERS THE QUESTION. A provider tells the shop a date of birth (BankID gives
+//   a personal identity number, and the BankID kit turns it into the date and drops it). The shop keeps neither: a
+//   check records that the buyer was proved at least N years old — N the age the bag needed — and when, and by which
+//   provider. The order carries the same three facts; a verified order holds no date of birth at all. Nothing more is
+//   needed to sell the wine, to book the parcel or to answer an inspector, so nothing more is kept (data minimisation,
+//   GDPR art. 5(1)(c)).
+//
+// SECURITY-INVARIANT(an-age-is-verified-by-the-verifier): an order says "verified" only when the SERVER asked the
+//   provider and the provider said so, for THIS bag, recently. The check row is the customer's to write — the checkout
+//   writes it as them — so nothing it SAYS is trusted: a verified check carries a `Seal`, a keyed fingerprint
+//   (`Security.Fingerprint`, keyed by the app — no browser holds the key) over the bag, the provider, the age and the
+//   time, written only by `AgeCheckNow` after the provider's own answer. `PriceBag` counts a check only when its seal
+//   is the one the server computes for THIS bag, and the order's workflow prices the order again the same way, so a row
+//   written by hand, a seal copied from another bag (another visit, another customer), or a stale one proves nothing.
+//   The provider's handle is kept encrypted with the bag's id inside it (`Crypto.Encrypt`), so a handle lifted from
+//   somebody else's check cannot be polled from this one either. Guarded by age.test.osy
+//   a_customer_cannot_write_a_verified_check_themselves, a_check_verified_on_one_visit_does_not_verify_another and
+//   a_handle_copied_from_another_bag_is_not_polled.
+
+namespace Osysharp.Shop;
+
+/// Where an age check stands.
+public enum AgeCheckStatus { Waiting, Verified, Failed }
+
+/// What a provider answers when a check starts.
+public class AgeCheckStart {
+  /// The provider's handle for this check — kept by the shop, encrypted, and never shown to the page.
+  public string Handle = "";
+  /// Opens the provider's app on THIS device ("bankid:///?autostarttoken=…") — "" when it has none.
+  public string AppLink = "";
+}
+
+/// What a provider answers when asked how a check stands.
+public class AgeCheckAnswer {
+  public AgeCheckStatus Status = AgeCheckStatus.Waiting;
+  /// The date of birth the provider vouches for — only when `Verified`. The shop reads it once, to compare it with the
+  /// age the bag needs, and keeps none of it.
+  public DateOnly? BornOn = null;
+  /// For the customer: what to do while it waits ("Open BankID and scan the code"), or why it failed.
+  public string Message = "";
+}
+
+/// An identity provider that proves a buyer's age. Derive from it, set `Key` and `Label` in the constructor, and
+/// override what the provider does — the defaults do nothing, and `Offered` says whether the checkout shows it.
+public class AgeVerifier {
+  /// Stable, short, lowercase — "bankid". Kept with every check and on the order.
+  public string Key = "age";
+  /// The provider's name as the customer reads it — "BankID".
+  public string Label = "an identity provider";
+  /// Whether the checkout offers it now — false while its certificate or key is not set.
+  public virtual bool Offered() { return false; }
+  /// Start a check for the buyer at `endUserAddress` (the page's caller, `Request.ClientAddress`). `returnUrl` is where
+  /// the provider's app sends them back on this device. `visibleText` is what the provider's app shows them.
+  public virtual AgeCheckStart Start(string endUserAddress, string returnUrl, string visibleText) {
+    throw new Exception($"{Label} cannot start a check.");
+  }
+  /// What the page shows `seconds` after the check started, for another device to scan — a QR code's text; "" for none.
+  public virtual string Frame(string handle, int seconds) { return ""; }
+  /// How the check stands, from the provider itself.
+  public virtual AgeCheckAnswer Collect(string handle) { return new AgeCheckAnswer(); }
+  /// The buyer gave up, or started again: end the check at the provider, so it does not block the next one.
+  public virtual void Cancel(string handle) { }
+}
+
+/// One attempt to verify the age of whoever is filling a bag.
+public entity AgeCheck {
+  [Required] Bag Bag;
+  /// The provider's `Key`.
+  [Required, MaxLength(40)] string Provider;
+  AgeCheckStatus Status = AgeCheckStatus.Waiting;
+  /// The provider's handle, encrypted with the bag's id inside it — ciphertext, meaningless outside the server.
+  [MaxLength(4000)] string? SealedHandle;
+  /// Opens the provider's app on the device the check started on.
+  [MaxLength(1000)] string? AppLink;
+  DateTime StartedAt;
+  /// When the provider was last asked — it is asked at most every two seconds, as BankID asks.
+  DateTime? AskedAt;
+  /// What the customer reads now: what to do while it waits, or why it failed.
+  [MaxLength(400)] string? Message;
+  /// The age proved: the buyer is at least this old (the age the bag needed when it was checked). 0 until verified.
+  int ProvenAge = 0;
+  DateTime? VerifiedAt;
+  /// The server's fingerprint over the bag, the provider, `ProvenAge` and `VerifiedAt` — see the invariant above.
+  [MaxLength(128)] string? Seal;
+  security {
+    allow create, update, delete when IsAnonymous || IsAuthenticated
+      where Bag.Owner == null && Bag.VisitId == Visitor.Id
+         || Bag.Owner == user;
+    allow create, update, delete when IsShopStaff;
+    allow read when IsAnonymous || IsAuthenticated
+      where Bag.Owner == null && Bag.VisitId == Visitor.Id
+         || Bag.Owner == user;
+    allow read when IsShopStaff;
+  }
+}
+
+/// What the checkout shows of the bag's age check.
+public class AgeCheckView {
+  /// "none" (no check, or it lapsed) · "waiting" · "verified" · "failed".
+  public string State = "none";
+  public string Message = "";
+  /// The provider, as the customer reads it — "BankID".
+  public string Provider = "";
+  /// The code to scan from another device, as rows of modules ("1" dark) — empty when the provider has none.
+  public List<string> Qr = [];
+  /// Opens the provider's app on this device.
+  public string AppLink = "";
+  /// The age proved, when verified.
+  public int ProvenAge = 0;
+}
+
+/// Whether the checkout can verify the buyer's age, and with what ("BankID") — "" when it cannot: no provider is
+/// listed, or the one listed is not ready (its certificate not set). The checkout then asks for a date of birth.
+[AllowAnonymous]
+public string AgeVerifiedWith() {
+  var v = App.Setting<ShopSetup>().AgeVerifier;
+  return v != null && v.Offered() ? v.Label : "";
+}
+
+/// How long a verification counts for the bag it was made for.
+public TimeSpan AgeCheckValidFor() { return TimeSpan.FromHours(App.Setting<ShopSetup>().AgeCheckValidHours); }
+
+/// The server's seal over a verified check's facts, for `bag`.
+string AgeSeal(Bag bag, string provider, int provenAge, DateTime verifiedAt) {
+  return Security.Fingerprint($"age-check|{bag.Id}|{provider}|{provenAge}|{verifiedAt:O}");
+}
+
+/// The check that proves `bag`'s buyer at least `age` years old — verified, sealed by the server for THIS bag, and
+/// recent — or null.
+public AgeCheck? VerifiedAgeCheck(Bag bag, int age) {
+  var since = DateTime.UtcNow - AgeCheckValidFor();
+  var checks = AgeCheck.Where(c => c.Bag == bag && c.Status == AgeCheckStatus.Verified && c.ProvenAge >= age
+                                   && c.VerifiedAt != null && c.VerifiedAt > since)
+                       .OrderByDescending(c => c.VerifiedAt).ToList();
+  foreach (var c in checks) {
+    if (c.Seal != null && c.Seal == AgeSeal(bag, c.Provider, c.ProvenAge, c.VerifiedAt!.Value)) { return c; }
+  }
+  return null;
+}
+
+/// Starts verifying the caller's age with the provider the app lists, for the bag they are filling. A check already
+/// running for the bag is ended first. `returnPath` is the store's page the provider's app returns to on a phone.
+[AllowAnonymous]
+public AgeCheckView StartAgeCheck(string returnPath) {
+  var verifier = App.Setting<ShopSetup>().AgeVerifier;
+  if (verifier == null || !verifier.Offered()) { throw new Exception("This shop does not verify ages. Give your date of birth instead."); }
+  var bag = BagFor(false);
+  if (bag == null || AgeNeeded(bag) == 0) { throw new Exception("Nothing in your bag needs an age."); }
+  foreach (var old in AgeCheck.Where(c => c.Bag == bag && c.Status == AgeCheckStatus.Waiting).ToList()) {
+    var handle = OpenHandle(bag, old);
+    if (handle != "") {
+      try { verifier.Cancel(handle); } catch (Exception ex) { Log.Warning($"{verifier.Label} could not end an age check: {ex.Message}"); }
+    }
+    old.Status = AgeCheckStatus.Failed;
+    old.Message = "Started again.";
+  }
+  var shop = TheShop();
+  var started = verifier.Start(Request.ClientAddress, App.BaseUrl + returnPath,
+                               $"{shop.Name} asks you to prove that you are {AgeNeeded(bag)} or older.");
+  var check = new AgeCheck {
+    Bag = bag, Provider = verifier.Key, StartedAt = DateTime.UtcNow,
+    SealedHandle = Crypto.Encrypt($"{bag.Id}|{started.Handle}"),
+    AppLink = started.AppLink == "" ? null : started.AppLink,
+  };
+  UnitOfWork.Commit();
+  return ViewOf(check, verifier.Label, verifier.Frame(started.Handle, 0));
+}
+
+/// The bag's age check as it stands now — asking the provider (at most every two seconds) while it waits. A page
+/// showing a check calls this every second: a QR code changes every second.
+[AllowAnonymous]
+public AgeCheckView AgeCheckNow() {
+  var bag = BagFor(false);
+  if (bag == null) { return new AgeCheckView(); }
+  var check = AgeCheck.Where(c => c.Bag == bag).OrderByDescending(c => c.StartedAt).FirstOrDefault();
+  var verifier = App.Setting<ShopSetup>().AgeVerifier;
+  if (check == null || verifier == null || verifier.Key != check.Provider) { return new AgeCheckView(); }
+  if (check.Status == AgeCheckStatus.Verified) {
+    // A verification counts while it is sealed for this bag, recent, and old enough for what is in it NOW.
+    var proving = VerifiedAgeCheck(bag, AgeNeeded(bag));
+    return proving == null ? new AgeCheckView() : ViewOf(proving, verifier.Label, "");
+  }
+  if (check.Status == AgeCheckStatus.Failed) { return ViewOf(check, verifier.Label, ""); }
+  var handle = OpenHandle(bag, check);
+  if (handle == "") {
+    check.Status = AgeCheckStatus.Failed;
+    check.Message = "That check is not this bag's. Start again.";
+    UnitOfWork.Commit();
+    return ViewOf(check, verifier.Label, "");
+  }
+  var now = DateTime.UtcNow;
+  var frame = verifier.Frame(handle, (int)Math.Max(0, (now - check.StartedAt).TotalSeconds));
+  if (check.AskedAt != null && now - check.AskedAt!.Value < TimeSpan.FromSeconds(2)) { return ViewOf(check, verifier.Label, frame); }
+  check.AskedAt = now;
+  AgeCheckAnswer answer;
+  try { answer = verifier.Collect(handle); }
+  catch (Exception ex) {
+    Log.Warning($"{verifier.Label} could not be asked about an age check: {ex.Message}");
+    UnitOfWork.Commit();
+    return ViewOf(check, verifier.Label, frame);
+  }
+  check.Message = answer.Message == "" ? null : answer.Message;
+  if (answer.Status == AgeCheckStatus.Failed) {
+    check.Status = AgeCheckStatus.Failed;
+    if (answer.Message == "") { check.Message = $"{verifier.Label} did not confirm your age. Try again."; }
+  }
+  if (answer.Status == AgeCheckStatus.Verified) {
+    var needed = AgeNeeded(bag);
+    // The date of birth is compared here and goes no further: what is kept is only that the buyer is old enough.
+    if (answer.BornOn == null || AgeOn(answer.BornOn!.Value, DateOnly.FromDateTime(now)) < needed) {
+      check.Status = AgeCheckStatus.Failed;
+      check.Message = $"{verifier.Label} says you are under {needed}. We cannot sell you what is in your bag.";
+    } else {
+      check.Status = AgeCheckStatus.Verified;
+      check.ProvenAge = needed;
+      check.VerifiedAt = now;
+      check.Seal = AgeSeal(bag, check.Provider, needed, now);
+      check.Message = null;
+      check.SealedHandle = null;                        // done with: nothing is asked of the provider again
+    }
+  }
+  UnitOfWork.Commit();
+  return ViewOf(check, verifier.Label, check.Status == AgeCheckStatus.Waiting ? frame : "");
+}
+
+/// Ends the bag's running check, at the provider too — the buyer chose to give a date of birth, or left.
+[AllowAnonymous]
+public void CancelAgeCheck() {
+  var bag = BagFor(false);
+  if (bag == null) { return; }
+  var verifier = App.Setting<ShopSetup>().AgeVerifier;
+  foreach (var c in AgeCheck.Where(c => c.Bag == bag && c.Status == AgeCheckStatus.Waiting).ToList()) {
+    var handle = OpenHandle(bag, c);
+    if (verifier != null && handle != "") {
+      try { verifier.Cancel(handle); } catch (Exception ex) { Log.Warning($"{verifier.Label} could not end an age check: {ex.Message}"); }
+    }
+    c.Status = AgeCheckStatus.Failed;
+    c.Message = "Cancelled.";
+  }
+  UnitOfWork.Commit();
+}
+
+/// The provider's handle for `check` — "" when the sealed handle is not one the server made for THIS bag.
+string OpenHandle(Bag bag, AgeCheck check) {
+  if (check.SealedHandle == null) { return ""; }
+  string plain;
+  try { plain = Crypto.Decrypt(check.SealedHandle!); }
+  catch (Exception ex) { return ""; }
+  var prefix = $"{bag.Id}|";
+  return plain.StartsWith(prefix) ? plain.Substring(prefix.Length) : "";
+}
+
+AgeCheckView ViewOf(AgeCheck check, string provider, string frame) {
+  var view = new AgeCheckView {
+    State = check.Status == AgeCheckStatus.Verified ? "verified" : check.Status == AgeCheckStatus.Failed ? "failed" : "waiting",
+    Message = check.Message ?? "", Provider = provider, ProvenAge = check.ProvenAge,
+    AppLink = check.Status == AgeCheckStatus.Waiting ? check.AppLink ?? "" : "",
+  };
+  // The code the page draws — from the frame, which is derived from the provider's secret, so it is drawn here.
+  if (frame != "") { view.Qr = Qr.Encode(frame); }
+  return view;
+}
+
+/// Forgets a bag's age checks — before the bag itself goes.
+void ForgetAgeChecks(Bag bag) {
+  foreach (var c in AgeCheck.Where(c => c.Bag == bag).ToList()) { c.Delete(); }
+}

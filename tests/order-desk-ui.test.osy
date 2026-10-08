@@ -1,0 +1,87 @@
+// One order on the desk — its notes and timeline, a new address, a link to pay it — an order taken on the phone, and
+// the pages the customer sees of it: the link's payment page and a new address from their account.
+
+using Osysharp.Http;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+void SignInAt(string email, string password, string then) {
+  Ui.Visit("/account/sign-in");
+  Ui.Fill("Email", email);
+  Ui.Fill("Password", password);
+  Ui.Click("Sign in");
+  Ui.Visit(then);
+}
+
+[Test(Floor)]
+void staff_keep_a_note_change_the_address_and_read_the_timeline() {
+  var reference = MajasDelivery("v-desk-notes");
+  SignInAt("anna@shop.test", "desk-pass-1", "/desk");
+  Ui.Click("Details", within: reference);
+  Assert.Visible("Placed");
+  Ui.Fill("Note", "She asked for it gift-wrapped.");
+  Ui.Click("Keep note");
+  Assert.Visible("She asked for it gift-wrapped.");
+  Assert.Visible("Staff only");
+  Ui.Click("Change address…");
+  Ui.Fill("Street", "Hornsgatan 64");
+  Ui.Click("Save the address");
+  Assert.Visible("Hornsgatan 64");
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Workflow.Settle(order);
+    Assert.Equal("Hornsgatan 64", order.Contact.Single().Street);
+  }
+}
+
+[Test(Floor)]
+void staff_take_an_order_on_the_phone_and_the_customer_pays_it_through_the_link() {
+  Http.Post.Stub((url, body) => new HttpResponse { StatusCode = 200, Body = "{\"id\":\"cs_9\",\"url\":\"https://checkout.stripe.com/c/pay/cs_9\"}" });
+  SignInAt("anna@shop.test", "desk-pass-1", "/desk");
+  Ui.Click("New order…");
+  Ui.Fill("Find a product", "chel");
+  Ui.Click("Search");
+  Ui.Click("Add", within: "Chelsea (38)");
+  Assert.Visible("1 × Chelsea (38)");
+  Ui.Fill("Name", "Kim Lind");
+  Ui.Fill("Email", "kim@example.test");
+  Ui.Click("Collect from the shop");
+  Ui.Click("Card");
+  Ui.Click("Place the order");
+  Assert.Visible("is placed and reserved");
+  var link = "";
+  runas (Desk) {
+    var order = Order.Single(o => o.Contact.Any(c => c.Email == "kim@example.test"));
+    Assert.Equal(OrderStatus.Reserved, order.Status);
+    var mailed = ShopMail.Single(m => m.Order == order && m.Subject.Contains("ready to pay"));
+    Assert.Contains("/pay/", mailed.Text);
+    link = SendPayLink(order, false);
+  }
+  Ui.Visit(link.Substring(link.IndexOf("/pay/")));
+  Assert.Visible("Pay €190");
+  Assert.Visible("1 × Chelsea — 38");
+  Assert.Hidden("Kim Lind");                               // the page names what it pays, never who for
+}
+
+[Test(Floor)]
+void a_link_that_does_not_work_says_so() {
+  Ui.Visit("/pay/g1.not-a-link-at-all");
+  Assert.Visible("This link has expired or is not valid.");      // the platform's own page: the kit's app names none
+  Assert.Hidden("What it holds");
+}
+
+[Test(Floor)]
+void the_customer_sends_their_order_somewhere_else_and_reads_the_shops_message() {
+  var reference = MajasDelivery("v-acct-move");
+  runas (Desk) { MessageCustomer(Order.Single(o => o.Reference == reference), "We roast on Monday — it ships that afternoon."); }
+  SignInAt("maja@example.test", "maja-pass-1", "/account");
+  Assert.Visible("We roast on Monday — it ships that afternoon.");
+  Ui.Click("Change address…", within: reference);
+  Ui.Fill("Street", "Götgatan 9");
+  Ui.Click("Send it here");
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Workflow.Settle(order);
+    Assert.Equal("Götgatan 9", order.Contact.Single().Street);
+  }
+}

@@ -1,0 +1,422 @@
+// One order's page on the desk beyond its moves — notes and the timeline, the address it goes to, a link to pay it —
+// the phone sale, and the two pages a customer sees of this: paying through a link, and a new address from their
+// account. The logic is OrderDesk.osy; these are the kit's views of it, in the store's theme.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Ui;
+
+/// Notes on an order, and everything that happened to it, oldest first. Staff and packers keep a note; staff may send it
+/// to the customer instead, who is mailed it.
+[Composable]
+[Authorize(IsShopPacker)]
+public component DeskOrderHistory(Order order) {
+  List<TimelineEntry> entries = [];
+  bool staff = false;
+  string text = "";
+  bool toCustomer = false;
+  string problem = "";
+  string done = "";
+  on mount { staff = IsStaffMember(); entries = OrderTimeline(order); }
+  action Keep() {
+    problem = ""; done = "";
+    try {
+      if (toCustomer) { MessageCustomer(order, text); done = "Sent to the customer, and kept here."; }
+      else { NoteOnOrder(order, text); }
+      text = ""; toCustomer = false;
+      entries = OrderTimeline(order);
+    }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    Stack(gap: 3, label: "Notes and history") {
+      SectionLabel("Notes and history");
+      TextAreaField(toCustomer ? "Message to the customer" : "Note", value: text, rows: 2,
+                    placeholder: toCustomer ? "Your beans go out on Monday — we roast them fresh that morning." : "Gift-wrap it. She collects Friday.");
+      Row(justify: Justify.Between, align: Align.Center, gap: 3, wrap: Wrapping.Wrap) {
+        if (staff) { Checkbox("Send it to the customer (mailed)", value: toCustomer); } else { Box() { } }
+        Button(toCustomer ? "Send message" : "Keep note", onPress: Keep, size: Size.Sm, tone: Tone.Primary);
+      }
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      if (done != "") { Alert(done, tone: Tone.Success); }
+      Stack(gap: 0, role: UiRole.List, label: "Timeline") {
+        foreach (var e in entries) {
+          Row(gap: 3, align: Align.Start, py: 2, borderTW: 1, border: Colors.Border, role: UiRole.ListItem, label: e.What) {
+            Box(w: "92px", shrink: 0) { Text(e.At.ToString("d MMM HH:mm"), color: Colors.TextMuted, fontSize: FontSize.Label); }
+            Stack(gap: 0, minW: "0", grow: 1) {
+              Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+                if (e.Kind == "status") { Text(e.What, fontWeight: FontWeight.Semibold); } else { Text(e.What); }
+                if (e.Kind == "note") { Badge("Staff only", tone: Tone.Default); }
+                if (e.Kind == "message") { Badge("Customer sees it", tone: Tone.Warning); }
+              }
+              if (e.Detail != "") { Text(e.Detail, color: e.Kind == "note" || e.Kind == "message" ? Colors.OnBg : Colors.TextMuted, fontSize: FontSize.Label); }
+              if (e.Who != "") { Text($"by {e.Who}", color: Colors.TextMuted, fontSize: FontSize.Label); }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Where an order goes — and, before it goes out, a new address. The country stays: the delivery and the VAT were
+/// priced for it (see `AskToMove`).
+[Composable]
+[Authorize(IsShopPacker)]
+public component DeskOrderAddress(Order order) {
+  bool staff = false;
+  bool editing = false;
+  string street = "";
+  string postCode = "";
+  string city = "";
+  string problem = "";
+  on mount { staff = IsStaffMember(); }
+  action Edit() {
+    var c = order.Contact.FirstOrDefault();
+    street = c == null ? "" : c.Street ?? "";
+    postCode = c == null ? "" : c.PostCode ?? "";
+    city = c == null ? "" : c.City ?? "";
+    problem = ""; editing = true;
+  }
+  action Cancel() { editing = false; }
+  action Save() {
+    problem = "";
+    var c = order.Contact.FirstOrDefault();
+    try { ChangeOrderAddress(order, street, postCode, city, c == null ? "" : c.Country ?? ""); editing = false; }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    Stack(gap: 1, label: "Address") {
+      Row(justify: Justify.Between, align: Align.Center, gap: 3) {
+        SectionLabel(order.Fulfilment == Fulfilment.Collect ? "Collected by" : "Deliver to");
+        if (staff && !editing && AddressCanChange(order)) { Button("Change address…", onPress: Edit, size: Size.Sm, tone: Tone.Ghost); }
+      }
+      foreach (var c in order.Contact) {
+        Text(c.Name);
+        if (!editing) {
+          if (c.Street != null) { Text(c.Street); }
+          if (c.PostCode != null || c.City != null) { Text($"{c.PostCode ?? ""} {c.City ?? ""}".Trim()); }
+        }
+        if (c.Country != null) { Text(c.Country); }
+        Text($"{c.Email}{(c.Phone == null ? "" : " · " + c.Phone)}", color: Colors.TextMuted);
+        if (c.PickupPointId != null) { Text($"Collects at {PickupPointText(c)}", fontWeight: FontWeight.Semibold); }
+      }
+      if (editing) {
+        Stack(gap: 3, pt: 2) {
+          Field("Street", value: street);
+          Row(gap: 3) {
+            Box(w: "40%") { Field("Postcode", value: postCode); }
+            Box(grow: 1) { Field("City", value: city); }
+          }
+          Text("The country stays — the delivery and its VAT were priced for it.", color: Colors.TextMuted, fontSize: FontSize.Label);
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+          Row(gap: 3, justify: Justify.End) {
+            Button("Keep the old one", onPress: Cancel);
+            Button("Save the address", onPress: Save, tone: Tone.Primary);
+          }
+        }
+      }
+    }
+  }
+}
+
+/// A link that pays an order waiting for payment — mailed to the customer, or shown to read out or send some other way.
+[Composable]
+[Authorize(IsShopStaff)]
+public component DeskPayLink(Order order) {
+  string link = "";
+  string problem = "";
+  string done = "";
+  action Send() {
+    problem = "";
+    try { link = SendPayLink(order, true); done = "Mailed to the customer."; }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action Show() {
+    problem = "";
+    try { link = SendPayLink(order, false); done = ""; }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    if (order.Status == OrderStatus.Reserved) {
+      Stack(gap: 2, label: "Payment link") {
+        SectionLabel("A link to pay it");
+        Text($"The customer pays {order.PaymentLabel ?? order.PaymentMethod} through it. It stops working once the order is paid or called off.",
+             color: Colors.TextMuted, fontSize: FontSize.Label);
+        Row(gap: 2, wrap: Wrapping.Wrap) {
+          Button("Mail them a payment link", onPress: Send, size: Size.Sm, tone: Tone.Primary);
+          Button("Show a link", onPress: Show, size: Size.Sm);
+        }
+        if (link != "") { Text(link, fontSize: FontSize.Label, wordBreak: WordBreak.BreakAll, label: "The link"); }
+        if (done != "") { Alert(done, tone: Tone.Success); }
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      }
+    }
+  }
+}
+
+/// An order taken on the desk — a sale on the phone, or over the counter for somebody who wants it sent. Staff put the
+/// goods in, say who it is for and how it reaches them and is paid, and place it: the same order a web checkout
+/// makes, confirmed to the customer, with a link to pay it mailed when they ask.
+[Composable]
+[Authorize(IsShopStaff)]
+public component DeskNewOrder(Action onDone) {
+  live var shop = ShopSettings.FirstOrDefault();
+  Bag? bag = null;
+  List<DeskLine> lines = [];
+  string search = "";
+  List<DeskPick> found = [];
+  int quantity = 1;
+  string name = "";
+  string email = "";
+  string phone = "";
+  string street = "";
+  string postCode = "";
+  string city = "";
+  string country = "";
+  DateOnly? bornOn = null;
+  List<DeliveryChoice> ways = [];
+  DeliveryChoice? way = null;
+  List<PaymentChoice> pays = [];
+  PaymentChoice? pay = null;
+  bool sendLink = true;
+  CheckoutTotals? totals = null;
+  string problem = "";
+  Receipt? placed = null;
+
+  on mount { bag = StartDeskOrder(); Reprice(); }
+  action Find() { found = DeskFindVariants(search); }
+  action Add(DeskPick p) {
+    problem = "";
+    try { AddToDeskOrder(bag!, p.Variant!, quantity); quantity = 1; found = []; search = ""; Reprice(); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action Remove(DeskLine l) { RemoveFromDeskOrder(l.Line!); Reprice(); }
+  action ChooseWay(DeliveryChoice w) { way = w; Reprice(); }
+  action ChoosePay(PaymentChoice p) { pay = p; }
+  action Reprice() {
+    lines = DeskOrderLines(bag!);
+    ways = DeskDeliveryChoices(bag!, country);
+    if (way != null) { way = ways.FirstOrDefault(w => w.Id == way!.Id); }
+    pays = PaymentChoices(way != null && !way.NeedsAddress);
+    if (pay != null) { pay = pays.FirstOrDefault(p => p.Key == pay!.Key); }
+    totals = way == null ? null : DeskOrderQuote(bag!, way.Id, country);
+  }
+  action Place() {
+    problem = "";
+    if (way == null || pay == null) { problem = "Choose how it reaches them and how they pay."; return; }
+    try {
+      placed = PlaceDeskOrder(bag!, new DeskCustomer { Name = name, Email = email, Phone = phone, Street = street, PostCode = postCode,
+                                                       City = city, Country = country, BornOn = bornOn },
+                              way!.Id, pay!.Key, sendLink && pay!.LeavesTheShop);
+    }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action Close() { onDone(); }
+
+  render {
+    Dialog("New order", onDismiss: Close, subtitle: "Taken on the phone or at the counter — priced, reserved and confirmed like a web order.") {
+      if (placed != null) {
+        Stack(gap: 4) {
+          Alert($"Order {placed!.Reference} is placed and reserved — {MoneyIn(placed!.Total, placed!.Currency, shop)}. The customer has the confirmation.", tone: Tone.Success);
+          if (placed!.PayUrl != "") { Text($"The payment link is in their mail: {placed!.PayUrl}", fontSize: FontSize.Label, wordBreak: WordBreak.BreakAll); }
+          Row(justify: Justify.End) { Button("Done", onPress: Close, tone: Tone.Primary); }
+        }
+      } else {
+        Stack(gap: 5) {
+          Stack(gap: 2, label: "What they buy") {
+            SectionLabel("What they buy");
+            Row(gap: 2, align: Align.End, wrap: Wrapping.Wrap) {
+              Box(grow: 1, minW: "200px") { Field("Find a product", value: search, placeholder: "Name or SKU", onEnter: Find); }
+              Box(w: "96px") { NumberField("How many", value: quantity, min: 1); }
+              Button("Search", onPress: Find);
+            }
+            foreach (var p in found) {
+              Row(justify: Justify.Between, align: Align.Center, gap: 3, label: p.Name) {
+                Stack(gap: 0, minW: "0") {
+                  Text(p.Name);
+                  Text(p.Unlimited ? Money(p.Price, shop) : $"{Money(p.Price, shop)} · {p.Stock} in stock", color: Colors.TextMuted, fontSize: FontSize.Label);
+                }
+                Button("Add", onPress: () => Add(p), size: Size.Sm, disabled: !p.Unlimited && p.Stock == 0);
+              }
+            }
+            if (lines.Count == 0) { Text("Nothing yet — find what they want and add it.", color: Colors.TextMuted); }
+            foreach (var l in lines) {
+              Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 1, borderTW: 1, border: Colors.Border, label: $"Line {l.Name}") {
+                Text($"{l.Quantity} × {l.Name}");
+                Row(gap: 2, align: Align.Center) {
+                  Text(Money(l.Amount, shop), color: Colors.TextMuted);
+                  Button("Remove", onPress: () => Remove(l), size: Size.Sm, tone: Tone.Ghost);
+                }
+              }
+            }
+          }
+          Stack(gap: 3, label: "Who it is for") {
+            SectionLabel("Who it is for");
+            Box(display: Display.Grid, cols: "repeat(auto-fit, minmax(200px, 1fr))", gap: 3) {
+              Field("Name", value: name);
+              Field("Email", value: email, type: "email", hint: "The confirmation and the payment link go here.");
+              Field("Phone", value: phone, type: "tel");
+            }
+            if (lines.Any(l => l.MinimumAge > 0)) {
+              DatePicker("Date of birth (checked)", value: bornOn);
+            }
+          }
+          Stack(gap: 3, label: "Delivery and payment") {
+            SectionLabel("How it reaches them");
+            Row(gap: 2, wrap: Wrapping.Wrap, label: "Delivery") {
+              foreach (var w in ways) {
+                Button(w.Price == 0 ? w.Label : $"{w.Label} — {Money(w.Price, shop)}", onPress: () => ChooseWay(w), size: Size.Sm,
+                       tone: way != null && way!.Id == w.Id ? Tone.Primary : Tone.Default);
+              }
+            }
+            // The place this way would come from does not hold it all (Locations.osy).
+            if (way != null && way!.Problem != "") { Alert(way!.Problem + ".", tone: Tone.Warning); }
+            SectionLabel("How they pay");
+            Row(gap: 2, wrap: Wrapping.Wrap, label: "Payment") {
+              foreach (var p in pays) {
+                Button(p.Label, onPress: () => ChoosePay(p), size: Size.Sm, tone: pay != null && pay!.Key == p.Key ? Tone.Primary : Tone.Default);
+              }
+            }
+            if (way != null && way!.NeedsAddress) {
+              Field("Street", value: street);
+              Box(display: Display.Grid, cols: "repeat(auto-fit, minmax(140px, 1fr))", gap: 3) {
+                Field("Postcode", value: postCode);
+                Field("City", value: city);
+                Field("Country", value: country, placeholder: shop == null ? "SE" : shop.HomeCountry, onEnter: Reprice);
+              }
+            }
+            if (pay != null && pay!.LeavesTheShop) {
+              Checkbox($"Mail them a link to pay by {pay!.Label}", value: sendLink);
+            }
+          }
+          if (totals != null) {
+            Row(justify: Justify.Between, align: Align.Center, gap: 3, pt: 2, borderTW: 1, border: Colors.Border, label: "Total") {
+              Text(totals!.Delivery > 0 ? $"Goods {Money(totals!.Goods, shop)} · {totals!.DeliveryLabel} {Money(totals!.Delivery, shop)}"
+                                        : $"Goods {Money(totals!.Goods, shop)}", color: Colors.TextMuted);
+              Strong($"Total {Money(totals!.Total, shop)}");
+            }
+          }
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+          Row(gap: 3, justify: Justify.End) {
+            Button("Not now", onPress: Close);
+            Button("Place the order", onPress: Place, tone: Tone.Primary, disabled: lines.Count == 0);
+          }
+        }
+      }
+    }
+  }
+}
+
+/// The page a payment link opens: the order and what it costs, and the button that pays it through the shop's
+/// provider — or, if it was paid or called off while the page was open, a sentence that says so. A store puts it on
+/// its page at `ShopSetup.PayLinkPath` + `/{pay}`: `[Page("/pay/{pay}")] component P(Pay pay) { … ShopPayByLink(pay) … }`
+/// — a link that does not check out never reaches it (the app's `InvalidLinkSurface` is shown instead).
+[Composable]
+[AllowAnonymous]
+public component ShopPayByLink(Pay pay) {
+  live var shop = ShopSettings.FirstOrDefault();
+  PayLinkView? view = null;
+  string problem = "";
+  bool going = false;
+  on mount { view = PayLinkFor(pay); }
+  action PayNow() {
+    problem = "";
+    going = true;
+    try { Navigation.Open(PayByLink(pay), sameTab: true); }
+    catch (Exception ex) {
+      problem = ex.Message;
+      going = false;
+      // Paid or called off meanwhile, the link is taken back and this asks nothing more of it.
+      try { view = PayLinkFor(pay); } catch (Exception gone) { view = null; }
+    }
+  }
+  render {
+    if (view == null && problem != "") { Alert(problem, tone: Tone.Danger); }
+    if (view != null) {
+      Stack(gap: 5, w: "100%", label: "Payment") {
+        Stack(gap: 1) {
+          Text($"Order {view!.Reference}", color: Colors.TextMuted, fontSize: FontSize.Label);
+          Text(view!.State == "open" ? $"Pay {MoneyIn(view!.ToPay, view!.Currency, shop)}" : view!.State == "paid" ? "Paid — thank you" : "This order can no longer be paid", fontSize: FontSize.Title, fontWeight: FontWeight.Semibold);
+        }
+        Stack(gap: 0, role: UiRole.List, label: "What it holds") {
+          foreach (var l in view!.Lines) {
+            Row(justify: Justify.Between, gap: 3, py: 2, borderBW: 1, border: Colors.Border, role: UiRole.ListItem) {
+              Text($"{l.Quantity} × {l.Name}");
+              Text(MoneyIn(l.Amount, view!.Currency, shop));
+            }
+          }
+          if (view!.Discount > 0) {
+            Row(justify: Justify.Between, gap: 3, py: 2, borderBW: 1, border: Colors.Border, role: UiRole.ListItem) {
+              Text("Off"); Text($"−{MoneyIn(view!.Discount, view!.Currency, shop)}");
+            }
+          }
+          Row(justify: Justify.Between, gap: 3, py: 2, borderBW: 1, border: Colors.Border, role: UiRole.ListItem) {
+            Text(view!.DeliveryLabel); Text(view!.Delivery == 0 ? "—" : MoneyIn(view!.Delivery, view!.Currency, shop));
+          }
+          // Already paid another way — store credit, or the goods sent back for an exchange — comes off what is asked.
+          if (view!.PaidAlready > 0) {
+            Row(justify: Justify.Between, gap: 3, py: 2, borderBW: 1, border: Colors.Border, role: UiRole.ListItem) {
+              Text(view!.ExchangeFor != "" ? "What you sent back" : "Store credit"); Text($"−{MoneyIn(view!.PaidAlready, view!.Currency, shop)}");
+            }
+          }
+          Row(justify: Justify.Between, gap: 3, py: 3, role: UiRole.ListItem) {
+            Strong(view!.PaidAlready > 0 ? "To pay" : "Total"); Strong(MoneyIn(view!.ToPay, view!.Currency, shop));
+          }
+          if (view!.Vat > 0) { Text($"Of which VAT {MoneyIn(view!.Vat, view!.Currency, shop)}", color: Colors.TextMuted, fontSize: FontSize.Label); }
+        }
+        if (view!.State == "open" && view!.LeavesTheShop) {
+          Stack(gap: 2) {
+            Button($"Pay {MoneyIn(view!.ToPay, view!.Currency, shop)} — {view!.PaymentLabel}", onPress: PayNow, tone: Tone.Primary, disabled: going);
+            Text($"You pay on {view!.PaymentLabel}'s own page, and come back here when it is done.", color: Colors.TextMuted, fontSize: FontSize.Label);
+          }
+        }
+        if (view!.State == "open" && !view!.LeavesTheShop) {
+          Alert(view!.Instructions == "" ? "Pay as the shop told you — they will confirm when it arrives." : view!.Instructions, tone: Tone.Default);
+        }
+        if (view!.State == "paid") { Text($"The order is {view!.StatusText.ToLower()}. We mail you as it moves on.", color: Colors.TextMuted); }
+        if (view!.State == "closed") { Text($"It is {view!.StatusText.ToLower()}. Write to the shop if you still want it.", color: Colors.TextMuted); }
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      }
+    }
+  }
+}
+
+/// A customer sends their own order to another address, from their account, before it goes out.
+[Composable]
+public component ShopChangeOrderAddress(Order order, Action onDone) {
+  string street = "";
+  string postCode = "";
+  string city = "";
+  string problem = "";
+  on mount {
+    var c = MyOrderContact(order);
+    street = c == null ? "" : c.Street ?? "";
+    postCode = c == null ? "" : c.PostCode ?? "";
+    city = c == null ? "" : c.City ?? "";
+  }
+  action Save() {
+    problem = "";
+    // The country is not the customer's to change (see `AskToMove`): "" keeps the one the order has.
+    try { ChangeMyOrderAddress(order, street, postCode, city, ""); onDone(); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action Close() { onDone(); }
+  render {
+    Dialog($"Send order {order.Reference} somewhere else", onDismiss: Close,
+           subtitle: "Until it goes out you can change the street and town it goes to. The country stays — the delivery was priced for it.") {
+      Stack(gap: 4) {
+        Field("Street", value: street);
+        Row(gap: 3) {
+          Box(w: "40%") { Field("Postcode", value: postCode); }
+          Box(grow: 1) { Field("City", value: city); }
+        }
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+        Row(gap: 3, justify: Justify.End) {
+          Button("Keep it as it is", onPress: Close);
+          Button("Send it here", onPress: Save, tone: Tone.Primary);
+        }
+      }
+    }
+  }
+}

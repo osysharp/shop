@@ -1,0 +1,63 @@
+// The mail a gift card and a bought file arrive in. Asked for through `ShopMails` (Mail.osy), like every shop mail, so a
+// store that wants its own derives and overrides the one it writes.
+
+namespace Osysharp.Shop;
+
+using Osysharp.EmailTemplates;
+
+/// A gift card, for whoever it is for: who it is from and their words, the amount, the code — the only place the code
+/// ever is — how long it is valid, and where to check what is left on it.
+[Email]
+public component ShopGiftCardMail(GiftCard card, string code) {
+  subject => card.FromName == null || card.FromName == TheShop().Name
+    ? $"A gift card from {TheShop().Name}"
+    : $"{card.FromName} sent you a {TheShop().Name} gift card";
+  render {
+    var shop = TheShop();
+    ShopMailLayout($"A gift card of {MoneyIn(card.Amount, card.Currency, shop)} to spend at {shop.Name}") {
+      if (card.ReissuedFrom != null) {
+        // A card reissued in the shop's own currency: the same card's money, a new code — say why, and that the old
+        // code is gone.
+        var old = card.ReissuedFrom!;
+        EmailHeading(card.ToName == null ? $"Your gift card, now in {shop.Currency}" : $"{FirstName(card.ToName!)}, your gift card, now in {shop.Currency}");
+        EmailText($"We no longer sell in {old.Currency ?? shop.Currency}, so your gift card ending {old.Last4} could not be spent. Here it is again in {shop.Currency}: {MoneyIn(card.Amount, card.Currency, shop)}, what was left on it at the rate it was bought at ({RateAsSold(old)}).");
+        EmailText($"The old code no longer works. This is your new one:");
+      } else {
+        EmailHeading(card.ToName == null ? "A gift card for you" : $"{FirstName(card.ToName!)}, a gift card for you");
+        EmailText(card.FromName == null ? $"Here is a gift card of {MoneyIn(card.Amount, card.Currency, shop)} to spend at {shop.Name}."
+                  : $"{card.FromName} has given you a gift card of {MoneyIn(card.Amount, card.Currency, shop)} to spend at {shop.Name}.");
+        if (card.Message != null) { EmailText($"“{card.Message}”"); }
+      }
+      EmailCode(code);
+      // A card in a currency the shop sells in besides its own pays for an order in that currency — say so.
+      if (card.Currency != null && card.Currency != shop.Currency) {
+        EmailNote($"The card is in {card.Currency}: it pays for an order in {card.Currency}. Choose {card.Currency} at the top of the shop's pages to spend it.");
+      }
+      EmailNote($"Type the code at the checkout. It pays for anything in the shop, in part or all of it, and what you do not spend stays on it until {LocalDay(card.ExpiresAt.AddSeconds(-1))}. Keep this mail: the code is not kept anywhere else.");
+      EmailButton("See what is left on it", ShopLink(App.Setting<ShopSetup>().GiftCardBalancePath));
+    }
+  }
+}
+
+/// The files an order bought, each with its own link — sent when it is paid.
+[Email]
+public component ShopDownloadsMail(Order order, List<DownloadMailLine> links) {
+  language => order.Language;
+  subject => $"Your downloads — order {order.Reference} — {TheShop().Name}";
+  render {
+    var shop = TheShop();
+    ShopMailLayout($"Your downloads from order {order.Reference} are ready") {
+      EmailHeading("Your downloads are ready");
+      EmailText($"Thank you — order {order.Reference} is paid. Here is what you bought to download.");
+      foreach (var l in links) {
+        EmailTable() { EmailRow(l.Name, l.File); }
+        EmailButton($"Download {l.File}", l.Link);
+      }
+      ShopOrderButton(order, "See your order");
+      EmailNote($"Each link works {shop.DownloadLimit} times, for {shop.DownloadDays} days. Signed in, you find them under your account too.");
+      if (order.DigitalConsentAt != null) {
+        EmailNote($"You asked to have them at once: “{DigitalConsentWords()}” ({order.DigitalConsentAt!.Value.ToString("d MMMM yyyy HH:mm")} UTC).");
+      }
+    }
+  }
+}

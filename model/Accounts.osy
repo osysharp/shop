@@ -1,0 +1,376 @@
+// Accounts. ONE principal for everybody who signs in — a customer keeping their bag and seeing their orders, and the
+// staff who run the shop — told apart by role. An app has one `[Principal]`, so two kinds of people are two ROLES on
+// one table, never two tables.
+//
+// ⚑ SIGNING IN IS NEVER REQUIRED TO BUY. A visitor's bag belongs to their visit (Bag.osy) and checkout takes a guest.
+//   An account adds what a visit cannot keep: the bag across devices and weeks, the order history, and returns.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Workflow;
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+/// `Counter`: sells at a shop's counter (Counter.osy) — rings up sales, takes payment, hands over what is collected
+/// there, takes returns back — at ONE location when its grant names one, and sees no money beyond the sale in front of
+/// them: no figures, no invoices, no books, no desk.
+[Role] public enum ShopRole { Staff, Authenticator, Customer, Packer, Counter }
+
+[RoleGrant] public entity ShopRoleGrant {
+  [Required] ShopAccount Member;
+  [Required] ShopRole Role;
+  /// For a packer: the one location whose orders they pick, pack and send; for a counter clerk: the one counter they
+  /// sell at — null: every location's. Staff are never limited. (A shop without locations has nothing to limit.)
+  StockLocation? Location;
+  security {
+    allow update, delete when IsShopStaff;                 // staff add and remove staff
+    // …read by staff, and by each person for their own — what a counter clerk's page asks to know where they sell
+    // (Counter.osy).
+    allow read when IsShopStaff;
+    allow read when IsAuthenticated where Member == user;
+    // The sign-in makes a customer — and only a customer: a signup that could grant `Staff` would be the whole shop.
+    allow create when IsShopStaff || IsShopAuthenticator where Role == ShopRole.Customer;
+    allow create when IsShopStaff;
+  }
+}
+
+policy IsShopStaff => ShopRoleGrant.Any(g => g.Member == user && g.Role == ShopRole.Staff);
+/// Somebody who gets orders out of the door — a PACKER (picks, packs, sends, prints labels; sees no money), or staff,
+/// who can do everything a packer can.
+policy IsShopPacker => ShopRoleGrant.Any(g => g.Member == user && (g.Role == ShopRole.Packer || g.Role == ShopRole.Staff));
+/// Somebody who may get an order picked at `location` out of the door — staff, a packer for every location, or a packer
+/// limited to that one (`ShopRoleGrant.Location`).
+policy PacksAt(StockLocation? location) => ShopRoleGrant.Any(g => g.Member == user
+  && (g.Role == ShopRole.Staff || (g.Role == ShopRole.Packer && (g.Location == null || g.Location == location))));
+/// Somebody who sells at a counter — a counter clerk, or staff (who can do everything a clerk can).
+policy IsShopCounter => ShopRoleGrant.Any(g => g.Member == user && (g.Role == ShopRole.Counter || g.Role == ShopRole.Staff));
+/// Somebody who may sell at the counter of `location` (null: a shop without locations) — staff, a clerk for every
+/// location, or a clerk limited to that one (`ShopRoleGrant.Location`).
+policy SellsAt(StockLocation? location) => ShopRoleGrant.Any(g => g.Member == user
+  && (g.Role == ShopRole.Staff || (g.Role == ShopRole.Counter && (g.Location == null || g.Location == location))));
+policy IsShopAuthenticator =>ShopRoleGrant.Any(g => g.Member == user && g.Role == ShopRole.Authenticator);
+
+[Principal]
+public entity ShopAccount {
+  [Required, Unique, MaxLength(255)] string Email;
+  [MaxLength(200)] string PasswordHash;
+  [MaxLength(120)] string? Name;
+  [MaxLength(40)] string? Phone;
+  /// Where their orders usually go — what the checkout fills in for them.
+  [MaxLength(200)] string? Street;
+  [MaxLength(20)] string? PostCode;
+  [MaxLength(80)] string? City;
+  [MaxLength(80)] string? Country;
+  /// An API key's hash (and a second, for rotation without a gap) — how a system acting as this account calls the
+  /// app's API with `X-API-Key` (a control plane keeping plans in step). Minted by the platform, never by the app.
+  [MaxLength(255)] string? ApiKeyHash;
+  [MaxLength(255)] string? ApiKeyHash2;
+  /// The language they read the shop in, as a culture ("sv-SE"): set when they switch language while signed in, and
+  /// when they sign up in the language they were reading. A new phone or computer reads the shop in it until they
+  /// choose otherwise there, and the shop's mail to them that is not about an order (a reset link, their store credit,
+  /// a bag left behind, a newsletter) is written in it. An order's mail is in the language the order was placed in.
+  [PreferredCulture] Culture? Language;
+  /// When the account proved its address — by the link or the code its mail carried, or by a reset link. Asked for only
+  /// when the shop requires it (`ShopSetup.RequireConfirmedEmail`); written by the sign-in flow alone.
+  DateTime? EmailConfirmedAt;
+  // ⚠ This is the package's entity, so its rules are the floor an app may only tighten — derived exactly per kind of
+  //   caller: the account's own row for its holder, every account for staff and the sign-in.
+  security {
+    allow read, update when IsAnonymous || IsAuthenticated where Id == user.Id;
+    allow read, update when IsShopStaff || IsShopAuthenticator;
+    allow create when IsShopStaff || IsShopAuthenticator;
+    allow delete when IsShopStaff;
+    deny read PasswordHash when !IsShopAuthenticator;      // nobody but the sign-in ever reads the hash…
+    deny update PasswordHash when !IsShopAuthenticator;    // …or writes it: a new password comes through a reset
+    // The key hashes, the same: the principal row rides to the browser minus its masked columns, so an unmasked hash
+    // would reach every signed-in page.
+    deny read ApiKeyHash when !IsShopAuthenticator;
+    deny read ApiKeyHash2 when !IsShopAuthenticator;
+    deny update ApiKeyHash when !IsShopAuthenticator;
+    deny update ApiKeyHash2 when !IsShopAuthenticator;
+    // Only a mail the address received proves it — never the account's own say-so.
+    deny update EmailConfirmedAt when !IsShopAuthenticator;
+  }
+}
+
+/// A password-reset request: the token is mailed, only its HASH is kept, and it works once, for an hour.
+public entity ShopPasswordReset {
+  [Required] ShopAccount Account;
+  [Required, Unique, MaxLength(64)] string TokenHash;
+  DateTime ExpiresAt;
+  DateTime? UsedAt;
+  security { allow read, create, update when IsShopAuthenticator; }
+}
+
+/// What a sign-in answers: a ticket, or — when the shop requires a proven address and this one is not — `MustConfirm`:
+/// a mail with a link and a six-digit code is on its way to `Email`, and `ShopConfirmEmailCode` takes the code.
+public class ShopSignInAnswer {
+  public string Ticket = "";
+  public bool MustConfirm = false;
+  /// From `ShopConfirmEmail` (the link): the mail proved who HOLDS the address, but this is the first proof of an account
+  /// whose password was chosen before anybody had shown that — so nothing is proven until it is asked again with that
+  /// password, or a new one (`ShopClaimAddress`).
+  public bool MustConfirmPassword = false;
+  public string Email = "";
+}
+
+/// Sign in. Answers the account's `Ticket` — or nothing at all, for an unknown address and a wrong password alike; or,
+/// when the shop requires a proven address (`ShopSetup.RequireConfirmedEmail`) and this one is not, `MustConfirm` and no
+/// ticket: a mail with a code is on its way. Only the right password learns that an address must be proven.
+[AuthMethod(AuthSlot.Login)]
+public ShopSignInAnswer ShopLogin(string email, string password) {
+  return ShopSignInOf(email, password);
+}
+
+ShopSignInAnswer ShopSignInOf(string email, string password) {
+  var a = ShopAccount.Where(x => x.Email == Normalised(email)).FirstOrDefault();
+  if (a == null) { Security.VerifyPassword(password); return new ShopSignInAnswer(); }
+  if (!Security.VerifyPassword(password, a.PasswordHash)) { return new ShopSignInAnswer(); }
+  // SECURITY-INVARIANT(shop-no-ticket-before-the-address-is-proven): with `RequireConfirmedEmail`, a right password on an
+  // address that has not been proven answers the step that proves it — a fresh link and code by mail — never a ticket.
+  // Guarded by tests/confirm-email.test.osy.
+  if (MustProveAddress(a)) {
+    SendShopAddressCheck(a);
+    UnitOfWork.Commit();
+    return new ShopSignInAnswer { MustConfirm = true, Email = a.Email };
+  }
+  return new ShopSignInAnswer { Ticket = Security.IssueJwt(a.Id, a.Email), Email = a.Email };
+}
+
+/// Opens a customer account and signs it in — answers its ticket. For an address that already has an account it answers
+/// "" — the page says a message is on its way — and the MAIL tells the address's owner they already have an account,
+/// with the way to sign in or choose a new password; the right password for that account signs its owner in instead.
+/// Throws the sentence to show when it cannot (not an address, a short password).
+///
+/// SECURITY-INVARIANT(shop-sign-up-does-not-say-who-has-an-account): sign-up never answers "there is already an account"
+/// — a taken address gets no sentence of its own, after the same hashing time a new account takes, and the owner is told
+/// by mail (once a minute at most). With `ShopSetup.RequireConfirmedEmail` a new address is answered exactly as a taken
+/// one — "" and a mail, the new address's carrying the code that proves it — so nothing shows at all. With it off a new
+/// address is signed in at once, which a taken one cannot be, so whether an address was free still shows to whoever
+/// tries it — by construction, and said so in the kit's docs; what is gone is the page SAYING it, and a sentence a
+/// script can read. Guarded by tests/accounts.test.osy and tests/confirm-email.test.osy.
+[AuthMethod(AuthSlot.Signup)]
+public string ShopSignup(string email, string password, string name) {
+  var address = Normalised(email);
+  if (!address.Contains("@") || address.Length < 5) { throw new Exception("That does not look like an email address."); }
+  if (password.Length < 8) { throw new Exception("Choose a password of at least 8 characters."); }
+  var confirming = App.Setting<ShopSetup>().RequireConfirmedEmail;
+  var owner = ShopAccount.FirstOrDefault(a => a.Email == address);
+  if (owner != null) {
+    // It is them: signing up with their own address and password signs them in — unless the shop asks for a proven
+    // address, when a taken address is answered exactly as a new one is, and the mail says which.
+    if (!confirming && Security.VerifyPassword(password, owner.PasswordHash)) { return Security.IssueJwt(owner.Id, owner.Email); }
+    // Spend the time a new account's hash takes, so the answer's timing does not say either.
+    Security.HashPassword(password);
+    TellShopAddressIsTaken(owner);
+    UnitOfWork.Commit();
+    return "";
+  }
+  var account = new ShopAccount {
+    Email = address, PasswordHash = Security.HashPassword(password),
+    Name = name.Trim() == "" ? null : name.Trim(),
+    // The language they were reading when they signed up is theirs until they switch — in a shop that speaks more than one.
+    Language = App.Languages.Count > 1 ? App.CultureOf(Session.Language) : null,
+  };
+  new ShopRoleGrant { Member = account, Role = ShopRole.Customer };
+  if (confirming) {
+    // No ticket yet: the mail carries a link and a code, and either one signs them in (`ShopConfirmEmailCode`).
+    SendShopAddressCheck(account);
+    UnitOfWork.Commit();
+    return "";
+  }
+  UnitOfWork.Commit();
+  return Security.IssueJwt(account.Id, account.Email);
+}
+
+/// Tell `account`'s address it already has an account — what a sign-up for a taken address sends. Once a minute, so
+/// nobody can fill a stranger's inbox from the sign-up page.
+void TellShopAddressIsTaken(ShopAccount account) {
+  var mail = App.Setting<ShopSetup>().Mails.AccountExists(account, ShopLink("/account/sign-in"), ShopLink("/account/forgot"));
+  var aMinuteAgo = DateTime.UtcNow - TimeSpan.FromMinutes(1);
+  if (ShopMail.Any(m => m.To == account.Email && m.Subject == mail.Subject && m.CreatedAt > aMinuteAgo)) { return; }
+  Mail(account.Email, mail);
+}
+
+/// Mails a reset link to the address if it has an account. Says nothing either way — the same answer for an address
+/// with no account is what keeps this from telling a stranger who shops here.
+[AuthMethod(AuthSlot.PasswordResetRequest)]
+public string ShopRequestPasswordReset(string email) {
+  var account = ShopAccount.Where(a => a.Email == Normalised(email)).FirstOrDefault();
+  if (account == null) { return ""; }
+  var token = Security.RandomId(32);
+  new ShopPasswordReset {
+    Account = account, TokenHash = Crypto.Sha256Hex(token), ExpiresAt = DateTime.UtcNow.AddHours(1),
+  };
+  Mail(account.Email, App.Setting<ShopSetup>().Mails.PasswordReset(account, token, ShopLink($"/account/reset/{token}")));
+  UnitOfWork.Commit();
+  return "";
+}
+
+/// Sets a new password from a mailed token, and signs the account in. Throws the sentence to show when the token
+/// is wrong, used or old.
+[AuthMethod(AuthSlot.PasswordReset)]
+public string ShopResetPassword(string token, string password) {
+  if (password.Length < 8) { throw new Exception("Choose a password of at least 8 characters."); }
+  var reset = ShopPasswordReset.Where(r => r.TokenHash == Crypto.Sha256Hex(token.Trim())).FirstOrDefault();
+  if (reset == null || reset.UsedAt != null || reset.ExpiresAt < DateTime.UtcNow) {
+    throw new Exception("That reset link has expired or was already used — ask for a new one.");
+  }
+  reset.UsedAt = DateTime.UtcNow;
+  // Whoever was signed in with the old password is signed out everywhere (the ticket this answers is issued after).
+  Security.EndOtherSessions(reset.Account.Id);
+  reset.Account.PasswordHash = Security.HashPassword(password);
+  // Receiving the link proves the address — and the new password, chosen by whoever holds it, is the claim a first proof
+  // asks for (`ShopClaimAddress`): a stranger who signed up first with this address has lost the account.
+  if (reset.Account.EmailConfirmedAt == null) { ProveShopAddress(reset.Account); }
+  UnitOfWork.Commit();
+  return Security.IssueJwt(reset.Account.Id, reset.Account.Email);
+}
+
+/// The signed-in account, or null for a visitor.
+public ShopAccount? Me() {
+  return Session.CurrentUser;
+}
+
+/// Whether the signed-in account is staff — what a page asks before it offers the desk.
+public bool AmStaff() {
+  var me = Session.CurrentUser;
+  return me != null && ShopRoleGrant.Any(g => g.Member == me && g.Role == ShopRole.Staff);
+}
+
+/// Saves the details a signed-in customer keeps on their account.
+public void SaveMyDetails(string name, string phone, string street, string postCode, string city, string country) {
+  var me = Session.CurrentUser;
+  if (me == null) { throw new Exception("Sign in first."); }
+  me.Name = Blank(name); me.Phone = Blank(phone);
+  me.Street = Blank(street); me.PostCode = Blank(postCode); me.City = Blank(city); me.Country = Blank(country);
+  UnitOfWork.Commit();
+}
+
+/// Keeps the language a signed-in customer switched to on their account, so the shop greets them in it on another
+/// phone or computer, and writes to them in it. A visitor's choice stays with their browser alone. Call it beside
+/// `Session.SetLanguage(language)` in the store's language switch — a public page's, so a visitor may call it too, and
+/// for them it does nothing.
+[AllowAnonymous]
+public void RememberMyLanguage(string language) {
+  var me = Session.CurrentUser;
+  if (me == null || !App.Languages.Contains(language)) { return; }
+  // What an account keeps is the culture the shop writes that language in ("sv" → "sv-SE").
+  var culture = App.CultureOf(language);
+  if (culture == null) { return; }
+  me.Language = culture;
+  UnitOfWork.Commit();
+}
+
+/// The language the shop writes to `email` in when the mail is not about an order: the language on its account, when
+/// it has one and it chose one — else null, and the mail is in the language of whoever sends it.
+public string? ShopLanguageOf(string email) {
+  var account = ShopAccount.FirstOrDefault(a => a.Email == Normalised(email));
+  return account == null ? null : account.Language;
+}
+
+/// The language the shop speaks for a culture an account keeps ("sv-SE" → "sv") — or the culture itself when it
+/// speaks none of it.
+public string ShopSpokenLanguage(string culture) {
+  var spoken = App.Languages.FirstOrDefault(l => culture == l || culture.StartsWith(l + "-"));
+  return spoken ?? culture;
+}
+
+/// A language as it names itself — "Svenska", "English" — which is how a person finds their own in a list.
+public string ShopLanguageName(string code) {
+  var language = code.Contains("-") ? code.Substring(0, code.IndexOf("-")) : code;
+  if (language == "en") { return "English"; }
+  if (language == "sv") { return "Svenska"; }
+  if (language == "de") { return "Deutsch"; }
+  if (language == "fr") { return "Français"; }
+  if (language == "fi") { return "Suomi"; }
+  if (language == "nb") { return "Norsk bokmål"; }
+  if (language == "da") { return "Dansk"; }
+  if (language == "es") { return "Español"; }
+  if (language == "it") { return "Italiano"; }
+  if (language == "nl") { return "Nederlands"; }
+  if (language == "pl") { return "Polski"; }
+  if (language == "pt") { return "Português"; }
+  return code.ToUpper();
+}
+
+/// An address as it is stored — trimmed and lower-case, so `Ada@x.se` and `ada@x.se ` are one account.
+string Normalised(string email) {
+  return email.Trim().ToLower();
+}
+
+/// Changes the signed-in account's password. The CURRENT password is required, so a session left open on a shared
+/// computer cannot be turned into a new password. Answers a fresh ticket, or throws the sentence to show.
+[AuthMethod(AuthSlot.PasswordChange)]
+public string ShopChangePassword(string email, string currentPassword, string newPassword) {
+  var a = ShopAccount.Where(x => x.Email == Normalised(email)).FirstOrDefault();
+  if (a == null || !Security.VerifyPassword(currentPassword, a.PasswordHash)) {
+    if (a == null) { Security.VerifyPassword(currentPassword); }
+    throw new Exception("That is not your current password.");
+  }
+  if (newPassword.Length < 8) { throw new Exception("Choose a password of at least 8 characters."); }
+  // Every other session of the account ends; the one changing the password stays signed in.
+  Security.EndOtherSessions(a.Id);
+  a.PasswordHash = Security.HashPassword(newPassword);
+  UnitOfWork.Commit();
+  return Security.IssueJwt(a.Id, a.Email);
+}
+
+/// Moves the signed-in account to a new address, on the same terms: the current password proves it is the owner, and
+/// the address must be nobody else's. Answers a fresh ticket — the old one names the old address.
+[AuthMethod(AuthSlot.EmailChange)]
+public string ShopChangeEmail(string email, string currentPassword, string newEmail) {
+  var a = ShopAccount.Where(x => x.Email == Normalised(email)).FirstOrDefault();
+  if (a == null || !Security.VerifyPassword(currentPassword, a.PasswordHash)) {
+    if (a == null) { Security.VerifyPassword(currentPassword); }
+    throw new Exception("That is not your current password.");
+  }
+  var address = Normalised(newEmail);
+  if (!address.Contains("@") || address.Length < 5) { throw new Exception("That does not look like an email address."); }
+  if (address == a.Email) { return Security.IssueJwt(a.Id, a.Email); }
+  if (ShopAccount.Any(x => x.Email == address)) { throw new Exception("Another account already uses that address."); }
+  var old = a.Email;
+  a.Email = address;
+  if (App.Setting<ShopSetup>().RequireConfirmedEmail) {
+    // A new address is proven as a new account's is: until it is, a sign-in asks for the code its mail carries.
+    a.EmailConfirmedAt = null;
+    SendShopAddressCheck(a);
+  }
+  // Both addresses are told: the old one is how the owner finds out if it was not them.
+  var mails = App.Setting<ShopSetup>().Mails;
+  Mail(old, mails.AddressChanged(a, address, toTheOldAddress: true));
+  Mail(address, mails.AddressChanged(a, address, toTheOldAddress: false));
+  UnitOfWork.Commit();
+  return Security.IssueJwt(a.Id, a.Email);
+}
+
+// ── the desk's view of customers ──────────────────────────────────────────────────────────────────────────────
+
+/// One customer as the desk lists them: who, and what they have bought.
+public class CustomerRow {
+  public ShopAccount Account;
+  public int Orders;
+  public decimal Spent;
+}
+
+/// The shop's customers — accounts holding the customer role — newest first, narrowed by a search over name and
+/// address. With what each has ordered and spent (paid orders only).
+[Authorize(IsShopStaff)]
+public List<CustomerRow> Customers(string search) {
+  var s = search.Trim().ToLower();
+  var accounts = ShopAccount
+    .Where(a => ShopRoleGrant.Any(g => g.Member == a && g.Role == ShopRole.Customer))
+    .OrderByDescending(a => a.CreatedAt).ToList()
+    .Where(a => s == "" || a.Email.Contains(s) || (a.Name ?? "").ToLower().Contains(s)).ToList();
+  var rows = new List<CustomerRow>();
+  foreach (var a in accounts) {
+    var paid = Order.Where(o => o.Account == a && o.PaidAt != null).ToList();
+    rows.Add(new CustomerRow { Account = a, Orders = paid.Count, Spent = paid.Sum(o => InShopMoney(o.Total, o)) });
+  }
+  return rows;
+}
+
+/// Every order one customer placed, newest first — the desk's view of a customer.
+[Authorize(IsShopStaff)]
+public List<Order> OrdersOf(ShopAccount customer) {
+  return Order.Where(o => o.Account == customer).OrderByDescending(o => o.PlacedAt).ToList();
+}

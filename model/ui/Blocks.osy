@@ -1,0 +1,225 @@
+// The shop's PLAIN DESIGN of the block types (D-BLOCKS1, onto the contracts in D-SITEFRAME1 part 2) — a hero, a row of
+// products, the shelves as tiles, a picture with words, a quote, the newsletter's sign-up, a banner and a gallery. The TYPES are
+// contracts — the general site's (`Osysharp.Site.Looks`: Hero, PictureWithWords, Quote, SignUp, Banner, PhotoGallery) and the shop's
+// (`Osysharp.Shop.Looks`: ProductRow, CategoryTiles) — and what staff arrange is stored as the type and its values. These
+// are the designs outside every look: what a store with no look of its own draws (Grounds & Grapes, Rust & Chrome), and
+// what a look without its own design of a type draws. Every colour, face and size is a theme token the store's own
+// theme sets. A look kit draws the same types in its own design (`component AtelierHero(…) : Hero`), and a store adds
+// blocks of its own the ordinary way — `[Block] component …` in its source.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Ui;
+using Osysharp.Blocks;
+using Osysharp.Storage;
+using Osysharp.MailingLists;
+using Osysharp.Site.Looks;
+using Osysharp.Shop.Looks;
+
+/// A photograph with a headline set over it, a sentence and one thing to do — the top of a page.
+public component ShopHero(string title, Markdown words = "", Picture photo = "", Picture second = "", string button = "Shop now", PageLink link = "/", Color ground = Colors.Surface) : Hero {
+  render {
+    var wide = Layout.AtLeast(Tablet);
+    // The words take the ink the theme PAIRS with the ground staff chose (`Violet` → `OnViolet`) — its own ink on the
+    // default ground, and the same ink on a ground the theme pairs nothing with.
+    Box(position: Position.Relative, overflow: Overflow.Hidden, bg: ground, color: Colors.On(ground, Colors.OnSurface),
+        minH: wide && photo != "" ? "72vh" : "auto", label: "Hero: " + title) {
+      if (photo != "") {
+        Image(picture: photo, alt: title, w: "100%", h: wide ? "100%" : "56vh", objectFit: ObjectFit.Cover,
+              position: wide ? Position.Absolute : Position.Relative, inset: wide ? "0" : "auto");
+        if (wide) {
+          Box(position: Position.Absolute, inset: "0", bgImage: "linear-gradient(0deg, rgb(0 0 0 / 0.55) 0%, rgb(0 0 0 / 0) 65%)");
+        }
+      }
+      Stack(gap: 4, position: wide && photo != "" ? Position.Absolute : Position.Relative, left: "0", right: "0", bottom: "0",
+            px: wide ? 12 : 5, py: wide ? 12 : 8, maxW: "760px", color: wide && photo != "" ? Colors.OnImage : Colors.On(ground, Colors.OnSurface)) {
+        Text(title, fontFamily: Font.Display, fontSize: FontSize.Title, fontWeight: FontWeight.Bold, lineHeight: "1.05",
+             letterSpacing: "-0.01em");
+        if (words != "") { Markdown(words, fontSize: FontSize.Subhead, lineHeight: "1.5"); }
+        if (button != "") {
+          Row {
+            Link(href: link, label: button, display: Display.InlineFlex, bg: Colors.Primary, color: Colors.OnPrimary, px: 6, py: 3,
+                 rounded: Radius.Md, textDecoration: TextDecoration.None, fontWeight: FontWeight.Semibold) {
+              Text(button);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// A row of the shop's products — from one shelf, or the newest — each with its photograph and price.
+public component ShopProductRow(string title = "New in", Category? shelf = null, int count = 4, string more = "See them all", PageLink link = "/search") : ProductRow {
+  live var shop = ShopSettings.FirstOrDefault();
+  live var products = Product.Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard)
+    .OrderBy(p => p.Rank).ToList();
+  live var covers = ProductImage.Where(i => i.Rank == 0).ToList();
+  live var sales = Sale.ToList();
+  string path = "/p/{slug}";
+  // The date the site is looked at — a staff preview as of a date shows that date's sale prices.
+  DateTime at = DateTime.UtcNow;
+  on mount { path = ShopProductPath(); at = SiteDate(); }
+  render {
+    var shown = products.Where(p => shelf == null || (p.Category != null && p.Category.Id == shelf.Id)).Take(count).ToList();
+    Stack(gap: 5, px: 5, py: 10, bg: Colors.Bg, color: Colors.OnBg, label: "Products: " + title) {
+      Row(justify: Justify.Between, align: Align.Baseline, gap: 4, wrap: Wrapping.Wrap) {
+        Text(title, fontFamily: Font.Display, fontSize: FontSize.Title, fontWeight: FontWeight.Bold);
+        if (more != "") { TextLink(more, to: link); }
+      }
+      if (shown.Count == 0) {
+        Text("Nothing on this shelf yet.", color: Colors.TextMuted);
+      } else {
+        Box(display: Display.Grid, cols: "repeat(auto-fill, minmax(min(100%, 180px), 1fr))", gap: 5) {
+          foreach (var p in shown) {
+            Link(href: path.Replace("{slug}", p.Slug), label: p.Name, display: Display.Block, color: "inherit",
+                 textDecoration: TextDecoration.None) {
+              Stack(gap: 2) {
+                if (covers.Any(c => c.Product == p)) {
+                  Image(src: File.Url(covers.First(c => c.Product == p).Path), alt: p.Name, aspectRatio: "4 / 5",
+                        objectFit: ObjectFit.Cover, w: "100%", rounded: Radius.Md);
+                }
+                Text(p.Name, fontWeight: FontWeight.Semibold);
+                if (shop != null) {
+                  var price = PriceAt(p, sales, at);
+                  Row(gap: 2) {
+                    Text(Money(ShownPrice(price.Price, p.Vat, shop), shop), color: price.WasPrice == null ? Colors.TextMuted : Colors.Danger);
+                    if (price.WasPrice != null) {
+                      Text(Money(ShownPrice(price.WasPrice.Value, p.Vat, shop), shop), color: Colors.TextMuted, textDecoration: TextDecoration.LineThrough);
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// The shop's shelves as tiles, each with its picture and name — the way into the catalogue.
+public component ShopCategoryTiles(string title = "The shelves") : CategoryTiles {
+  live var shelves = Category.Where(c => c.Parent == null).OrderBy(c => c.Rank).ToList();
+  render {
+    Stack(gap: 5, px: 5, py: 10, bg: Colors.Bg, color: Colors.OnBg, label: "Shelves: " + title) {
+      Text(title, fontFamily: Font.Display, fontSize: FontSize.Title, fontWeight: FontWeight.Bold);
+      Box(display: Display.Grid, cols: "repeat(auto-fill, minmax(min(100%, 220px), 1fr))", gap: 4) {
+        foreach (var c in shelves) {
+          Link(href: "/shop/" + c.Slug, label: c.Name, display: Display.Block, color: "inherit", textDecoration: TextDecoration.None) {
+            Stack(gap: 2, bg: Colors.Surface, rounded: Radius.Md, overflow: Overflow.Hidden) {
+              if (c.Picture != null) {
+                Image(src: File.Url(c.Picture), alt: c.Name, aspectRatio: "3 / 2", objectFit: ObjectFit.Cover, w: "100%");
+              }
+              Stack(gap: 1, p: 4) {
+                Text(c.Name, fontFamily: Font.Display, fontSize: FontSize.Heading, fontWeight: FontWeight.Bold);
+                if (c.Blurb != null) { Text(c.Blurb, color: Colors.TextMuted, fontSize: FontSize.Label); }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// A photograph beside a heading and a few paragraphs — a story, a way of working, a new arrival.
+public component ShopImageWithText(Picture photo, string title, Markdown words = "", PhotoSide side = PhotoSide.Left, Color ground = Colors.Bg) : PictureWithWords {
+  render {
+    var wide = Layout.AtLeast(Laptop);
+    Box(display: Display.Grid, cols: wide ? "minmax(0, 1fr) minmax(0, 1fr)" : "minmax(0, 1fr)", bg: ground, color: Colors.On(ground, Colors.OnBg),
+        label: "Picture with words: " + title) {
+      if (!wide || side == PhotoSide.Left) {
+        Image(picture: photo, alt: title, w: "100%", h: "100%", minH: wide ? "64vh" : "0", aspectRatio: wide ? "auto" : "4 / 3",
+              objectFit: ObjectFit.Cover);
+      }
+      Stack(gap: 4, px: wide ? 12 : 5, py: wide ? 12 : 8, justify: Justify.Center, maxW: "640px") {
+        Text(title, fontFamily: Font.Display, fontSize: FontSize.Title, fontWeight: FontWeight.Bold, lineHeight: "1.05");
+        if (words != "") { Markdown(words, fontSize: FontSize.Subhead, lineHeight: "1.6"); }
+      }
+      if (wide && side == PhotoSide.Right) {
+        Image(picture: photo, alt: title, w: "100%", h: "100%", minH: "64vh", objectFit: ObjectFit.Cover);
+      }
+    }
+  }
+}
+
+/// Something a customer or a grower said, large, with who said it.
+public component ShopQuote(string quote, string who = "", Color ground = Colors.Surface) : Quote {
+  render {
+    Stack(gap: 4, px: 5, py: 14, align: Align.Center, bg: ground, color: Colors.On(ground, Colors.OnSurface), label: "Quote") {
+      Text("“" + quote + "”", fontFamily: Font.Display, fontSize: FontSize.Title, lineHeight: "1.25", textAlign: TextAlign.Center,
+           maxW: "860px");
+      if (who != "") { Text(who, fontSize: FontSize.Label, fontWeight: FontWeight.Semibold, textAlign: TextAlign.Center); }
+    }
+  }
+}
+
+/// The shop's newsletter sign-up, with the words the reader agrees to beside the button — exactly what is kept.
+public component ShopNewsletter(string title = "The newsletter", string words = "What is new, once in a while. Every letter has a way out at the foot.", string button = "Sign up") : SignUp {
+  string list = "";
+  string consent = "";
+  on mount { list = NewsletterListKey(); consent = NewsletterWords(); }
+  render {
+    if (list != "" && consent != "") {
+      Stack(gap: 4, px: 5, py: 12, bg: Colors.Bg, color: Colors.OnBg, maxW: "720px", label: "Newsletter sign-up") {
+        Text(title, fontFamily: Font.Display, fontSize: FontSize.Title, fontWeight: FontWeight.Bold);
+        Text(words, fontSize: FontSize.Subhead, lineHeight: "1.5");
+        ListSignupForm(list, consent, source: "page", button: button);
+      }
+    }
+  }
+}
+
+/// A strip across the page — a sale, opening hours over the holidays, a delivery cut-off. Give it dates on the desk
+/// and it shows only between them.
+public component ShopBanner(string words, string more = "", PageLink link = "/", Color ground = Colors.Primary) : Banner {
+  render {
+    Row(justify: Justify.Center, align: Align.Center, gap: 4, wrap: Wrapping.Wrap, px: 5, py: 3, bg: ground,
+        color: Colors.On(ground, Colors.OnPrimary), label: "Banner") {
+      Text(words, fontWeight: FontWeight.Semibold, textAlign: TextAlign.Center);
+      if (more != "") {
+        Link(href: link, label: more, color: "inherit") { Text(more, textDecoration: TextDecoration.Underline); }
+      }
+    }
+  }
+}
+
+/// Up to four photographs side by side under a heading — a room, a season, a finished piece of work. Only the ones staff
+/// gave are drawn, each the same height; two to a row on a phone.
+public component ShopPhotoGallery(string title = "", Picture first = "", Picture second = "", Picture third = "", Picture fourth = "") : PhotoGallery {
+  render {
+    var wide = Layout.AtLeast(Tablet);
+    var given = (first != "" ? 1 : 0) + (second != "" ? 1 : 0) + (third != "" ? 1 : 0) + (fourth != "" ? 1 : 0);
+    var across = wide ? (given == 0 ? 1 : given) : (given > 1 ? 2 : 1);
+    Stack(gap: 5, px: wide ? 12 : 5, py: wide ? 12 : 8, bg: Colors.Bg, color: Colors.OnBg, label: "Gallery: " + title) {
+      if (title != "") {
+        Text(title, fontFamily: Font.Display, fontSize: FontSize.Title, fontWeight: FontWeight.Bold, lineHeight: "1.05");
+      }
+      Box(display: Display.Grid, cols: $"repeat({across}, minmax(0, 1fr))", gap: wide ? 4 : 2) {
+        if (first != "") { ShopGalleryPhoto(first, title); }
+        if (second != "") { ShopGalleryPhoto(second, title); }
+        if (third != "") { ShopGalleryPhoto(third, title); }
+        if (fourth != "") { ShopGalleryPhoto(fourth, title); }
+      }
+    }
+  }
+}
+
+/// One photograph of a gallery, cropped to the gallery's shape.
+[Composable]
+component ShopGalleryPhoto(Picture photo, string title) {
+  render { Image(picture: photo, alt: title, w: "100%", aspectRatio: "4 / 5", objectFit: ObjectFit.Cover, rounded: Radius.Sm); }
+}
+
+/// Where the store's product pages live — `ShopSetup.ProductPath` (`/p/{slug}`), for a block that links to them.
+[AllowAnonymous]
+public string ShopProductPath() {
+  return App.Setting<ShopSetup>().ProductPath;
+}
+
+/// The shop's newsletter list's key, or "" when it has none.
+[AllowAnonymous]
+public string NewsletterListKey() {
+  return App.Setting<ShopSetup>().NewsletterList;
+}

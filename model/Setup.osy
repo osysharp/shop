@@ -1,0 +1,566 @@
+// How this shop takes money and hands goods over — the providers the APP chooses, through `app.Shop`.
+//
+// The shop depends on the two contracts (`Osysharp.Payments`, `Osysharp.Delivery`) and on no provider. An app lists
+// what it offers, once:
+//
+//     app.Shop = new ShopSetup {
+//       Payments = [ new StripePayments { ApiKey = Secret.StripeApiKey, WebhookSecret = Secret.StripeWebhookSecret },
+//                    new ManualPayment { Key = "banktransfer", Label = "Bank transfer" } ],
+//       Delivery = [ new FlatRateDelivery { Label = "Delivery" }, new CollectInStore() ],
+//     };
+//
+// ⚑ THE SETUP IS CONFIGURATION — worked out once per app version and kept (D-SETTINGCACHE1) — so it does NOT read the
+//   shop's own settings. The SHOP reads them, where it uses them, so a change on the desk applies to the next order
+//   without a recompile:
+//   - a `ManualPayment` given no `Instructions` (and not offered only when collecting) is paid into the shop's account,
+//     and tells the customer the desk's `BankDetails` (`HandPayInstructions`);
+//   - a `FlatRateDelivery` given no `Price` charges the desk's `DeliveryFee`, and is free from the desk's
+//     `FreeDeliveryFrom` when given no `FreeFrom`; a `CollectInStore` given no `Address` is at the desk's
+//     `CollectionAddress` (`FillFromTheDesk`). Another carrier keeps the prices it is given.
+//
+// ⚑ PROVIDER EVENTS ARRIVE AT ONE ENDPOINT, and the address is the app's to declare — a package opens no routes:
+//     new RestApi("Payments") { Route = "payments", Auth = new ApiAuth { Anonymous = true },
+//       Endpoints = [ new Endpoint(ShopPaymentEvents) { Method = HttpMethod.Post, Path = "/{provider}/events",
+//                                                       Raw = true, Headers = ["Stripe-Signature"] } ] }
+//   `Headers` names every header the listed providers' webhooks need (each provider's `EventHeaders`).
+
+namespace Osysharp.Shop;
+
+using Osysharp.Delivery;
+using Osysharp.Payments;
+using Osysharp.Workflow;
+
+/// What the app offers. Unset, a shop takes a bank transfer and hands goods over at the counter.
+[AppSetting("Shop")]
+public class ShopSetup {
+  public List<IPaymentProvider> Payments = [
+    new ManualPayment { Key = "banktransfer", Label = "Bank transfer", Description = "Pay by transfer; the order is held while it arrives." },
+  ];
+  public List<IDeliveryProvider> Delivery = [ new CollectInStore() ];
+  /// How the shop's counter takes money besides a card terminal it runs itself (Counter.osy): Swish's QR code
+  /// (`SwishPayments`), a Stripe reader (`StripeTerminal`) — each refunded through the provider in `Payments` it names.
+  public List<ICounterPayment> CounterPayments = [];
+  /// Offer "Card on the terminal" at the counter: a card taken on a terminal the shop's bank or acquirer runs, apart
+  /// from this app, and recorded by the clerk (and refunded on that terminal).
+  public bool CounterCardByHand = true;
+  /// Payment keys offered only when the goods are collected — "pay on collection".
+  public List<string> OnlyWhenCollecting = [];
+  /// Payment keys offered only to a wholesale account that pays by invoice (Wholesale.osy) — an invoice with its price
+  /// list's terms. Such an order goes out before it is paid.
+  public List<string> OnlyForWholesale = [];
+  /// Where the store shows a product and a category — `{slug}` or `{id}` stands for the row. The sitemap lists these.
+  public string ProductPath = "/p/{slug}";
+  public string CategoryPath = "/shop/{slug}";
+  /// Where the store's checkout is — what its analytics reports as `begin_checkout`, and what robots.txt keeps out.
+  public string CheckoutPath = "/checkout";
+  /// Checks a business buyer's VAT number (`Osysharp.Shop.Vies`). Null: the shop sells to everyone with VAT.
+  public IVatNumberCheck? VatNumbers = null;
+  /// Proves a buyer's age with an identity provider (`Osysharp.Shop.BankId`'s `BankIdAgeCheck`) — AgeChecks.osy.
+  /// Null, or not `Offered()` yet: the checkout asks for a date of birth, and the parcel is handed over against ID.
+  public AgeVerifier? AgeVerifier = null;
+  /// With a provider offered: whether goods with an age are sold ONLY to a verified buyer. False lets a buyer give a
+  /// date of birth instead — the order then says so, and whoever hands it over checks ID.
+  public bool AgeMustBeVerified = false;
+  /// How long a verification counts for the bag it was made for.
+  public int AgeCheckValidHours = 24;
+  /// Where the rates come from when the store shows prices in a visitor's own currency (Currencies.osy) —
+  /// `Osysharp.Shop.Ecb`'s `EcbRates`. Null: every price is in the shop's own currency, and no picker is offered.
+  public IExchangeRates? ExchangeRates = null;
+  /// The currencies a visitor may choose to see prices in, besides the shop's own — ISO 4217 codes. Only a DISPLAY:
+  /// orders, invoices, VAT and payments stay in the shop's own currency.
+  public List<string> DisplayCurrencies = [];
+  /// How many days a rate is shown after the day it is for. Past it the price is shown in the shop's own currency.
+  /// Six covers a weekend and a two-day holiday (Easter), when the ECB publishes nothing.
+  public int RatesStaleAfterDays = 6;
+  /// The mail the shop sends. Derive from `ShopMails` and override a method to send your own template for that mail.
+  public ShopMails Mails = new ShopMails();
+  /// Where a customer's orders are on the store — their account page, after `SiteUrl`.
+  public string AccountPath = "/account";
+  /// Where the store's page for ONE order is — what every mail about an order opens ("See your order"), and where a
+  /// payment provider sends the customer back to, then `/` and the `OrderLink` grant. The page takes it as
+  /// `[Page("/order/{link}")] component P(OrderLink link)` and shows `ShopOrderByLink(link)`. A link, never the
+  /// reference: a reference opens nothing (D-ORDERLINK1).
+  public string OrderPath = "/order";
+  /// Where the bag is on the store — what a bag reminder's button opens, after `SiteUrl`.
+  public string BagPath = "/bag";
+  /// The mailing list (`Osysharp.MailingLists`, declared in `app.MailingLists`) the checkout and the account offer to
+  /// join — "" offers none.
+  public string NewsletterList = "";
+  /// The list whose confirmed readers get ONE reminder about a bag they left with things in it — "" sends none. Its
+  /// consent is the reader's: the words they agreed to must say so ("…and a reminder if I leave something in my bag").
+  public string BagReminderList = "";
+  /// How long a bag sits untouched before its reminder.
+  public int BagReminderHours = 24;
+  /// Where the store's page for a bag link is — the reminder's "Back to your bag" is this, then `/` and the `ResumeBag`
+  /// grant; the page takes it as `[Page("/bag/back/{link}")] component P(ResumeBag link)` and shows `ShopResumeBag(link)`.
+  public string ResumeBagPath = "/bag/back";
+  /// Where the store's page for a payment link is — the link a customer is mailed is this, then `/` and the `Pay` grant
+  /// (`SendPayLink`); the page takes it as `[Page("/pay/{pay}")] component P(Pay pay)` and shows `ShopPayByLink(pay)`.
+  public string PayLinkPath = "/pay";
+  /// Where the store's page for a download link is — what the downloads mail links to, then `/` and the `DownloadLink`
+  /// grant; the page takes it as `[Page("/download/{link}")] component P(DownloadLink link)` (`ShopDownload(link)`).
+  public string DownloadPath = "/download";
+  /// Where the store lets anybody check what is left on a gift card — what a gift card's mail links to.
+  public string GiftCardBalancePath = "/gift-card";
+  /// Ask every account to prove its address before it is signed in (Accounts.osy): a new account's sign-up mails a link
+  /// AND a six-digit code, and neither the sign-up nor a sign-in answers a ticket until one of them is used. Sign-up then
+  /// answers a new address and a taken one alike — the MAIL says which. Off: a new account is signed in at once.
+  /// ⚠ It asks EVERY account that has not proven its address, the ones made before it was turned on too — each is sent
+  ///   a code the next time it signs in. The store's page for the link is `/account/confirm/{token}`, around
+  ///   `ShopConfirmAddress(token)`.
+  public bool RequireConfirmedEmail = false;
+  /// The month (1–12) and day the shop's FISCAL year ends — 12/31 when it is the calendar year. An invoiced buyer kept
+  /// for the books counts from it (`BooksKeepUntil`): Bokföringslagen keeps an accounting record for seven years from the
+  /// end of the calendar year in which its fiscal year ended. An organisation's policy may set it (owner, Q8).
+  /// ⚑ Interim home: once the Shop is a Privacy holder (D-PRIVACY1 slice 4) the app's ONE fiscal calendar is
+  ///   `PrivacySetup`'s, and this goes.
+  [OrgPolicy(OrgPolicyMode.Default)] public int FiscalYearEndMonth = 12;
+  [OrgPolicy(OrgPolicyMode.Default)] public int FiscalYearEndDay = 31;
+}
+
+/// The desk's say over a provider the app lists: whether it is offered, and where it comes in the list. The app
+/// decides WHICH providers exist; staff decide which of them the shop offers today, and in what order.
+public entity ProviderChoice {
+  /// "payment" or "delivery".
+  [Required, MaxLength(12)] string Kind;
+  [Required, MaxLength(40)] string Key;
+  bool Offered = true;
+  int Rank = 0;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update when IsShopStaff;
+  }
+}
+
+/// A provider as the desk lists it.
+public class ProviderRow {
+  public string Kind = "";
+  public string Key = "";
+  public string Label = "";
+  /// Set up — its keys are there, and it takes the shop's currency. A provider that is not cannot be offered,
+  /// whatever the desk says.
+  public bool Ready = false;
+  /// Why a provider that is set up still cannot be offered — its own words (`CurrencyRefusal`); "" when nothing stops it.
+  public string NotReady = "";
+  public bool Offered = true;
+  public int Rank = 0;
+}
+
+/// Where a provider comes — the desk's rank, else its place in the app's list.
+int RankOf(List<ProviderChoice> choices, string key, int appOrder) {
+  var c = choices.FirstOrDefault(x => x.Key == key);
+  return c == null ? appOrder * 10 : c.Rank;
+}
+
+bool OfferedNow(List<ProviderChoice> choices, string key) {
+  var c = choices.FirstOrDefault(x => x.Key == key);
+  return c == null || c.Offered;
+}
+
+/// Every payment and delivery provider the app lists, with the desk's choices over them.
+[Authorize(IsShopStaff)]
+public List<ProviderRow> Providers() {
+  var setup = App.Setting<ShopSetup>();
+  var pays = ProviderChoice.Where(c => c.Kind == "payment").ToList();
+  var ways = ProviderChoice.Where(c => c.Kind == "delivery").ToList();
+  List<ProviderRow> rows = [];
+  var i = 0;
+  var currency = TheShop().Currency;
+  foreach (var p in setup.Payments) {
+    var refusal = p.CurrencyRefusal(currency, "", currency);
+    rows.Add(new ProviderRow { Kind = "payment", Key = p.Key, Label = p.Label, Ready = p.IsReady() && refusal == "",
+                               NotReady = refusal, Offered = OfferedNow(pays, p.Key), Rank = RankOf(pays, p.Key, i) });
+    i = i + 1;
+  }
+  i = 0;
+  foreach (var d in setup.Delivery) {
+    rows.Add(new ProviderRow { Kind = "delivery", Key = d.Key, Label = d.Name, Ready = d.IsReady(),
+                               Offered = OfferedNow(ways, d.Key), Rank = RankOf(ways, d.Key, i) });
+    i = i + 1;
+  }
+  return rows.OrderBy(r => r.Kind).ThenBy(r => r.Rank).ToList();
+}
+
+/// Offers a provider, or stops offering it.
+[Authorize(IsShopStaff)]
+public void OfferProvider(string kind, string key, bool offered) {
+  ChoiceFor(kind, key).Offered = offered;
+  UnitOfWork.Commit();
+}
+
+/// Moves a provider one place up (-1) or down (1) in its list.
+[Authorize(IsShopStaff)]
+public void MoveProvider(string kind, string key, int by) {
+  var rows = Providers().Where(r => r.Kind == kind).ToList();
+  var at = rows.FindIndex(r => r.Key == key);
+  var to = at + by;
+  if (at < 0 || to < 0 || to >= rows.Count) { return; }
+  var moving = rows[at];
+  rows.RemoveAt(at);
+  rows.Insert(to, moving);
+  for (var n = 0; n < rows.Count; n = n + 1) { ChoiceFor(kind, rows[n].Key).Rank = n * 10; }
+  UnitOfWork.Commit();
+}
+
+ProviderChoice ChoiceFor(string kind, string key) {
+  var c = ProviderChoice.FirstOrDefault(x => x.Kind == kind && x.Key == key);
+  if (c == null) { c = new ProviderChoice { Kind = kind, Key = key }; }
+  return c;
+}
+
+/// A way to pay, as the checkout shows it.
+public class PaymentChoice {
+  public string Key = "";
+  public string Label = "";
+  public string Description = "";
+  /// True when choosing it sends the customer to the provider's page next.
+  public bool LeavesTheShop = false;
+}
+
+/// A way to receive the goods, priced for this bag.
+public class DeliveryChoice {
+  /// What `PlaceOrder` takes — the provider's key, and the option's id when a provider offers several.
+  public string Id = "";
+  public string Label = "";
+  public string Description = "";
+  public decimal Price = 0;
+  public bool NeedsAddress = true;
+  /// "2–4 days", or "".
+  public string Days = "";
+  /// The customer chooses where to collect it — a service point, a locker — before placing (`CheckoutPickupPoint`).
+  public bool ChoosePoint = false;
+  /// Nothing in the bag is packed — gift cards and files, mailed. The one choice such a bag has (`Fulfilment.Digital`).
+  public bool NothingToShip = false;
+  /// Why the bag cannot go this way as it is — the counter it is collected at, or every location that ships, does not
+  /// hold all of it (Locations.osy) — in the customer's words; "" when it can. Such a choice is shown, and refused.
+  public string Problem = "";
+}
+
+/// The id of the one delivery a bag with nothing to ship has.
+public string NothingToShipId() { return "digital"; }
+
+/// An amount in minor units, as every provider counts.
+public long Minor(decimal amount) {
+  return (long)Math.Round(amount * 100m, MidpointRounding.AwayFromZero);
+}
+
+/// How a payment by hand is paid: what the app's provider says — else, for one paid into the shop's own account (a
+/// `ManualPayment` given no `Instructions`, not offered only when collecting), the bank details the desk keeps. Read
+/// here, where it is used, so the desk's change applies to the next order — the setup itself is configuration, and
+/// reads no data.
+public string? HandPayInstructions(IPaymentProvider provider, PaymentRequest request) {
+  var said = provider.Start(request).Instructions;
+  if (said != null && said != "") { return said; }
+  if (!provider.IsManual || App.Setting<ShopSetup>().OnlyWhenCollecting.Contains(provider.Key)) { return said; }
+  var bank = ShopSettings.FirstOrDefault()?.BankDetails;
+  return bank == null || bank.Trim() == "" ? said : bank;
+}
+
+/// A delivery provider as the shop offers it: a `FlatRateDelivery` the app priced at nothing charges the desk's delivery
+/// fee, and one given no free-from is free from the desk's; a `CollectInStore` the app gave no address is at the desk's
+/// collection address. Applied to the reader's own copy of the setup, just before it quotes.
+public void FillFromTheDesk(IDeliveryProvider d, ShopSettings shop) {
+  if (d is FlatRateDelivery flat && flat.Price == 0) { flat.Price = Minor(shop.DeliveryFee); }
+  if (d is FlatRateDelivery free && free.FreeFrom == 0) { free.FreeFrom = Minor(shop.FreeDeliveryFrom); }
+  if (d is CollectInStore here && here.Address == "") { here.Address = shop.CollectionAddress ?? ""; }
+}
+
+/// The ways to pay this shop offers right now — only those whose provider is ready, and "pay on collection" only when
+/// collecting — for the caller's bag, in the currency it is bought in. The order is the app's.
+[AllowAnonymous]
+public List<PaymentChoice> PaymentChoices(bool collecting) {
+  var bag = BagFor(false);
+  return PaymentChoicesIn(collecting, bag == null ? TheShop().Currency : BagCurrency(bag), "", bag == null ? Session.CurrentUser : bag.Owner);
+}
+
+/// The ways to pay an order in `currency` (ISO 4217), for a buyer in `country` ("" while unknown), as `PaymentChoices` —
+/// for `account` (null: a guest), who is offered an invoice only when it buys wholesale on invoice terms.
+public List<PaymentChoice> PaymentChoicesIn(bool collecting, string currency, string country, ShopAccount? account = null) {
+  var setup = App.Setting<ShopSetup>();
+  var desk = ProviderChoice.Where(c => c.Kind == "payment").ToList();
+  List<PaymentChoice> all = [];
+  List<int> ranks = [];
+  var i = 0;
+  var own = TheShop().Currency;
+  foreach (var p in setup.Payments) {
+    var rank = RankOf(desk, p.Key, i);
+    i = i + 1;
+    if (!p.IsReady() || !OfferedNow(desk, p.Key)) { continue; }
+    // A provider that cannot move this money (Swish, for an order in euros; a transfer into a kronor account; Klarna
+    // for a country that is not the currency's) is never offered for it — the desk says why (`SoldCurrenciesOnTheDesk`).
+    if (p.CurrencyRefusal(currency, country, own) != "") { continue; }
+    if (!collecting && setup.OnlyWhenCollecting.Contains(p.Key)) { continue; }
+    if (!OfferedTo(p.Key, account)) { continue; }
+    // In the desk's order: insert before the first that ranks after it.
+    var at = ranks.FindIndex(r => r > rank);
+    if (at < 0) { at = all.Count; }
+    all.Insert(at, new PaymentChoice { Key = p.Key, Label = p.Label, Description = p.Description, LeavesTheShop = !p.IsManual });
+    ranks.Insert(at, rank);
+  }
+  return all;
+}
+
+/// The ways to receive this bag, priced — for the address's country when one is known ("" before the customer says).
+[AllowAnonymous]
+public List<DeliveryChoice> DeliveryChoices(string country) {
+  return DeliveryChoicesFor(BagFor(false), country);
+}
+
+/// The ways `bag` can reach `country`, priced — for a bag found some other way than the caller's visit (a renewal's).
+public List<DeliveryChoice> DeliveryChoicesFor(Bag? bag, string country) {
+  var shop = TheShop();
+  // Only goods are packed: a gift card and a file are mailed, and weigh nothing.
+  var parcel = bag == null ? [] : bag.Lines.ToList().Where(l => KindOf(l.Variant) == LineKind.Goods).ToList();
+  if (bag != null && bag.Lines.Count() > 0 && parcel.Count == 0) {
+    return [ new DeliveryChoice { Id = NothingToShipId(), Label = "By email", Description = "",
+                                  Price = 0m, NeedsAddress = false, NothingToShip = true } ];
+  }
+  var subtotal = bag == null ? 0m : BagGoodsSubtotal(bag);
+  // An add-on may make delivery free (a code, a member's perk) — every option then costs nothing.
+  var free = bag != null && AdjustmentsFor(BasketOf(bag, country)).Any(a => a.FreeDelivery);
+  // In a SOLD currency the carriers still quote the shop's own money — asked with no subtotal, so each quotes its
+  // price and not its own free-from — and the currency's own table prices it: the desk's price for the option, else
+  // its own converted and rounded; free from the currency's threshold (Currencies.osy).
+  var sale = bag == null ? null : SaleRate(bag.Currency);
+  var sold = sale == null ? null : sale.DeliveryPrices.ToList();
+  if (sale != null) {
+    var threshold = sale.FreeDeliveryFrom > 0 ? sale.FreeDeliveryFrom
+                  : shop.FreeDeliveryFrom > 0 ? NicePrice(shop.FreeDeliveryFrom * sale.PerUnit, sale.Rounding) : 0m;
+    if (threshold > 0 && subtotal >= threshold) { free = true; }
+  }
+  var request = new DeliveryQuoteRequest {
+    Currency = shop.Currency, Subtotal = sale == null ? Minor(subtotal) : 0, Items = parcel.Sum(l => l.Quantity),
+    WeightGrams = parcel.Sum(l => l.Variant.WeightGrams * l.Quantity),
+    To = country.Trim() == "" ? null : new DeliveryAddress { Country = CountryCode(country) },
+  };
+  var desk = ProviderChoice.Where(c => c.Kind == "delivery").ToList();
+  List<DeliveryChoice> all = [];
+  List<int> ranks = [];
+  var i = 0;
+  // With locations (Locations.osy): a collection is offered at each counter that serves one, and a parcel only while
+  // some location ships. A shop without locations offers what its providers quote, as before.
+  var locations = StockLocation.Where(l => l.Active).OrderBy(l => l.Rank).ToList();
+  var counters = locations.Where(l => l.Collects).ToList();
+  var ships = locations.Count == 0 || locations.Any(l => l.Ships);
+  foreach (var d in App.Setting<ShopSetup>().Delivery) {
+    var rank = RankOf(desk, d.Key, i);
+    i = i + 1;
+    if (!d.IsReady() || !OfferedNow(desk, d.Key)) { continue; }
+    FillFromTheDesk(d, shop);
+    foreach (var o in d.Quote(request)) {
+      var at = ranks.FindIndex(r => r > rank);
+      if (at < 0) { at = all.Count; }
+      ranks.Insert(at, rank);
+      var id = o.Id == d.Key ? d.Key : d.Key + "/" + o.Id;
+      var price = o.Price / 100m;
+      if (sale != null) {
+        var set = sold!.FirstOrDefault(x => x.Delivery == id);
+        price = set != null ? set.Price : NicePrice(price * sale.PerUnit, sale.Rounding);
+      }
+      var choice = new DeliveryChoice {
+        Id = id, Label = o.Label, Description = o.Description,
+        Price = free ? 0m : price, NeedsAddress = o.NeedsAddress, ChoosePoint = o.ChoosePoint,
+        Days = o.DaysMin == null ? "" : o.DaysMax == null || o.DaysMax == o.DaysMin ? $"{o.DaysMin} days" : $"{o.DaysMin}–{o.DaysMax} days",
+      };
+      var collection = !o.NeedsAddress && !o.ChoosePoint;
+      if (locations.Count == 0) { all.Insert(at, choice); continue; }
+      if (!collection) {
+        if (!ships) { ranks.RemoveAt(at); continue; }
+        all.Insert(at, choice);
+        continue;
+      }
+      // A collection: at the one counter, said where — or one choice per counter, named for it.
+      if (counters.Count == 0) { ranks.RemoveAt(at); continue; }
+      if (counters.Count == 1) {
+        choice.Description = CounterDescription(counters[0]);
+        all.Insert(at, choice);
+        continue;
+      }
+      ranks.RemoveAt(at);
+      foreach (var c in counters) {
+        var here = ranks.FindIndex(r => r > rank);
+        if (here < 0) { here = all.Count; }
+        ranks.Insert(here, rank);
+        all.Insert(here, new DeliveryChoice { Id = $"{id}@{c.Code}", Label = $"{o.Label}, {c.Name}", Description = CounterDescription(c),
+                                              Price = choice.Price, NeedsAddress = false, Days = choice.Days });
+      }
+    }
+  }
+  // Which of them the bag can go by, from one location.
+  if (bag != null && locations.Count > 0 && bag.Lines.Count() > 0) {
+    foreach (var c in all) { c.Problem = DeliveryStockProblem(bag, c); }
+  }
+  return all;
+}
+
+/// What a collection at `counter` says under its name: where, and when.
+string CounterDescription(StockLocation counter) {
+  var where = LocationAddress(counter);
+  return counter.Hours == null ? where : $"{where}. {counter.Hours}";
+}
+
+/// A country as the customer typed it, as a two-letter code when it is one already — a carrier quotes by code.
+/// A country as the ISO 3166 alpha-2 code — "SE" for "se", "Sweden" or "Sverige". A checkout's country is typed by the
+/// customer, and VAT, customs and carriers all need the code. A name it does not know comes back as typed (trimmed),
+/// which is never mistaken for a code: everything that decides by country treats it as unknown.
+string CountryCode(string country) {
+  var c = country.Trim();
+  if (c.Length == 2) { return c.ToUpper(); }
+  var known = new Dictionary<string, string> {
+    { "austria", "AT" },
+    { "österreich", "AT" },
+    { "belgium", "BE" },
+    { "belgique", "BE" },
+    { "belgië", "BE" },
+    { "bulgaria", "BG" },
+    { "croatia", "HR" },
+    { "hrvatska", "HR" },
+    { "cyprus", "CY" },
+    { "czechia", "CZ" },
+    { "czech republic", "CZ" },
+    { "česko", "CZ" },
+    { "denmark", "DK" },
+    { "danmark", "DK" },
+    { "estonia", "EE" },
+    { "eesti", "EE" },
+    { "finland", "FI" },
+    { "suomi", "FI" },
+    { "france", "FR" },
+    { "germany", "DE" },
+    { "deutschland", "DE" },
+    { "tyskland", "DE" },
+    { "greece", "GR" },
+    { "ελλάδα", "GR" },
+    { "hungary", "HU" },
+    { "magyarország", "HU" },
+    { "ireland", "IE" },
+    { "éire", "IE" },
+    { "italy", "IT" },
+    { "italia", "IT" },
+    { "latvia", "LV" },
+    { "latvija", "LV" },
+    { "lithuania", "LT" },
+    { "lietuva", "LT" },
+    { "luxembourg", "LU" },
+    { "malta", "MT" },
+    { "netherlands", "NL" },
+    { "the netherlands", "NL" },
+    { "nederland", "NL" },
+    { "holland", "NL" },
+    { "poland", "PL" },
+    { "polska", "PL" },
+    { "portugal", "PT" },
+    { "romania", "RO" },
+    { "românia", "RO" },
+    { "slovakia", "SK" },
+    { "slovensko", "SK" },
+    { "slovenia", "SI" },
+    { "slovenija", "SI" },
+    { "spain", "ES" },
+    { "españa", "ES" },
+    { "sweden", "SE" },
+    { "sverige", "SE" },
+    { "norway", "NO" },
+    { "norge", "NO" },
+    { "noreg", "NO" },
+    { "iceland", "IS" },
+    { "ísland", "IS" },
+    { "switzerland", "CH" },
+    { "schweiz", "CH" },
+    { "suisse", "CH" },
+    { "svizzera", "CH" },
+    { "united kingdom", "GB" },
+    { "uk", "GB" },
+    { "great britain", "GB" },
+    { "england", "GB" },
+    { "scotland", "GB" },
+    { "wales", "GB" },
+    { "storbritannien", "GB" },
+    { "united states", "US" },
+    { "usa", "US" },
+    { "united states of america", "US" },
+    { "america", "US" },
+    { "canada", "CA" },
+    { "australia", "AU" },
+    { "japan", "JP" }
+  };
+  var key = c.ToLower();
+  return known.ContainsKey(key) ? known[key] : c;
+}
+
+/// What the customer's return from a provider's page means — asked of the PROVIDER, never read off the address.
+public class PaymentOutcome {
+  public bool Paid;
+  /// Not paid YET: the provider is still waiting on the customer (a Swish request on their phone) or deciding — a page
+  /// that waits asks again rather than calling it failed.
+  public bool Pending;
+  public string Message = "";
+}
+
+/// The page a provider sends the customer back to calls this with the order's link (`OrderLink` — the return address
+/// carries it, so the page opens the order for whoever comes back, in whatever browser) and what came back in the
+/// address: `{provider key}-{the provider's token}`, or `cancelled`.
+[AllowAnonymous]
+public PaymentOutcome CheckPayment(OrderLink link, string token) {
+  var dash = token.IndexOf("-");
+  if (token == "cancelled" || dash <= 0) { return new PaymentOutcome { Paid = false, Message = "The payment was not completed." }; }
+  var key = token.Substring(0, dash);
+  var order = link.Row;
+  var reference = order.Reference;
+  if (order.PaymentMethod != key) { return new PaymentOutcome { Paid = false, Message = "That payment is not for this order." }; }
+  var provider = App.Setting<ShopSetup>().Payments.FirstOrDefault(p => p.Key == key);
+  if (provider == null) { return new PaymentOutcome { Paid = false, Message = "This shop no longer takes that payment." }; }
+  // A second visit to the return page (a reload, the back button) answers from the shop's own record: the provider
+  // may have nothing left to say — Klarna's session is spent once its order is placed, and would read as "not paid".
+  if (order.PaidAt != null) { return new PaymentOutcome { Paid = true, Message = "Paid." }; }
+  var check = provider.Check(reference, Minor(AmountDue(order)), token.Substring(dash + 1));
+  if (check.State == PaymentState.Paid || check.State == PaymentState.Authorized) {
+    if (order.Status == OrderStatus.Reserved) {
+      OrderLifecycle.CorrelatePaymentReceived(reference, provider.Label, check.ProviderRef, check.SavedMethod, check.SavedMethodLabel);
+    }
+    return new PaymentOutcome { Paid = true, Message = "Paid." };
+  }
+  return new PaymentOutcome { Paid = false, Pending = check.State == PaymentState.Pending,
+                              Message = check.Message == "" ? "The payment has not gone through." : check.Message };
+}
+
+/// The endpoint every payment provider posts its events to (`/payments/{provider}/events`). The provider verifies its
+/// own event — a signature, or asking its API — so nothing past `HandleEvent` runs for a request it did not send.
+[AllowAnonymous]
+public string ShopPaymentEvents(string provider) {
+  var p = App.Setting<ShopSetup>().Payments.FirstOrDefault(x => x.Key == provider);
+  if (p == null) { throw new ValidationException($"This shop has no payment provider '{provider}'."); }
+  var headers = new Dictionary<string, string>();
+  foreach (var h in p.EventHeaders) { headers.Add(h, Request.Header(h) ?? ""); }
+  return ApplyPaymentEvents(p.HandleEvent(Request.RawBody ?? "", headers));
+}
+
+/// What a provider's events mean for the shop's orders and returns — apart from how they arrived, so a test can hand
+/// in events it built.
+public string ApplyPaymentEvents(List<PaymentEvent> events) {
+  var outcome = "ignored";
+  foreach (var e in events) {
+    if (e.Kind == PaymentEventKind.Paid && (e.State == PaymentState.Paid || e.State == PaymentState.Authorized)) {
+      // Handed to the order's own run, which checks it as the shop: whoever posts a provider's event may not read
+      // orders (an order is read through its link), and needs to know nothing about one.
+      var found = OrderLifecycle.CorrelatePaymentReported(e.Reference, e.Amount, e.ProviderRef, e.SavedMethod, e.SavedMethodLabel);
+      // Not yet committed: ask the provider to try again rather than lose the payment.
+      if (found == CorrelationOutcome.NoSuchKey) { throw new ConflictException($"No order {e.Reference} yet."); }
+      outcome = "ok";
+    }
+    if (e.Kind == PaymentEventKind.Refund && e.ProviderRef != "") {
+      // One refund is either an order's (the desk refunded all of it) or a return's (part of it) — each answers only
+      // the one it is, and ignores the other.
+      var status = RefundStatus(e.RefundState);
+      OrderLifecycle.CorrelateRefundUpdate(e.ProviderRef, status, e.RefundRef);
+      ReturnLifecycle.CorrelateRefundUpdate(e.RefundRef, status);
+      outcome = "ok";
+    }
+  }
+  return outcome;
+}
+
+/// A provider's refund state as the order's and the return's workflows count it.
+public string RefundStatus(RefundState state) {
+  return state == RefundState.Succeeded ? "succeeded" : state == RefundState.Failed ? "failed" : "pending";
+}

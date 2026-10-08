@@ -1,0 +1,347 @@
+// What the checkout must say before the customer commits, as consumer law asks it: the whole price — goods, what
+// comes off, delivery, and the VAT in it — and the shop's terms, accepted and kept with the order.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Delivery;
+using Osysharp.Ui;
+
+/// The checkout's total, priced exactly as the order will be.
+public class CheckoutTotals {
+  /// The currency every amount below is in — the bag's (ISO 4217): the shop's own, or one it sells in.
+  public string Currency = "";
+  public decimal Goods = 0;
+  /// Money off — each add-on's lines are in `Adjustments`.
+  public decimal Discount = 0;
+  public List<Adjustment> Adjustments = [];
+  public decimal Delivery = 0;
+  public string DeliveryLabel = "";
+  public decimal Total = 0;
+  /// The VAT included in `Total`.
+  public decimal Vat = 0;
+  /// `Total` without its VAT — what a shop that shows prices without VAT puts above the VAT line.
+  public decimal Net = 0;
+  /// Sold without VAT to a business abroad — the figures above are all without VAT.
+  public bool ReverseCharge = false;
+  /// Exported outside the shop's customs area — the figures above are all without VAT.
+  public bool Exported = false;
+  /// Why there is no VAT, in the customer's words — "" when there is.
+  public string VatNote = "";
+  /// Paid from the customer's store credit, when they chose to — part of `Total`, not money off it.
+  public decimal Credit = 0;
+  /// Paid with the gift cards on the bag — part of `Total`, not money off it — and how, card by card.
+  public decimal GiftCards = 0;
+  public List<GiftCardUse> GiftCardUses = [];
+  /// Of `Total`, gift cards being bought — no VAT on them, unless the shop sells single-purpose vouchers: then
+  /// `GiftCardsSoldVat` is the VAT in them, paid now.
+  public decimal GiftCardsSold = 0;
+  public decimal GiftCardsSoldVat = 0;
+  /// Of `GiftCards`, what single-purpose cards pay — goods whose VAT was paid when those cards were bought.
+  public decimal SinglePurposePaid = 0;
+  /// What to say under the VAT about gift cards — being bought, or paying — in the customer's words; "" for nothing.
+  public string GiftCardVatNote = "";
+  /// What is left to pay once gift cards and store credit are taken — `Total` less both.
+  public decimal ToPay = 0;
+  /// Why the bag cannot be ordered as it is on the customer's price list (Wholesale.osy) — a line under its minimum,
+  /// an order under the list's least — in their words; "" when it can.
+  public string Problem = "";
+  /// The price list it is priced on — "" for retail.
+  public string PriceList = "";
+}
+
+/// Prices the caller's bag for a delivery choice and a country ("" before the customer says) — by the same
+/// computation `PlaceOrder` uses, so what is shown is what is charged.
+[AllowAnonymous]
+public CheckoutTotals CheckoutQuote(string delivery, string country) {
+  var shop = TheShop();
+  var bag = BagFor(false);
+  var totals = new CheckoutTotals { Currency = shop.Currency };
+  if (bag == null) { return totals; }
+  totals.Currency = BagCurrency(bag);
+  totals.Goods = BagSubtotal(bag);
+  totals.Problem = WholesaleProblem(bag);
+  var trade = WholesaleOf(BagCustomer(bag));
+  totals.PriceList = trade == null ? "" : trade.PriceList.Name;
+  var way = DeliveryChoices(country).FirstOrDefault(d => d.Id == delivery);
+  var digital = way != null && way.NothingToShip;
+  // Priced for where it goes, as `PriceBag` prices it — a collection for no country, since it is sold at the shop.
+  totals.Adjustments = AdjustmentsFor(BasketOf(bag, way != null && !way.NeedsAddress && !digital ? "" : country));
+  totals.Discount = totals.Adjustments.Sum(a => a.Amount);
+  totals.Delivery = way == null ? 0m : way.Price;
+  totals.DeliveryLabel = way == null ? "" : way.Label;
+  var vatCountry = way == null || (!way.NeedsAddress && !digital) ? "" : CountryCode(country);
+  var reverse = ReverseChargeApplies(bag, shop, vatCountry);
+  var exported = !reverse && Exported(shop, vatCountry);
+  if (reverse || exported) {
+    // Priced as PlaceOrder prices it: every figure without VAT — the buyer accounts for it, or it is paid at the border.
+    var net = ReverseChargePricing(bag, totals.Delivery, totals.Discount, shop);
+    totals.Goods = net.Goods;
+    totals.Discount = net.Discount;
+    totals.Delivery = net.Delivery;
+    totals.Total = net.Total;
+    totals.Vat = 0m;
+    totals.Net = net.Total;
+    totals.ReverseCharge = reverse;
+    totals.Exported = exported;
+    totals.VatNote = reverse ? "No VAT — reverse charge: your company accounts for it."
+                             : "No VAT — the goods leave the EU. Import VAT and duty may be charged on delivery.";
+    return WithCredit(totals, bag);
+  }
+  totals.Total = totals.Goods - totals.Discount + totals.Delivery;
+  totals = WithCredit(totals, bag);
+  // What single-purpose gift cards pay carries no second VAT; a single-purpose card bought now carries its VAT now.
+  totals.Vat = VatDue(bag, totals.Delivery, totals.Discount, shop, vatCountry, totals.SinglePurposePaid).Sum(r => r.Vat);
+  totals.Net = totals.Total - totals.Vat;
+  var cardRate = CardVatPercent(shop);
+  totals.GiftCardsSoldVat = cardRate > 0 ? bag.Lines.ToList().Where(l => l.Variant.Product.IsGiftCard).Sum(l => VatIn(LinePrice(l) * l.Quantity, cardRate)) : 0m;
+  totals.GiftCardVatNote = GiftCardVatNote(totals, cardRate, shop);
+  return totals;
+}
+
+/// What the checkout says about gift cards and VAT: a card bought now (a multi-purpose one carries none; a
+/// single-purpose one carries the standard rate, paid now), and goods paid by a single-purpose card (no VAT again).
+string GiftCardVatNote(CheckoutTotals totals, decimal cardRate, ShopSettings shop) {
+  List<string> said = [];
+  if (totals.GiftCardsSold > 0) {
+    said.Add(cardRate > 0 ? $"A gift card's VAT ({cardRate:0.##} %) is paid when it is bought — nothing more when it is spent."
+                          : "Gift cards carry no VAT: it is paid on what they buy.");
+  }
+  if (totals.SinglePurposePaid > 0) {
+    said.Add($"{MoneyIn(totals.SinglePurposePaid, totals.Currency, shop)} is paid with a gift card whose VAT was paid when it was bought.");
+  }
+  return string.Join(" ", said);
+}
+
+/// The totals with what pays before the customer's chosen way: the gift cards on the bag first (the one that expires
+/// first first), then the store credit they chose to use — as much as each holds, never for a gift card being bought.
+CheckoutTotals WithCredit(CheckoutTotals totals, Bag bag) {
+  totals.GiftCardsSold = bag.Lines.ToList().Where(l => l.Variant.Product.IsGiftCard).Sum(l => LinePrice(l) * l.Quantity);
+  var payable = totals.Total - totals.GiftCardsSold;
+  totals.GiftCardUses = GiftCardUses(bag, payable);
+  totals.GiftCards = totals.GiftCardUses.Sum(u => u.Amount);
+  totals.SinglePurposePaid = SinglePurposePaid(totals.GiftCardUses);
+  totals.Credit = CreditFor(bag, payable - totals.GiftCards);
+  totals.ToPay = totals.Total - totals.GiftCards - totals.Credit;
+  return totals;
+}
+
+// ── pickup points ──────────────────────────────────────────────────────────────────────────────────────────────
+//
+// A delivery the customer collects from a point they choose — a carrier's service point, a parcel locker — lists the
+// points near the address they gave, and the one they pick is kept on the bag, then on the order, then handed to the
+// carrier when the parcel is booked. The price is the option's, whichever point.
+
+/// The points near the customer's address where `delivery` (a `DeliveryChoice.Id`) lets them collect, nearest first.
+/// Empty for a delivery that has no points, and before a post code.
+[AllowAnonymous]
+public List<PickupPoint> PickupPointsFor(string delivery, string street, string postCode, string city, string country) {
+  if (postCode.Trim() == "") { return []; }
+  var way = DeliveryChoices(country).FirstOrDefault(d => d.Id == delivery);
+  if (way == null || !way.ChoosePoint) { return []; }
+  var slash = delivery.IndexOf("/");
+  var key = slash < 0 ? delivery : delivery.Substring(0, slash);
+  var provider = App.Setting<ShopSetup>().Delivery.FirstOrDefault(d => d.Key == key);
+  if (provider == null) { return []; }
+  var near = new DeliveryAddress { Street = street.Trim(), PostCode = postCode.Trim(), City = city.Trim(),
+                                   Country = country.Trim() == "" ? TheShop().HomeCountry : CountryCode(country) };
+  try {
+    return provider.PickupPoints(slash < 0 ? key : delivery.Substring(slash + 1), near);
+  }
+  catch (ExternalServiceException ex) {
+    Log.Warning($"{provider.Name} could not list its points near {near.PostCode}: {ex.Message}");
+    throw new Exception($"{provider.Name} could not be reached for its points just now — try again in a moment.");
+  }
+}
+
+/// The customer picks where to collect, for `delivery`. The point is looked up again from the carrier — never taken
+/// from the page — so the name and address kept are the carrier's own. Answers it.
+[AllowAnonymous]
+public PickupPoint ChoosePickupPoint(string delivery, string pointId, string street, string postCode, string city,
+                                     string country) {
+  var point = PickupPointsFor(delivery, street, postCode, city, country).FirstOrDefault(p => p.Id == pointId);
+  if (point == null) { throw new Exception("That point is not among those near the address you gave — choose one from the list."); }
+  var bag = BagFor(true)!;
+  bag.PickupPointFor = delivery;
+  bag.PickupPointId = point.Id;
+  bag.PickupPointName = point.Name;
+  bag.PickupPointStreet = point.Street;
+  bag.PickupPointPostCode = point.PostCode;
+  bag.PickupPointCity = point.City;
+  bag.PickupPointCountry = point.Country.Length == 2 ? point.Country.ToUpper() : null;
+  UnitOfWork.Commit();
+  return point;
+}
+
+/// The point the customer chose for `delivery`, or null when they have not (or chose one for another delivery).
+[AllowAnonymous]
+public PickupPoint? ChosenPickupPoint(string delivery) {
+  var bag = BagFor(false);
+  if (bag == null || bag.PickupPointId == null || bag.PickupPointFor != delivery) { return null; }
+  return new PickupPoint { Id = bag.PickupPointId!, Name = bag.PickupPointName ?? "", Street = bag.PickupPointStreet ?? "",
+                           PostCode = bag.PickupPointPostCode ?? "", City = bag.PickupPointCity ?? "", Country = bag.PickupPointCountry ?? "" };
+}
+
+/// A point's distance as a customer reads it — "410 m", "1.2 km" — or "".
+public string DistanceText(int? metres) {
+  if (metres == null) { return ""; }
+  var m = metres.Value;
+  if (m < 1000) { return $"{m} m"; }
+  return Convert.ToString(m / 1000) + "." + Convert.ToString((m % 1000) / 100) + " km";
+}
+
+/// Where a customer chooses the point they collect from, for a delivery that asks (`DeliveryChoice.ChoosePoint`) — the
+/// points near the address the checkout already has, and the one chosen. A store places it under its delivery
+/// choice, handing it the address fields it already keeps. Shows nothing for a delivery without points.
+[Composable]
+[AllowAnonymous]
+public component CheckoutPickupPoint(string delivery, string street, string postCode, string city, string country) {
+  List<PickupPoint> points = [];
+  PickupPoint? chosen = null;
+  string problem = "";
+  bool searched = false;
+  on mount { chosen = ChosenPickupPoint(delivery); }
+  action Find() {
+    problem = "";
+    try { points = PickupPointsFor(delivery, street, postCode, city, country); searched = true; }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action Pick(string id) {
+    problem = "";
+    try { chosen = ChoosePickupPoint(delivery, id, street, postCode, city, country); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    Stack(gap: 3, label: "Pickup point") {
+      if (chosen != null && chosen.Id != "") {
+        Alert($"You collect it at {chosen.Name}, {chosen.Street}, {chosen.PostCode} {chosen.City}.", tone: Tone.Success);
+      }
+      if (postCode.Trim() == "") {
+        Text("Give your postcode and we will list the points near you.", color: Colors.TextMuted);
+      } else {
+        Row() {
+          Button(searched ? "Search again" : $"Show points near {postCode.Trim()}", onPress: Find,
+                 tone: chosen == null ? Tone.Primary : Tone.Default);
+        }
+      }
+      if (searched && points.Count == 0 && problem == "") { Text("No points near that postcode — check it, or choose another delivery.", color: Colors.TextMuted); }
+      Stack(gap: 2, role: UiRole.RadioGroup, label: "Points near you") {
+        foreach (var p in points) {
+          Pressable(onClick: () => Pick(p.Id), label: p.Name, role: UiRole.Radio, checked: chosen != null && chosen.Id == p.Id,
+                    p: 3, borderW: chosen != null && chosen.Id == p.Id ? 2 : 1,
+                    border: chosen != null && chosen.Id == p.Id ? Colors.Primary : Colors.Border,
+                    w: "100%", textAlign: TextAlign.Left, cursor: Cursor.Pointer) {
+            Stack(gap: 1) {
+              Row(justify: Justify.Between, gap: 3) {
+                Text(p.Name, fontWeight: FontWeight.Semibold);
+                if (p.DistanceMetres != null) { Text(DistanceText(p.DistanceMetres), color: Colors.TextMuted, fontSize: FontSize.Label); }
+              }
+              Text($"{p.Street}, {p.PostCode} {p.City}", color: Colors.TextMuted, fontSize: FontSize.Label);
+              if (p.OpeningHours != "") { Text(p.OpeningHours, color: Colors.TextMuted, fontSize: FontSize.Label); }
+            }
+          }
+        }
+      }
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+    }
+  }
+}
+
+/// The signed-in customer's store credit at the checkout: what they hold, and a box to pay with it. Shows nothing to a
+/// visitor or a customer who holds none. `onChange` re-prices the checkout — its `CheckoutQuote` then carries `Credit`
+/// and `ToPay`, and when the credit covers it all the order is placed with the payment "storecredit"
+/// (`StoreCreditKey()`).
+[Composable]
+[AllowAnonymous]
+public component CheckoutStoreCredit(Action onChange) {
+  live var shop = ShopSettings.FirstOrDefault();
+  decimal balance = 0;
+  bool using = false;
+  bool inOwn = true;
+  on mount { balance = MyCreditBalance(); using = UsingStoreCredit(); inOwn = CheckoutInShopCurrency(); }
+  // The box has already written `using` when this runs (a two-way binding) — this only tells the shop.
+  action Toggle() { UseStoreCredit(using); onChange(); }
+  render {
+    // Store credit is the shop's own money, and pays an order in it only (StoreCredit.osy).
+    if (balance > 0 && inOwn) {
+      Checkbox($"Pay with my store credit — {Money(balance, shop)}", value: using, onToggle: Toggle);
+    }
+  }
+}
+
+/// Whether the caller's bag is bought in the shop's own currency — where store credit can pay.
+[AllowAnonymous]
+public bool CheckoutInShopCurrency() {
+  var bag = BagFor(false);
+  return bag == null || BagCurrency(bag) == TheShop().Currency;
+}
+
+/// The customer accepts (or no longer accepts) the shop's terms for this bag — kept on the order it becomes.
+[AllowAnonymous]
+public void AcceptTerms(bool accepted) {
+  var bag = BagFor(true);
+  bag.TermsAcceptedAt = accepted ? DateTime.UtcNow : null;
+  UnitOfWork.Commit();
+}
+
+/// The customer asks the shop to keep the way they pay, for charges they are not there for — a subscription's
+/// renewals. Only for a signed-in customer, and only where the provider they choose can keep it.
+[AllowAnonymous]
+public void KeepPaymentMethodFor(bool keep) {
+  var bag = BagFor(true);
+  bag.SaveMethod = keep;
+  UnitOfWork.Commit();
+}
+
+/// Which version of the terms was accepted — a fingerprint of their text, so an order says which words it agreed to.
+public string TermsVersion(ShopSettings shop) {
+  return shop.Terms == null ? "" : Crypto.ToHex(Crypto.Sha256(Text.ToBytes(shop.Terms))).Substring(0, 16);
+}
+
+/// The checkbox a checkout places above its order button: the terms, linked, and accepted for this bag.
+[Composable]
+[AllowAnonymous]
+public component CheckoutTerms() {
+  bool accepted = false;
+  // The box has already written `accepted` when this runs (a two-way binding) — flipping it here too put it back.
+  action Toggle() { AcceptTerms(accepted); }
+  render {
+    Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+      Checkbox("I have read and accept the terms of purchase", value: accepted, onToggle: Toggle);
+      TextLink("Read them", to: "/terms");
+    }
+  }
+}
+
+/// For a business buyer in another EU country: their VAT number, checked, so the order is sold without VAT. Shows
+/// nothing in a shop that does not sell VAT-free to businesses. `onChange` re-prices the checkout.
+[Composable]
+[AllowAnonymous]
+public component CheckoutBusiness(Action onChange) {
+  bool offered = false;
+  bool open = false;
+  string number = "";
+  string company = "";
+  string problem = "";
+  on mount { offered = SellsToBusinesses(); }
+  action Open() { open = true; }
+  action Check() {
+    problem = "";
+    try { company = SetBuyerVatNumber(number); onChange(); }
+    catch (Exception ex) { problem = ex.Message; company = ""; }
+  }
+  render {
+    if (offered) {
+      Stack(gap: 2) {
+        if (!open && company == "") { Row() { Button("Buying for a company in another EU country?", onPress: Open, tone: Tone.Ghost, size: Size.Sm); } }
+        if (open || company != "") {
+          Row(gap: 2, align: Align.End, wrap: Wrapping.Wrap) {
+            Box(grow: 1) { Field("Company VAT number", value: number, placeholder: "DE123456789", onEnter: Check); }
+            Button("Check", onPress: Check);
+          }
+          if (company != "") { Text($"{company} — sold without VAT; you account for it (reverse charge).", color: Colors.TextMuted); }
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+        }
+      }
+    }
+  }
+}

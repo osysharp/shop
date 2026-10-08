@@ -1,0 +1,57 @@
+// Two mails about one order that staff send from the desk: a message in their own words, and a link to pay an order
+// they took for the customer. Both sit in the shop's frame, and both are asked for through `ShopMails` (Mail.osy), so a
+// store can send its own.
+
+namespace Osysharp.Shop;
+
+using Osysharp.EmailTemplates;
+
+/// Staff's message about an order, in their own words — with the order it is about, and a button to it.
+[Email]
+public component ShopOrderMessage(Order order, string text) {
+  language => order.Language;
+  subject => $"About your order {order.Reference} — {TheShop().Name}";
+  render {
+    var contact = order.Contact.FirstOrDefault();
+    ShopMailLayout($"A message about order {order.Reference}") {
+      EmailHeading(contact == null ? $"About order {order.Reference}" : $"Hello {FirstName(contact.Name)}");
+      EmailText(text);
+      EmailNote($"Order {order.Reference}, placed {order.PlacedAt.ToString("d MMMM")} · {StatusText(order)}");
+      ShopOrderButton(order, "See your order");
+    }
+  }
+}
+
+/// A link to pay an order the shop placed for the customer — what it holds, what it costs, and the button that pays.
+[Email]
+public component ShopPayLinkMail(Order order, string link) {
+  language => order.Language;
+  subject => $"Your order {order.Reference} — ready to pay — {TheShop().Name}";
+  render {
+    var shop = TheShop();
+    var contact = order.Contact.FirstOrDefault();
+    var due = AmountDue(order);
+    var exchange = order.ExchangeFor != null;
+    ShopMailLayout($"Pay {OrderMoney(due, order)} for order {order.Reference}") {
+      EmailHeading(contact == null ? "Your order is ready to pay" : $"{FirstName(contact.Name)}, your order is ready to pay");
+      EmailText(exchange
+        ? $"What you sent back from order {order.ExchangeFor!.Reference} is in. What you chose instead costs more — pay the difference with the button below and it goes out to you."
+        : $"Here is the order we put together for you. It is reserved for {order.HoldDays} days — pay it with the button below.");
+      EmailTable() {
+        foreach (var l in order.Lines) {
+          EmailRow($"{l.Quantity} × {l.ProductName}{(l.VariantLabel == null ? "" : " (" + l.VariantLabel + ")")}",
+                   OrderMoney(l.Price * l.Quantity, order));
+        }
+        foreach (var a in order.Adjustments.Where(a => a.Amount > 0)) { EmailRow(a.Label, $"−{OrderMoney(a.Amount, order)}"); }
+        if (order.Delivery > 0) { EmailRow(order.DeliveryLabel ?? "Delivery", OrderMoney(order.Delivery, order)); }
+        if (order.GiftCardUsed > 0) { EmailRow("Paid with gift card", $"−{OrderMoney(order.GiftCardUsed, order)}"); }
+        if (order.CreditUsed > 0) { EmailRow("Paid with store credit", $"−{OrderMoney(order.CreditUsed, order)}"); }
+        if (order.ExchangeCredit > 0) { EmailRow("What you sent back", $"−{OrderMoney(order.ExchangeCredit, order)}"); }
+        EmailTotal(due == order.Total ? "Total" : "To pay", OrderMoney(due, order));
+      }
+      if (order.Vat > 0) { EmailNote(VatLines(order, shop)); }
+      EmailButton($"Pay {OrderMoney(due, order)}", link);
+      EmailNote("The link pays this order only, and stops working once it is paid or called off.");
+    }
+  }
+}

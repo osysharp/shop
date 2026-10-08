@@ -1,0 +1,34 @@
+// An identity provider for the age-check tests (age.test.osy) — what `Osysharp.Shop.BankId` is to a real store, with
+// nothing to reach. It is offered only when a test says so (`FakeIdOffered.Stub(() => true)`), so every other test
+// sees the shop without one: the date of birth is asked for, as before. What the provider ANSWERS is the test's too —
+// `FakeIdSays.Stub(handle => …)` — and each handle it hands out is recorded, so a test can see which one was asked.
+
+using Osysharp.Shop;
+
+public class FakeId : AgeVerifier {
+  public FakeId() { Key = "fakeid"; Label = "Fake ID"; }
+  public override bool Offered() { return FakeIdOffered(); }
+  public override AgeCheckStart Start(string endUserAddress, string returnUrl, string visibleText) {
+    var handle = "h-" + Security.RandomHex(8);
+    FakeIdStarted(handle, visibleText);
+    return new AgeCheckStart { Handle = handle, AppLink = "fakeid://open?back=" + Uri.EscapeDataString(returnUrl) };
+  }
+  // The frame names the SECOND, never the handle: what a page shows must not be what the server keeps.
+  public override string Frame(string handle, int seconds) { return $"fakeid.{seconds}"; }
+  public override AgeCheckAnswer Collect(string handle) { return FakeIdSays(handle); }
+}
+
+/// False — the shop offers no identity provider. A test stubs it.
+bool FakeIdOffered() { return false; }
+
+/// False — a date of birth is taken instead of a verification. A test stubs it to make verifying the only way.
+bool FakeIdRequired() { return false; }
+
+/// False — a new account is signed in at once. A test stubs it to make every account prove its address first.
+bool AddressProofRequired() { return false; }
+
+/// Waiting — the provider has not heard from the buyer. A test stubs it with what the provider says.
+AgeCheckAnswer FakeIdSays(string handle) { return new AgeCheckAnswer { Message = "Open Fake ID." }; }
+
+/// Told of each check the provider starts. A test stubs it to keep the handles.
+void FakeIdStarted(string handle, string visibleText) { }

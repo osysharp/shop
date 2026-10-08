@@ -1,0 +1,65 @@
+// WHAT HAPPENS TO AN ORDER — told as events (D-COMPOSE1). The shop raises each where it happens; whoever cares hears it
+// with `[On]`, in any kit or in the app, after the order's work is committed:
+//
+//     [On] void CountTheCode(OrderPlaced e) { … e.Order.Adjustments … }
+//
+// Nothing is listed or registered: an add-on kit's handler is found by the compiler, and so is the app's own. The same
+// events reach the kits that work on ANY event without naming the shop — a webhook an admin subscribes to
+// `shop.order-paid`, an automation `When = On<OrderPaid>()`, a line on a record's activity — so telling another system
+// that an order was paid is a subscription, not code.
+//
+// ⚑ AFTER COMMIT, AND APART FROM THE ORDER. A handler that throws is recorded and the order carries on (a shop that cannot
+//   take an order because a loyalty scheme is down would be worse than one that forgets to award a point). What must
+//   happen INSIDE the order — pricing a basket, refusing it, erasing a customer, converting while a rate still stands —
+//   is the add-on contract's (`IShopAddOn`, Extend.osy), which answers before anything is committed.
+
+namespace Osysharp.Shop;
+
+/// An order was placed and its goods are held for it. What the add-ons gave is on it (`Order.Adjustments`).
+[Event("Order placed")]
+public sealed class OrderPlaced {
+  public Order Order;
+  public override string Sentence() { return $"Order {Order.Reference} was placed."; }
+}
+
+/// An order was paid — or, for a wholesale account that pays by invoice, confirmed on its terms and going out.
+[Event("Order paid")]
+public sealed class OrderPaid {
+  public Order Order;
+  public override string Sentence() { return $"Order {Order.Reference} was paid."; }
+}
+
+/// An order went out — sent with its tracking, or collected.
+[Event("Order sent")]
+public sealed class OrderSent {
+  public Order Order;
+  public override string Sentence() { return $"Order {Order.Reference} was sent."; }
+}
+
+/// An order arrived — collected, handed over at the counter, or delivered by the carrier.
+[Event("Order delivered")]
+public sealed class OrderDelivered {
+  public Order Order;
+  public override string Sentence() { return $"Order {Order.Reference} was delivered."; }
+}
+
+/// An order was called off before it was paid — cancelled, lapsed, voided, or it could not be had.
+[Event("Order cancelled")]
+public sealed class OrderCancelled {
+  public Order Order;
+  public override string Sentence() { return $"Order {Order.Reference} was called off."; }
+}
+
+/// All of an order was refunded.
+[Event("Order refunded")]
+public sealed class OrderRefunded {
+  public Order Order;
+  public override string Sentence() { return $"Order {Order.Reference} was refunded."; }
+}
+
+/// Part of an order came back and was refunded.
+[Event("Return refunded")]
+public sealed class ReturnRefunded {
+  public ReturnRequest Return;
+  public override string Sentence() { return $"A return on order {Return.Order.Reference} was refunded."; }
+}

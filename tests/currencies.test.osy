@@ -1,0 +1,156 @@
+// Prices in a visitor's own currency: the rates a job fetched, rounded as each currency is written, dropped when
+// stale — and nothing a sale records moves out of the shop's own currency. The rates come from `FakeRates`
+// (model/rates.osy), a stubbed sheet against the euro; this shop sells in euros.
+
+using Osysharp.Http;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// Starts the rate job as staff, and lets its first fetch run.
+void RatesStarted() {
+  runas (Desk) {
+    StartExchangeRates();
+    Workflow.Settle(RateWatch.Single());
+  }
+}
+
+ExchangeRate RateOf(string code) {
+  return ExchangeRate.Single(r => r.Currency == code);
+}
+
+[Test(Floor)]
+void the_rates_are_against_the_shops_own_currency_and_each_is_rounded_as_it_is_written() {
+  RatesStarted();
+  Assert.Equal(11.3205m, RateOf("SEK").PerUnit);
+  Assert.Equal("Test Bank", RateOf("SEK").Source);
+  Assert.False(ExchangeRate.Any(r => r.Currency == "EUR"));     // the shop's own is no rate at all
+  Assert.Equal("1,358 kr", InTheirMoney(120m, RateOf("SEK")));   // 1,358.46 — crowns in whole units
+  Assert.Equal("$136.54", InTheirMoney(120m, RateOf("USD")));    // 136.536 — dollars to the cent
+  Assert.Equal("¥21,420", InTheirMoney(120m, RateOf("JPY")));
+  Assert.Equal("1,298 NOK", InTheirMoney(120m, RateOf("NOK")));  // its code, never "kr" beside a Swedish price
+  var shop = TheShop();
+  Assert.Equal("≈ $136.54", ShownMoney(120m, RateOf("USD"), shop));
+  Assert.Equal("≈ $136.54 · charged as €120", ChargedAs(120m, RateOf("USD"), shop));
+  Assert.Equal("€120", ShownMoney(120m, null, shop));            // no choice: the shop's own
+}
+
+[Test(Floor)]
+void the_first_fetch_runs_after_the_commit_that_starts_the_job_not_inside_it() {
+  // The job's first fetch is on a clock due at once (ExchangeRateRefresh): the commit that makes the watch does not
+  // wait on the provider — and the rates are there as soon as the clock has fired.
+  runas (Desk) {
+    StartExchangeRates();
+    Assert.False(ExchangeRate.Any());
+    Assert.Equal(RateWatchStatus.Watching, RateWatch.Single().Status);
+    Workflow.Settle(RateWatch.Single());
+    Assert.Equal(11.3205m, RateOf("SEK").PerUnit);
+  }
+}
+
+[Test(Floor)]
+void a_shop_in_kronor_shows_euros_and_dollars_at_the_cross_rate() {
+  runas (Desk) {
+    var shop = TheShop();
+    shop.Currency = "SEK"; shop.CurrencySymbol = "kr"; shop.SymbolAfter = true;
+    UnitOfWork.Commit();
+  }
+  RatesStarted();
+  Assert.False(ExchangeRate.Any(r => r.Currency == "SEK"));
+  Assert.Equal(0.08833532m, RateOf("EUR").PerUnit);              // 1 / 11.3205
+  Assert.Equal(0.10050793m, RateOf("USD").PerUnit);              // 1.1378 / 11.3205
+  Assert.Equal("€14.58", InTheirMoney(165m, RateOf("EUR")));
+  Assert.Equal("$16.58", InTheirMoney(165m, RateOf("USD")));
+  Assert.Equal("≈ €14.58 · charged as 165 kr", ChargedAs(165m, RateOf("EUR"), TheShop()));
+}
+
+[Test(Floor)]
+void a_stale_rate_converts_nothing_and_the_price_is_the_shops_own() {
+  RatesInTests.Stub(() => new RateSheet { Base = "EUR", Date = DateTime.UtcNow.Date.AddDays(-10),
+                                          Quotes = [ new RateQuote { Currency = "USD", Rate = 1.1378m } ] });
+  RatesStarted();
+  var usd = RateOf("USD");
+  Assert.Equal(1.1378m, usd.PerUnit);                              // stored, with its date…
+  Assert.False(RateUsable(usd));                                   // …and too old to show
+  Assert.Equal("", InTheirMoney(120m, usd));
+  Assert.Equal("€120", ShownMoney(120m, usd, TheShop()));
+  Assert.Equal("€120", ChargedAs(120m, usd, TheShop()));
+}
+
+[Test(Floor)]
+void a_fresh_rate_goes_stale_when_no_new_one_comes() {
+  RatesStarted();
+  Assert.True(RateUsable(RateOf("USD")));
+  RatesInTests.Stub(() => throw new ExternalServiceException("The bank is closed."));
+  TestClock.Advance(TimeSpan.FromDays(7));
+  runas (Desk) { Assert.Equal("The bank is closed.", FetchExchangeRatesNow()); }
+  Assert.Equal(1.1378m, RateOf("USD").PerUnit);                   // a failed fetch changes no rate
+  Assert.False(RateUsable(RateOf("USD")));
+  Assert.Equal("€120", ShownMoney(120m, RateOf("USD"), TheShop()));
+}
+
+[Test(Floor)]
+void the_choice_is_kept_for_the_visit_and_only_for_it() {
+  runas (new Visitor { Id = "v-fx-1" }) {
+    RatesStarted();
+    ShowPricesIn("usd");
+    Assert.Equal("USD", VisitCurrency.Single(v => v.VisitId == "v-fx-1").Rate!.Currency);
+    Assert.False(VisitCurrency.Any(v => v.VisitId == "v-fx-2"));
+    ShowPricesIn("JPY");
+    Assert.Equal("JPY", VisitCurrency.Single(v => v.VisitId == "v-fx-1").Rate!.Currency);
+    Assert.Equal(1, VisitCurrency.Where(v => v.VisitId == "v-fx-1").Count());
+    // Another visit neither reads the choice nor can take a visit's one row by writing it first.
+    runas (new Visitor { Id = "v-fx-2" }) {
+      Assert.False(VisitCurrency.Any(v => v.VisitId == "v-fx-1"));
+      Assert.Throws<Exception>(() => { new VisitCurrency { VisitId = "v-fx-3" }; UnitOfWork.Commit(); });
+    }
+    ShowPricesIn("EUR");                                   // back to the shop's own
+    Assert.Null(VisitCurrency.Single(v => v.VisitId == "v-fx-1").Rate);
+    Assert.Throws<Exception>(() => ShowPricesIn("GBP"));   // not offered
+  }
+}
+
+[Test(Floor)]
+void an_order_placed_while_showing_kronor_is_in_euros_and_so_is_its_invoice_and_its_payment() {
+  runas (new Visitor { Id = "v-fx-order" }) {
+    RatesStarted();
+    ShowPricesIn("SEK");
+    var receipt = Checkout_("v-fx-order");
+    Assert.Equal(120m, receipt.Total);
+    runas (Desk) {
+      PayAndSend(receipt.Reference);
+      var order = Order.Single(o => o.Reference == receipt.Reference);
+      Assert.Equal(120m, order.Total);
+      var invoice = Invoice.Single(i => i.Order == order);
+      Assert.Equal(120m, invoice.Total);
+    }
+    // A card payment asks Stripe for the shop's own money, whatever the visitor was shown.
+    List<string> posted = [];
+    Http.Post.Stub((url, body) => { posted.Add(body); return new HttpResponse { StatusCode = 200, Body = "{\"id\":\"cs_8\",\"url\":\"https://checkout.stripe.com/c/pay/cs_8\"}" }; });
+    runas (new Visitor { Id = "v-fx-card" }) { ShowPricesIn("USD"); }
+    BuyWith("v-fx-card", "Loafer", "39", 1, "stripe");
+    Assert.Contains("eur", posted[0]);
+    Assert.Contains("12000", posted[0]);
+    Assert.DoesNotContain("usd", posted[0]);
+    runas (new Visitor { Id = "v-fx-card" }) {
+      Assert.Equal("USD", VisitCurrency.Single(v => v.VisitId == "v-fx-card").Rate!.Currency);   // the display is untouched
+    }
+  }
+}
+
+/// A loafer in size 38, bagged and ordered by bank transfer — the whole receipt.
+Receipt Checkout_(string visitId) {
+  Bag(visitId, "Loafer", "38", 1);
+  return Checkout(visitId);
+}
+
+[Test(Floor)]
+void stopping_takes_every_visit_back_to_the_shops_own_currency() {
+  runas (new Visitor { Id = "v-fx-stop" }) {
+    RatesStarted();
+    ShowPricesIn("USD");
+    runas (Desk) { StopExchangeRates(); Workflow.Settle(RateWatch.Single()); }
+    Assert.Empty(ExchangeRate.ToList());
+    Assert.Null(VisitCurrency.Single(v => v.VisitId == "v-fx-stop").Rate);
+    runas (Desk) { Assert.Equal(RateWatchStatus.Stopped, RateWatch.Single().Status); }
+  }
+}

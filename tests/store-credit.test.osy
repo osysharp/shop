@@ -1,0 +1,267 @@
+// Store credit: given by staff or for a return, spent at the checkout in part or in full, given back when an order it
+// paid is refunded — a ledger only the shop's own workflows write, which a customer reads for themselves alone.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// Staff give Maja `amount` of store credit, and the grant is settled.
+void GiveMaja(decimal amount, string reason) {
+  runas (Desk) {
+    GrantCredit(ShopAccount.Single(a => a.Email == "maja@example.test"), amount, reason);
+    Workflow.Settle(StoreCreditGrant.OrderByDescending(g => g.At).First());
+  }
+}
+
+[Test(Floor)]
+void staff_give_credit_with_a_reason_and_the_customer_reads_it_on_their_account() {
+  GiveMaja(50m, "Your parcel came a week late.");
+  runas (Maja) {
+    var mine = MyStoreCredit();
+    Assert.Equal(50m, mine.Balance);
+    Assert.Equal(1, mine.Lines.Count);
+    Assert.Equal("From the shop", mine.Lines[0].What);
+    Assert.Equal("Your parcel came a week late.", mine.Lines[0].Note);
+    Assert.Equal(50m, MyCreditBalance());
+  }
+  runas (Desk) {
+    Assert.True(ShopMail.Any(m => m.To == "maja@example.test" && m.Text.Contains("Your parcel came a week late.")));
+    Assert.Equal(50m, CreditOf(ShopAccount.Single(a => a.Email == "maja@example.test")).Balance);
+    // A grant needs a reason and an amount above nothing.
+    Assert.Throws<Exception>(() => GrantCredit(ShopAccount.Single(a => a.Email == "maja@example.test"), 10m, " "));
+    Assert.Throws<Exception>(() => GrantCredit(ShopAccount.Single(a => a.Email == "maja@example.test"), 0m, "Nothing"));
+  }
+}
+
+[Test(Floor)]
+void a_customer_reads_only_their_own_credit_and_nobody_can_write_it() {
+  GiveMaja(40m, "Sorry about the wait.");
+  runas (Olle) {
+    // Olle holds none, and cannot see Maja's.
+    Assert.Equal(0, StoreCredit.Count());
+    Assert.Equal(0, StoreCreditEntry.Count());
+    Assert.Equal(0m, MyStoreCredit().Balance);
+    // …nor give himself some.
+    Assert.Throws<Exception>(() => GrantCredit(Me()!, 1000m, "Because"));
+  }
+  runas (Maja) {
+    Assert.Equal(40m, StoreCredit.Single().Balance);
+    Assert.Equal(1, StoreCreditEntry.Count());
+  }
+  // Nobody writes the ledger but the shop's workflows — not the customer, and not staff, who give credit through a
+  // grant the ledger records. That is refused before anything runs: code that writes `new StoreCreditEntry { … }` or
+  // sets `StoreCredit.Balance` does not compile ("denied create, update, delete for every user request"), which is
+  // why no line here tries.
+  runas (Desk) { Assert.Equal(40m, StoreCredit.Single().Balance); }
+}
+
+[Test(Floor)]
+void the_checkout_pays_part_with_credit_and_a_refund_puts_it_back() {
+  runas (new Visitor { Id = "v-credit" }) {
+    GiveMaja(50m, "A welcome back.");
+    var reference = "";
+    runas (Maja) {
+      Bag("v-credit", "Loafer", "38", 1);
+      UseStoreCredit(true);
+      var quote = CheckoutQuote("collect", "");
+      Assert.Equal(120m, quote.Total);
+      Assert.Equal(50m, quote.Credit);
+      Assert.Equal(70m, quote.ToPay);
+      var receipt = Checkout("v-credit");
+      reference = receipt.Reference;
+      Assert.Equal(120m, receipt.Total);
+      Assert.Equal(50m, receipt.Credit);
+      Assert.Equal(70m, receipt.ToPay);
+      Assert.Equal(0m, MyCreditBalance());
+      Assert.Equal("Spent", MyStoreCredit().Lines[0].What);
+    }
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      Assert.Equal(50m, order.CreditUsed);
+      Assert.Equal(70m, AmountDue(order));
+      // The invoice is the whole price — store credit is a way to pay, not money off.
+      MarkPaid(order, "");
+      Workflow.Settle(order);
+      Assert.Equal(120m, Invoice.Single(i => i.Order == order).Total);
+      RefundOrder(order, "Changed her mind", true);
+      Workflow.Settle(order);
+      Assert.Equal(OrderStatus.Refunded, order.Status);
+    }
+    runas (Maja) {
+      Assert.Equal(50m, MyCreditBalance());
+      Assert.Equal("Given back", MyStoreCredit().Lines[0].What);
+      // D-RTL2 Q2 — each line keeps its facts (why, which order) and is said when it is read, in the reader's language.
+      Assert.Equal($"Refunded — order {reference}", MyStoreCredit().Lines[0].Note);
+      Assert.Equal($"Order {reference}", MyStoreCredit().Lines[1].Note);
+      Session.SetLanguage("sv");
+      Assert.Equal($"Återbetald, order {reference}", MyStoreCredit().Lines[0].Note);
+      Session.SetLanguage("en");
+    }
+  }
+}
+
+[Test(Floor)]
+void credit_that_covers_it_all_pays_the_order_there_and_then() {
+  runas (new Visitor { Id = "v-all" }) {
+    GiveMaja(200m, "Store credit for the demo.");
+    var reference = "";
+    runas (Maja) {
+      Bag("v-all", "Loafer", "39", 1);
+      UseStoreCredit(true);
+      reference = CheckoutWith("v-all", "storecredit").Reference;
+      Assert.Equal(80m, MyCreditBalance());
+    }
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      Workflow.Settle(order);
+      Assert.Equal(OrderStatus.Paid, order.Status);
+      Assert.Equal("Store credit", order.PaidWith);
+      Assert.Equal(0m, AmountDue(order));
+      Assert.Equal(1, Invoice.Count(i => i.Order == order));
+    }
+    // Not enough credit for all of it: "store credit" alone is refused before anything is placed.
+    runas (Maja) {
+      Bag("v-short", "Chelsea", "38", 1);
+      runas (new Visitor { Id = "v-short" }) { UseStoreCredit(true); }
+      Assert.Throws<Exception>(() => CheckoutWith("v-short", "storecredit"));
+      Assert.Equal(80m, MyCreditBalance());
+    }
+  }
+}
+
+// Two checkouts spending the same credit: the order's workflow takes it against the balance as it stands when each
+// order is placed, so the second finds it gone — the goods are not reserved and nothing is taken.
+[Test(Floor)]
+void two_checkouts_cannot_spend_more_than_the_balance() {
+  runas (new Visitor { Id = "v-tab" }) {
+    GiveMaja(150m, "Two tabs.");
+    var first = "";
+    runas (Maja) {
+      Bag("v-tab", "Loafer", "38", 1);
+      UseStoreCredit(true);
+      first = CheckoutWith("v-tab", "storecredit").Reference;
+      Assert.Equal(30m, MyCreditBalance());
+    }
+    // The second tab's order was priced while the credit was still there: it asks for 120 of credit the workflow no
+    // longer finds. (Written here as an order the shop priced itself — its price is not what is in question, the credit
+    // is; a customer's own is priced again, and would reach this same step.)
+    var reference = "";
+    runas (Desk) {
+      var second = new Order { Fulfilment = Fulfilment.Collect, DeliveryMethod = "collect", PaymentMethod = "storecredit",
+                               Subtotal = 120m, Total = 120m, CreditUsed = 120m, PlacedAt = DateTime.UtcNow,
+                               Account = ShopAccount.Single(a => a.Email == "maja@example.test"), Reference = "KT-TAB-2",
+                               PlacedByShop = true };
+      new OrderLine { Order = second, Variant = Pick("Loafer", "38"), ProductName = "Loafer", Quantity = 1, Price = 120m, VatPercent = 25m };
+      UnitOfWork.Commit();
+      reference = second.Reference;
+      Assert.Equal(OrderStatus.Unavailable, second.Status);
+      Assert.True(second.CreditShort);
+      Assert.Equal(1, Pick("Loafer", "38").Stock);          // the goods were not taken for it either
+    }
+    runas (Maja) { Assert.Equal(30m, MyCreditBalance()); }
+    runas (Desk) {
+      // The ledger adds up to the balance, and the balance never went below nothing.
+      var credit = StoreCredit.Single();
+      Assert.Equal(credit.Balance, StoreCreditEntry.Where(e => e.Credit == credit).Sum(e => e.Amount));
+      Assert.True(StoreCreditEntry.All(e => e.BalanceAfter >= 0));
+    }
+  }
+}
+
+// SECURITY-INVARIANT(store-credit-spent-only-by-its-owner)'s guard: an order naming somebody else's account cannot ask
+// for their credit.
+[Test(Floor)]
+void nobody_spends_another_customers_credit() {
+  runas (new Visitor { Id = "v-olle" }) {
+    GiveMaja(100m, "For Maja.");
+    runas (Olle) { Assert.Null(ShopAccount.FirstOrDefault(a => a.Email == "maja@example.test")); }   // he cannot read her row…
+    ShopAccount? maja = null;
+    runas (Desk) { maja = ShopAccount.Single(a => a.Email == "maja@example.test"); }
+    runas (Olle) {
+      // …and an order written with her account and her credit is refused as it is written…
+      Assert.Throws<Exception>(() => {
+        new Order { Fulfilment = Fulfilment.Collect, DeliveryMethod = "collect", PaymentMethod = "storecredit",
+                    Subtotal = 100m, Total = 100m, CreditUsed = 100m, Account = maja, PlacedAt = DateTime.UtcNow, Reference = "KT-THEFT" };
+        UnitOfWork.Commit();
+      });
+    }
+    runas (Olle) {
+      // …while the same order on his own account is written — so the refusal above is about whose account it names.
+      new Order { Fulfilment = Fulfilment.Collect, DeliveryMethod = "collect", PaymentMethod = "banktransfer",
+                  Subtotal = 100m, Total = 100m, Account = Me(), PlacedAt = DateTime.UtcNow, Reference = "KT-NOCREDIT" };
+      UnitOfWork.Commit();
+      Assert.Equal(1, Order.Count(o => o.Reference == "KT-NOCREDIT"));
+      // Using credit at the checkout spends one's own — Olle has none.
+      Bag("v-olle", "Loafer", "39", 1);
+      UseStoreCredit(true);
+      Assert.Equal(0m, CheckoutQuote("collect", "").Credit);
+    }
+    runas (Maja) { Assert.Equal(100m, MyCreditBalance()); }
+  }
+}
+
+[Test(Floor)]
+void a_return_can_come_back_as_store_credit() {
+  var reference = "";
+  runas (Maja) { reference = Buy("v-rc", "Chelsea", "38", 1); }
+  runas (Desk) { PayAndSend(reference); }
+  runas (Maja) {
+    var ret = ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, "Too tight", true);
+    Assert.True(ret.AsCredit);
+  }
+  runas (Desk) {
+    var ret = ReturnRequest.Single();
+    ReceiveReturn(ret, true);
+    Workflow.Settle(ret);
+    Assert.Equal(ReturnStatus.Refunded, ret.Status);
+    Assert.Equal(190m, ret.CreditAmount);
+    Assert.True(ShopMail.Any(m => m.Subject.StartsWith("Store credit for your return")));
+    // A whole-order refund on top would give it back twice.
+    Assert.Throws<Exception>(() => RefundOrder(Order.Single(o => o.Reference == reference), "", false));
+  }
+  runas (Maja) {
+    Assert.Equal(190m, MyCreditBalance());
+    Assert.Equal("Return", MyStoreCredit().Lines[0].What);
+    Assert.Equal($"Return on {reference}", MyStoreCredit().Lines[0].Note);
+  }
+}
+
+[Test(Floor)]
+void a_return_from_an_order_paid_partly_with_credit_goes_back_in_the_same_parts() {
+  runas (new Visitor { Id = "v-parts" }) {
+    GiveMaja(60m, "Half and half.");
+    var reference = "";
+    runas (Maja) {
+      Bag("v-parts", "Loafer", "38", 1);
+      UseStoreCredit(true);
+      reference = Checkout("v-parts").Reference;       // 120: 60 credit, 60 by transfer
+    }
+    runas (Desk) { PayAndSend(reference); }
+    runas (Maja) { ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, ""); }
+    runas (Desk) {
+      var ret = ReturnRequest.Single();
+      ReceiveReturn(ret, true);
+      Workflow.Settle(ret);
+      Assert.Equal(120m, ret.Amount);
+      Assert.Equal(60m, ret.CreditAmount);             // the credit's part back to credit…
+      Assert.True(ShopMail.Any(m => m.Text.Contains("We have refunded")));   // …the rest back the way it was paid
+    }
+    runas (Maja) { Assert.Equal(60m, MyCreditBalance()); }
+  }
+}
+
+[Test(Floor)]
+void a_reservation_called_off_gives_its_credit_back() {
+  runas (new Visitor { Id = "v-off" }) {
+    GiveMaja(30m, "A little something.");
+    var reference = "";
+    runas (Maja) {
+      Bag("v-off", "Loafer", "39", 1);
+      UseStoreCredit(true);
+      reference = Checkout("v-off").Reference;
+      Assert.Equal(0m, MyCreditBalance());
+      CancelMyOrder(Order.Single(o => o.Reference == reference));
+    }
+    runas (Desk) { Workflow.Settle(Order.Single(o => o.Reference == reference)); }
+    runas (Maja) { Assert.Equal(30m, MyCreditBalance()); }
+  }
+}

@@ -1,0 +1,148 @@
+// An order is priced by the shop. A customer may write an order's rows themselves — the checkout does, as them — but
+// what those rows SAY it costs is never taken on trust: the order's workflow prices the bag it came from again, the
+// same way the checkout does, and an order whose lines or totals are not that price is refused before a single item
+// is held or a payment asked for.
+
+using Osysharp.Payments;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// Writes an order for one Loafer 38 the way a visitor could — straight to the tables, not through `PlaceOrder` — at
+/// the unit price and total given. Answers it.
+Order WriteOrderByHand(string reference, decimal unitPrice, decimal total, ShopAccount? account) {
+  var order = new Order { Fulfilment = Fulfilment.Collect, DeliveryMethod = "collect", PaymentMethod = "banktransfer",
+                          Subtotal = unitPrice, Total = total, Vat = Math.Round(total / 5m, 2), Account = account,
+                          PlacedAt = DateTime.UtcNow, Reference = reference };
+  new OrderLine { Order = order, Variant = Pick("Loafer", "38"), ProductName = "Loafer", VariantLabel = "38", Quantity = 1,
+                  Price = unitPrice, VatPercent = 25m };
+  new OrderVat { Order = order, Percent = 25m, Gross = total, Vat = Math.Round(total / 5m, 2) };
+  new OrderContact { Order = order, Name = "Maja Berg", Email = "maja@example.test" };
+  UnitOfWork.Commit();
+  return order;
+}
+
+// SECURITY-INVARIANT(an-order-is-priced-by-the-shop)'s guard: a Loafer (120) written as costing 1 is not an order.
+[Test(Floor)]
+void a_customer_cannot_price_their_own_order() {
+  var reference = "";
+  runas (Maja) {
+    Bag("v-cheap", "Loafer", "38", 1);
+    var order = WriteOrderByHand("KT-CHEAP", 1m, 1m, Me());
+    reference = order.Reference;
+    Assert.NotEqual(OrderStatus.Reserved, order.Status);
+  }
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Assert.Equal(OrderStatus.Unavailable, order.Status);
+    Assert.Contains("price", order.Problem ?? "");
+    // Nothing was held for it…
+    Assert.Equal(2, Pick("Loafer", "38").Stock);
+    Assert.Equal(0, Pick("Loafer", "38").Reserved);
+    // …and nobody can take a payment for it.
+    Assert.Throws<Exception>(() => MarkPaid(order, "1 kr by transfer"));
+    Workflow.Settle(order);
+    Assert.Null(order.PaidAt);
+  }
+}
+
+// The lines at the catalogue's price, the total not: the total is the shop's to work out too.
+[Test(Floor)]
+void a_customer_cannot_state_their_own_total() {
+  var reference = "";
+  runas (Maja) {
+    Bag("v-total", "Loafer", "38", 1);
+    reference = WriteOrderByHand("KT-TOTAL", 120m, 1m, Me()).Reference;
+  }
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Assert.Equal(OrderStatus.Unavailable, order.Status);
+    Assert.Equal(2, Pick("Loafer", "38").Stock);
+    // A provider's word that 1 was paid moves nothing either.
+    ApplyPaymentEvents([new PaymentEvent { Kind = PaymentEventKind.Paid, State = PaymentState.Paid,
+                                         Reference = reference, Amount = 100, ProviderRef = "pi_cheap" }]);
+    Workflow.Settle(order);
+    Assert.Null(order.PaidAt);
+  }
+}
+
+// A guest has no account to hide behind either — the same order from a visitor is refused the same way.
+[Test(Floor)]
+void a_visitor_cannot_price_their_own_order() {
+  Bag("v-guest-cheap", "Loafer", "38", 1);
+  var order = WriteOrderByHand("KT-GUEST", 1m, 1m, null);
+  Assert.NotEqual(OrderStatus.Reserved, order.Status);
+  runas (Desk) { Assert.Equal(2, Pick("Loafer", "38").Stock); }
+}
+
+// The other side of it: the checkout's own order goes through untouched — priced once, checked once, the same.
+[Test(Floor)]
+void the_checkouts_own_order_goes_through() {
+  runas (new Visitor { Id = "v-honest" }) {
+    runas (Maja) {
+      Bag("v-honest", "Loafer", "38", 1);
+      var receipt = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                               "Storgatan 1", "11122", "Stockholm", "SE");
+      Assert.Equal(OrderStatus.Reserved, receipt.Status);
+      Assert.Equal(170m, receipt.Total);
+    }
+  }
+}
+
+// An order starts where every order starts: unpaid, holding no credit. A customer writing one already paid — or one
+// that says it took store credit it never took — would have the shop give back what it never had.
+[Test(Floor)]
+void a_customer_cannot_write_an_order_that_is_already_paid_or_holds_credit() {
+  runas (Maja) {
+    Bag("v-forged", "Loafer", "38", 1);
+    Assert.Throws<Exception>(() => {
+      new Order { Fulfilment = Fulfilment.Collect, DeliveryMethod = "collect", PaymentMethod = "banktransfer",
+                  Subtotal = 120m, Total = 120m, Account = Me(), PlacedAt = DateTime.UtcNow, Reference = "KT-PAID",
+                  PaidAt = DateTime.UtcNow, PaidWith = "Card", PaymentRef = "pi_forged" };
+      UnitOfWork.Commit();
+    });
+    // Cancelling this one would "give back" 1000 of credit it never took.
+    Assert.Throws<Exception>(() => {
+      new Order { Fulfilment = Fulfilment.Collect, DeliveryMethod = "collect", PaymentMethod = "banktransfer",
+                  Subtotal = 120m, Total = 120m, Account = Me(), PlacedAt = DateTime.UtcNow, Reference = "KT-GIVEBACK",
+                  CreditTaken = true, CreditReturned = -1000m };
+      UnitOfWork.Commit();
+    });
+    // …nor one "placed by the shop", whose price nobody works out again.
+    Assert.Throws<Exception>(() => {
+      new Order { Fulfilment = Fulfilment.Collect, DeliveryMethod = "collect", PaymentMethod = "banktransfer",
+                  Subtotal = 1m, Total = 1m, Account = Me(), PlacedAt = DateTime.UtcNow, Reference = "KT-SHOP",
+                  PlacedByShop = true };
+      UnitOfWork.Commit();
+    });
+    // …nor one on somebody else's account.
+    ShopAccount? olle = null;
+    runas (Desk) { olle = ShopAccount.Single(a => a.Email == "olle@example.test"); }
+    Assert.Throws<Exception>(() => {
+      new Order { Fulfilment = Fulfilment.Collect, DeliveryMethod = "collect", PaymentMethod = "banktransfer",
+                  Subtotal = 120m, Total = 120m, Account = olle, PlacedAt = DateTime.UtcNow, Reference = "KT-OLLES" };
+      UnitOfWork.Commit();
+    });
+    Assert.Equal(0m, MyCreditBalance());
+  }
+}
+
+// Every way an add-on, a delivery and the VAT can shape a price is the checkout's own, so it still goes through: a
+// code off, delivered to an address, at the courier's price.
+[Test(Floor)]
+void a_discounted_delivered_order_goes_through() {
+  runas (new Visitor { Id = "v-promo-priced" }) {
+    runas (Maja) {
+      Bag("v-promo-priced", "Loafer", "38", 1);
+      var receipt = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                               "Storgatan 1", "11122", "Stockholm", "Sweden");
+      Assert.Equal(OrderStatus.Reserved, receipt.Status);
+      Assert.Equal(12m, receipt.Discount);
+      Assert.Equal(158m, receipt.Total);
+    }
+    runas (Desk) {
+      var order = Order.Single(o => o.Total == 158m);
+      Assert.False(order.Mispriced);
+      Assert.Equal(1, Pick("Loafer", "38").Stock);
+    }
+  }
+}

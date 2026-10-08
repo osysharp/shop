@@ -1,0 +1,572 @@
+// The bag. A visitor's bag belongs to their VISIT (`Visitor.Id` — the id the platform issued their browser and proves
+// on every request); a signed-in customer's belongs to their ACCOUNT, and follows them across devices and weeks. The
+// first time a signed-in customer's visit is seen, what that visit had in its bag moves into the account's — so signing
+// in half-way through shopping loses nothing.
+//
+// ⚑ A GUEST'S BAG IS ITS OWN VISIT'S, and nobody else's (D-GUESTROWS1). The functions below never take "which visit" —
+//   they read the caller's own `Visitor.Id`, which the caller cannot choose — and the rules below say the same thing
+//   again, so a guest reads and writes only the bag of the browser it is. What may be bought, and how many, is decided
+//   by these functions and by the order's workflow, on the server.
+//
+// ⚑ A SAVED BAG GOES STALE, and says so. A bag kept for a week holds things that have sold, run short or changed
+//   price since. `LineProblem` says which, in the customer's words, and `FixBag` makes the bag true — nothing is
+//   silently changed under them, and the checkout refuses a bag that is not.
+//
+// ⚑ A BAG CAN BE OPENED FROM A LINK (`ResumeBag`, below). The reminder about a bag left behind is read on whatever
+//   device the mail is — usually a phone nobody signed in on — so it carries a link that brings THAT bag's things onto
+//   the device it is opened on. The link reads the bag's lines and nothing of whose bag it is.
+
+namespace Osysharp.Shop;
+
+public entity Bag {
+  /// The visit it was started on. A signed-in customer's bag keeps the last one it was seen on.
+  [MaxLength(64)] string? VisitId;
+  /// Whose bag it is — null for a visitor who has not signed in.
+  ShopAccount? Owner;
+  [ForeignKey(Bag)] BagLine[] Lines;
+  /// When the customer accepted the shop's terms for this bag — required to place it, when the shop has terms.
+  DateTime? TermsAcceptedAt;
+  /// A business buyer's VAT number, checked (`SetBuyerVatNumber`), and the registered company.
+  [MaxLength(20)] string? BuyerVatNumber;
+  [MaxLength(200)] string? BuyerCompany;
+  bool BuyerVatValid = false;
+  /// The server's fingerprint over this bag and the number the register confirmed — see
+  /// SECURITY-INVARIANT(a-vat-number-is-checked-by-the-register) in Vat.osy.
+  [MaxLength(128)] string? BuyerVatSeal;
+  /// The customer asked to keep the way they pay for later charges (a subscription's) — see `KeepPaymentMethodFor`.
+  bool SaveMethod = false;
+  /// The date of birth the buyer gave, when the bag holds goods with an age (`Product.MinimumAge`).
+  DateOnly? BuyerBornOn;
+  /// Where the customer chose to collect the parcel (`ChoosePickupPoint`), for the delivery choice `PickupPointFor` —
+  /// a different choice at the checkout does not carry it. The carrier's id for the point, and its name and address
+  /// as the carrier gave them, so the order, the mail and the booking all say the same place.
+  [MaxLength(80)] string? PickupPointFor;
+  [MaxLength(40)] string? PickupPointId;
+  [MaxLength(120)] string? PickupPointName;
+  [MaxLength(200)] string? PickupPointStreet;
+  [MaxLength(20)] string? PickupPointPostCode;
+  [MaxLength(80)] string? PickupPointCity;
+  [MaxLength(2)] string? PickupPointCountry;
+  /// When its owner was reminded that they left it with things in it (mail/Lists.osy) — once; cleared when it is ordered.
+  DateTime? RemindedAt;
+  /// The signed-in customer chose to pay with their store credit (`UseStoreCredit`) — as much of it as the order takes.
+  bool UseCredit = false;
+  /// When the customer agreed to have the files in this bag at once, losing the right to withdraw from them
+  /// (`AgreeToDigitalDelivery`) — required to place a bag holding a download.
+  DateTime? DigitalConsentAt;
+  /// The currency it is bought in, when the customer chose one the shop SELLS in (Currencies.osy) — ISO 4217. Null:
+  /// the shop's own. Set by `ShowPricesIn`, never by a price.
+  [MaxLength(3)] string? Currency;
+  /// A sale being rung up at a shop's counter (Counter.osy) — nobody's visit and nobody's account: the clerks who sell at
+  /// that counter write it (`SellsAt(SoldAt)`), and it is placed as a counter sale.
+  bool AtCounter = false;
+  /// The location whose counter it is sold at — null: a shop without locations.
+  StockLocation? SoldAt;
+  security {
+    // SECURITY-INVARIANT(a-guest-row-is-its-visits): a bag with no owner is its VISIT's — read and written only by the
+    //   browser whose server-issued visitor it names (`VisitId == Visitor.Id`), by staff, or (read) by a `ResumeBag`
+    //   link's holder. What a guest's bag holds — a date of birth, a business's VAT number and name, a pickup address —
+    //   is theirs: before this, `Owner == null` alone let every anonymous caller read and write every guest's bag, and
+    //   create one under another guest's visit for them to find. Guarded by bag-and-history.test.osy
+    //   a_guest_cannot_read_or_write_another_guests_bag and GuestRowsOverTheWireTests.
+    // SECURITY-INVARIANT(a-counter-sells-only-at-its-location): a counter's sale is written and read by the clerks who
+    //   sell at THAT counter (`SellsAt(SoldAt)`) and by staff — and it never has an owner, so a clerk can never make a
+    //   customer's bag theirs. Guarded by counter.test.osy a_clerk_sells_only_at_their_own_counter.
+    allow create, update, delete when IsAnonymous || IsAuthenticated
+      where Owner == null && VisitId == Visitor.Id
+         || Owner == user;
+    allow create, update, delete when IsShopCounter where Owner == null && AtCounter && SellsAt(SoldAt);
+    allow create, update, delete when IsShopStaff;
+    // …and read by the same people, or by whoever holds a `ResumeBag` link to this bag. Staff have a rule of their own,
+    // so a staff member never asks the customer rule's row question.
+    allow read when IsAnonymous || IsAuthenticated
+      where Owner == null && VisitId == Visitor.Id
+         || Owner == user
+         || Id == ResumeBag.Row;
+    allow read when IsShopCounter where Owner == null && AtCounter && SellsAt(SoldAt);
+    allow read when IsShopStaff;
+    // SECURITY-INVARIANT(a-bag-link-shows-only-the-bag): what a signed-in customer's bag says about THEM — the visit it
+    //   was last seen on, a business's VAT number and name, a date of birth, where they collect a parcel — is theirs and
+    //   the shop's. A `ResumeBag` link reads the bag's lines, and these read as nothing to its holder (who is anonymous),
+    //   as to anyone else who is not the owner; a guest's own bag (no owner) is untouched. The owner's account, their
+    //   orders' contact and their lists name no grant, so the link reaches none of them. Guarded by lists.test.osy
+    //   a_bag_link_reads_the_bag_and_nothing_of_whose_it_is.
+    //   ONE rule covers the link's holder too: with nobody signed in `Owner != user` is unknown, and a deny whose
+    //   condition is unknown applies (SECURITY-INVARIANT(an-unknown-deny-denies), ledger D-DENYNULL1).
+    deny read VisitId, BuyerVatNumber, BuyerCompany, BuyerBornOn, PickupPointFor, PickupPointId, PickupPointName,
+              PickupPointStreet, PickupPointPostCode, PickupPointCity, PickupPointCountry
+      when !IsShopStaff where Owner != null && Owner != user;
+  }
+}
+
+public entity BagLine {
+  [Required] Bag Bag;
+  [Required] Variant Variant;
+  int Quantity = 1;
+  /// What one cost when it went in — so a price that moved since can be pointed out rather than sprung at checkout.
+  decimal PriceWhenAdded;
+  /// A price the SHOP agreed for this line — a subscription's, per its interval. Never the customer's to write.
+  [ForeignKey(Line)] AgreedLinePrice[] Agreed;
+  /// For a gift card: its amount and who it is for (GiftCards.osy) — at most one.
+  [ForeignKey(Line)] GiftCardChoice[] Gift;
+  security {
+    // SECURITY-INVARIANT(a-guest-row-is-its-visits) — a line is its bag's: a guest's only to its own visit.
+    allow create, update, delete when IsAnonymous || IsAuthenticated
+      where Bag.Owner == null && Bag.VisitId == Visitor.Id
+         || Bag.Owner == user;
+    allow create, update, delete when IsShopCounter where Bag.Owner == null && Bag.AtCounter && SellsAt(Bag.SoldAt);
+    allow create, update, delete when IsShopStaff;
+    allow read when IsAnonymous || IsAuthenticated
+      where Bag.Owner == null && Bag.VisitId == Visitor.Id
+         || Bag.Owner == user
+         || Bag == ResumeBag.Row;
+    allow read when IsShopCounter where Bag.Owner == null && Bag.AtCounter && SellsAt(Bag.SoldAt);
+    allow read when IsShopStaff;
+  }
+}
+
+/// The price the shop agreed for one bag line, in place of the catalogue's — written by staff or by a workflow acting for
+/// the shop (a subscription's renewal), never by the customer whose bag it is: the bag line is theirs, this row is not.
+// SECURITY-INVARIANT(agreed-price-is-the-shops): only the shop writes an agreed price. As a field on the customer-writable
+//   BagLine it would let a customer set their own price to 0. Guarded by order-integrity.test.osy
+//   a_customer_cannot_agree_their_own_price.
+public entity AgreedLinePrice {
+  [Required] BagLine Line;
+  decimal Price;
+  /// The currency `Price` is in (ISO 4217) — null: the shop's own. A subscription chosen in a currency the shop SELLS in
+  /// is agreed in it (D-SELLCURRENCY1), and is placed only in a bag bought in it (`SoldCurrencyProblem`).
+  [MaxLength(3)] string? Currency;
+  /// What the line is, as the order and invoice say it — "Pro, rest of the period" — instead of the variant's label.
+  [MaxLength(160)] string? Label;
+  security {
+    allow read when IsAnonymous || IsAuthenticated
+      where Line.Bag.Owner == null && Line.Bag.VisitId == Visitor.Id
+         || Line.Bag.Owner == user;
+    allow read when IsShopStaff;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// What a bag line is called on the order: the shop's agreed label, else the variant's.
+public string LineLabel(BagLine line) {
+  var agreed = line.Agreed.FirstOrDefault();
+  if (agreed != null && agreed.Label != null) { return agreed.Label!; }
+  // A gift card of the buyer's own amount is called by it: "750 kr", "€50".
+  if (line.Variant.AnyAmount && line.Variant.Product.IsGiftCard) { return MoneyIn(LinePrice(line), BagCurrency(line.Bag), TheShop()); }
+  return VariantLabel(line.Variant);
+}
+
+/// The age the goods in `bag` need — the highest `MinimumAge` among them, 0 for none.
+public int AgeNeeded(Bag bag) {
+  var lines = bag.Lines.ToList();
+  return lines.Count == 0 ? 0 : lines.Max(l => l.Variant.Product.MinimumAge);
+}
+
+/// How old someone born on `born` is on `today`, in whole years.
+public int AgeOn(DateOnly born, DateOnly today) {
+  var years = today.Year - born.Year;
+  return today < born.AddYears(years) ? years - 1 : years;
+}
+
+/// The buyer gives their date of birth — asked only when the bag holds goods with an age.
+[AllowAnonymous]
+public void SetBirthDate(DateOnly bornOn) {
+  var bag = BagFor(true)!;
+  bag.BuyerBornOn = bornOn;
+  UnitOfWork.Commit();
+}
+
+/// What one of a bag line costs, in the currency the bag is bought in (`BagCurrency`): the price the shop agreed for it,
+/// else the catalogue's — in a sold currency, the variant's own price there or its price converted and rounded.
+public decimal LinePrice(BagLine line) {
+  var rate = SaleRate(line.Bag.Currency);
+  var agreed = line.Agreed.FirstOrDefault();
+  // An agreed price is in its own currency (a subscription's, agreed in the bag's). In the bag's currency it is the
+  // price; in another (the bag moved, or its rate went stale) it is shown converted — and never placed so
+  // (`SoldCurrencyProblem`): the shop agrees it again, in the bag's currency, when the bag moves (`BagCurrencyChanged`).
+  if (agreed != null) {
+    var agreedIn = agreed.Currency == null || agreed.Currency == "" ? TheShop().Currency : agreed.Currency!;
+    var bagIn = rate == null ? TheShop().Currency : rate.Currency;
+    if (agreedIn == bagIn) { return agreed.Price; }
+    var fromRate = agreedIn == TheShop().Currency ? null : ExchangeRate.FirstOrDefault(r => r.Currency == agreedIn);
+    var own = fromRate == null || fromRate.PerUnit <= 0 ? agreed.Price : agreed.Price / fromRate.PerUnit;
+    return rate == null ? Math.Round(own, 2, MidpointRounding.AwayFromZero) : NicePrice(own * rate.PerUnit, rate.Rounding);
+  }
+  // A gift card whose buyer chose the amount costs that amount — and is worth exactly it (PriceBag holds it to the
+  // shop's bounds). It was chosen in the bag's currency. Every other card, whatever its choice row says, costs its
+  // variant's price.
+  if (line.Variant.AnyAmount && line.Variant.Product.IsGiftCard) {
+    var gift = line.Gift.FirstOrDefault();
+    if (gift != null) { return GiftAmountNow(line.Bag, gift.Amount, rate); }
+  }
+  // A wholesale account's bag is priced on its list (Wholesale.osy) — the OWNER's, whoever asks.
+  var trade = WholesaleOf(BagCustomer(line.Bag));
+  if (trade != null) { return WholesalePrice(trade.PriceList, line.Variant, rate); }
+  return rate == null ? PriceOf(line.Variant) : SoldPrice(line.Variant, rate);
+}
+
+/// A gift card amount chosen in the bag's currency, in the currency the bag is bought in NOW — itself, unless that
+/// currency's rate went stale since (the bag is then priced in the shop's own, at the last rate it had).
+decimal GiftAmountNow(Bag bag, decimal amount, ExchangeRate? rate) {
+  if (bag.Currency == null || bag.Currency == "" || rate != null) { return amount; }
+  var code = bag.Currency!;
+  var last = ExchangeRate.FirstOrDefault(r => r.Currency == code);
+  return last == null || last.PerUnit <= 0 ? amount : Math.Round(amount / last.PerUnit, 0, MidpointRounding.AwayFromZero);
+}
+
+/// The bag this caller is filling: the account's when signed in (taking over the visit's, once), else the visit's —
+/// the visit being the caller's own (`Visitor.Id`), never one it names. Null when there is none yet and `create` is
+/// false.
+[AllowAnonymous]
+public Bag? BagFor(bool create) {
+  var me = Session.CurrentUser;
+  var visitId = Visitor.Id;
+  // ⚑ ONE BAG, HOWEVER MANY REQUESTS ASK AT ONCE. A page mounts several checkout parts together and each asks for the
+  //   bag; two that both found none each made one. So the oldest is THE bag, and any other the same asking finds joins
+  //   it — the bag converges however the requests interleaved.
+  var visitBags = Bag.Include(b => b.Lines).Where(b => b.VisitId == visitId && b.Owner == null).OrderBy(b => b.CreatedAt).ToList();
+  var visitBag = visitBags.FirstOrDefault();
+  foreach (var extra in visitBags.Skip(1)) { JoinBag(extra, visitBag!); }
+  if (me == null) {
+    if (visitBag == null && create) { visitBag = new Bag { VisitId = visitId, Currency = VisitSaleCurrency(visitId) }; }
+    return visitBag;
+  }
+  // An exchange's replacement is placed from a bag of the customer's own that the shop fills and places at once
+  // (Returns.osy) — it is never the bag they shop in.
+  var mines = Bag.Include(b => b.Lines).Where(b => b.Owner == me && (b.VisitId == null || !b.VisitId.StartsWith("exchange-")))
+    .OrderBy(b => b.CreatedAt).ToList();
+  var mine = mines.FirstOrDefault();
+  foreach (var extra in mines.Skip(1)) { JoinBag(extra, mine!); }
+  if (mine == null && visitBag == null && !create) { return null; }
+  if (mine == null && visitBag != null) {
+    // Signed in with no bag of their own yet: the visit's bag BECOMES theirs — claimed where it is, not copied, so
+    // requests arriving together all claim the one row rather than each making an account bag of their own. An age
+    // verified for it was verified on this visit before anybody was signed in (AgeChecks.osy): it does not carry over.
+    ForgetAgeChecks(visitBag!);
+    visitBag!.Owner = me;
+    UnitOfWork.Commit();
+    return visitBag;
+  }
+  if (mine == null) { mine = new Bag { Owner = me, VisitId = visitId, Currency = VisitSaleCurrency(visitId) }; }
+  // Signed in with things already in the visit's bag: they join the account's, never more than there are — in the
+  // currency this visit chose, since that is what its prices were just shown in.
+  if (visitBag != null) {
+    SwitchBagCurrency(mine!, visitBag!.Currency);
+    JoinBag(visitBag!, mine!);
+  }
+  mine!.VisitId = visitId;
+  UnitOfWork.Commit();
+  return mine;
+}
+
+/// What `from` holds joins `into` — never more of a thing than there is — and `from` is gone.
+void JoinBag(Bag from, Bag into) {
+  foreach (var l in from.Lines) {
+    // A gift card line is one gift, to one person: it moves across whole, with who it is for.
+    var gift = l.Gift.FirstOrDefault();
+    if (gift != null) {
+      var moved = new BagLine { Bag = into, Variant = l.Variant, Quantity = l.Quantity, PriceWhenAdded = l.PriceWhenAdded };
+      new GiftCardChoice { Line = moved, Amount = gift.Amount, FromName = gift.FromName, ToName = gift.ToName, ToEmail = gift.ToEmail,
+                           Message = gift.Message, SendOn = gift.SendOn };
+      l.Delete();
+      continue;
+    }
+    var same = into.Lines.FirstOrDefault(x => x.Variant == l.Variant);
+    if (same == null) {
+      new BagLine { Bag = into, Variant = l.Variant, Quantity = l.Quantity, PriceWhenAdded = l.PriceWhenAdded };
+    } else {
+      same.Quantity = Math.Min(same.Quantity + l.Quantity, Math.Max(Buyable(l.Variant), same.Quantity));
+    }
+    l.Delete();
+  }
+  // The lines go in their own commit, before the bag: a line's rule asks whose BAG it is in, and a bag deleted in
+  // the same commit is no longer there to answer.
+  UnitOfWork.Commit();
+  // An age verified for one bag was verified for THAT bag (AgeChecks.osy) — it does not follow the lines.
+  ForgetAgeChecks(from);
+  from.Delete();
+  UnitOfWork.Commit();
+}
+
+/// Puts `quantity` of a variant in the caller's bag, or adds to what is there. Answers "" when it went in, or the
+/// sentence to show when it did not — sold out, not that many left, not on sale.
+[AllowAnonymous]
+public string AddToBag(Variant variant, int quantity) {
+  if (quantity < 1) { return "Choose how many."; }
+  if (variant.Product.Status != ProductStatus.Listed) { return "That is no longer for sale."; }
+  // A gift card is bought for somebody — `AddGiftCardToBag`, with who it is for.
+  if (variant.Product.IsGiftCard) { return "Choose who the gift card is for."; }
+  // What one order can have: what the fullest location that sells holds (Locations.osy) — for a shop with one place,
+  // its stock.
+  var have = Buyable(variant);
+  if (!variant.Unlimited && have == 0) { return "Sold out."; }
+  var bag = BagFor(true);
+  var line = bag.Lines.FirstOrDefault(l => l.Variant == variant);
+  var wanted = (line == null ? 0 : line.Quantity) + quantity;
+  if (!variant.Unlimited && wanted > have) {
+    return have == 1 ? "There is only one." : $"There are only {have}.";
+  }
+  if (line == null) {
+    var added = new BagLine { Bag = bag, Variant = variant, Quantity = quantity };
+    added.PriceWhenAdded = LinePrice(added);
+  }
+  else { line.Quantity = wanted; }
+  ArmBagReminder(bag);
+  UnitOfWork.Commit();
+  return "";
+}
+
+/// Changes how many of a line the bag holds; zero takes it out.
+[AllowAnonymous]
+public string SetQuantity(BagLine line, int quantity) {
+  if (quantity <= 0) { RemoveFromBag(line); return ""; }
+  var have = Buyable(line.Variant);
+  if (!line.Variant.Unlimited && quantity > have) { return have == 0 ? "Sold out." : $"There are only {have}."; }
+  line.Quantity = quantity;
+  ArmBagReminder(line.Bag);
+  UnitOfWork.Commit();
+  return "";
+}
+
+[AllowAnonymous]
+public void RemoveFromBag(BagLine line) {
+  var bag = line.Bag;
+  line.Delete();
+  UnitOfWork.Commit();
+  EndBagLinksIfEmpty(bag);
+}
+
+/// What has changed about a line since it went in the bag, as the customer reads it — or "" when nothing has.
+[AllowAnonymous]
+public string LineProblem(BagLine line) {
+  var v = line.Variant;
+  if (v.Product.Status != ProductStatus.Listed) { return "No longer for sale."; }
+  var have = v.Unlimited ? 0 : Buyable(v);
+  if (!v.Unlimited && have == 0) { return "Sold out since you added it."; }
+  if (!v.Unlimited && line.Quantity > have) { return have == 1 ? "Only one is left." : $"Only {have} are left."; }
+  var now = LinePrice(line);
+  if (now != line.PriceWhenAdded && line.PriceWhenAdded > 0) {
+    var shop = TheShop();
+    var nowIn = BagCurrency(line.Bag);
+    // The price when added is in the currency the bag was in then — its own, even when its rate has since gone stale.
+    var wasIn = line.Bag.Currency ?? shop.Currency;
+    if (nowIn != wasIn) {
+      return $"Now {MoneyIn(now, nowIn, shop)} — the rate for {wasIn} is out of date, so the shop prices it in {nowIn} until it is fresh.";
+    }
+    return now < line.PriceWhenAdded
+      ? $"Now {MoneyIn(now, nowIn, shop)} — down from {MoneyIn(line.PriceWhenAdded, wasIn, shop)}."
+      : $"Now {MoneyIn(now, nowIn, shop)} — it was {MoneyIn(line.PriceWhenAdded, wasIn, shop)} when you added it.";
+  }
+  return "";
+}
+
+/// Whether anything in the bag needs the customer's attention before it can be bought.
+[AllowAnonymous]
+public bool BagNeedsFixing() {
+  var bag = BagFor(false);
+  return bag != null && bag.Lines.ToList().Any(l => LineProblem(l) != "");
+}
+
+/// Makes the bag true: what sold out or left sale leaves it, what ran short drops to what is left, and a moved price
+/// is accepted. Answers what it changed — "Loafer (38) has sold out; only one Chelsea (38) is left" — or "".
+[AllowAnonymous]
+public string FixBag() {
+  var bag = BagFor(false);
+  if (bag == null) { return ""; }
+  var changes = new List<string>();
+  foreach (var l in bag.Lines.ToList()) {
+    var v = l.Variant;
+    var what = VariantLabel(v) == "" ? v.Product.Name : $"{v.Product.Name} ({VariantLabel(v)})";
+    var have = v.Unlimited ? 0 : Buyable(v);
+    if (v.Product.Status != ProductStatus.Listed || (!v.Unlimited && have == 0)) {
+      changes.Add($"{what} has sold out");
+      l.Delete();
+    } else {
+      if (!v.Unlimited && l.Quantity > have) {
+        changes.Add(have == 1 ? $"only one {what} is left" : $"only {have} of {what} are left");
+        l.Quantity = have;
+      }
+      var now = LinePrice(l);
+      if (l.PriceWhenAdded > 0 && now != l.PriceWhenAdded) { changes.Add($"{what} is now {MoneyIn(now, BagCurrency(bag), TheShop())}"); }
+      l.PriceWhenAdded = now;
+    }
+  }
+  UnitOfWork.Commit();
+  EndBagLinksIfEmpty(bag);
+  return string.Join("; ", changes);
+}
+
+// ── a bag opened from a link ──────────────────────────────────────────────────────────────────────────────────────
+
+/// A link that opens one signed-in customer's bag on any device — what the reminder about a bag left behind carries
+/// (mail/Lists.osy). It reads the bag's lines, never whose bag it is (see the rules on `Bag`), and it is taken back
+/// once the bag is ordered or emptied (`EndBagLinks`).
+public grant ResumeBag for Bag { Expires = TimeSpan.FromDays(7); }
+
+/// One thing in a bag opened from a link, as it stands NOW — the shop's price today, and whether it can still be had.
+public class ResumeBagLine {
+  public Guid Product;
+  public Guid Variant;
+  public string Name = "";
+  /// "250 g" — the variant's label, "" when the product has only one.
+  public string Size = "";
+  public int Quantity = 1;
+  /// Today's price for one, and for all of them.
+  public decimal Price = 0;
+  public decimal Amount = 0;
+  /// "" when it can come along as it is; otherwise what has changed ("Sold out", "Only 2 left").
+  public string Problem = "";
+}
+
+/// What a bag link's page shows.
+public class ResumeBagView {
+  public List<ResumeBagLine> Lines = [];
+  /// The visitor is signed in as the bag's owner — the bag is theirs already, on this device too.
+  public bool Yours = false;
+  /// Where the store keeps its bag — where the page goes once the bag is here.
+  public string BagPath = "/bag";
+  /// What what can come along costs today.
+  public decimal Total = 0;
+}
+
+/// The bag a link opens, as its page shows it: what is in it at today's prices, and what can no longer be had.
+[AllowAnonymous]
+public ResumeBagView BagToResume(ResumeBag link) {
+  var bag = link.Row;
+  var view = new ResumeBagView { BagPath = App.Setting<ShopSetup>().BagPath };
+  var me = Session.CurrentUser;
+  view.Yours = me != null && bag.Owner != null && bag.Owner!.Id == me!.Id;
+  foreach (var l in bag.Lines) {
+    var v = l.Variant;
+    var line = new ResumeBagLine { Product = v.Product.Id, Variant = v.Id, Name = v.Product.Name, Size = VariantLabel(v),
+                                   Quantity = l.Quantity, Price = PriceOf(v) };
+    // How many can come along is decided WITH the problem, never read back from its words — they are the reader's
+    // language, so "Only 2 left" may be "Bara 2 kvar".
+    var coming = l.Quantity;
+    if (v.Product.Status != ProductStatus.Listed) { line.Problem = "No longer for sale"; coming = 0; }
+    else if (!v.Unlimited && Buyable(v) == 0) { line.Problem = "Sold out"; coming = 0; }
+    else if (!v.Unlimited && l.Quantity > Buyable(v)) { line.Problem = Buyable(v) == 1 ? "Only one left" : $"Only {Buyable(v)} left"; coming = Buyable(v); }
+    line.Amount = line.Price * coming;
+    view.Total = view.Total + line.Amount;
+    view.Lines.Add(line);
+  }
+  return view;
+}
+
+/// Brings the bag a link opens into THIS device's bag (the caller's own visit) — each thing through `AddToBag`, so it is priced,
+/// stock-checked and put on sale exactly as though the visitor had added it here; the old bag's prices count for
+/// nothing. Pressed twice, nothing doubles: a thing already in the bag is topped up to what the link's bag held, never
+/// added again. Signed in as the bag's owner there is nothing to bring. Answers "" or what could not come along.
+[AllowAnonymous]
+public string BringBagHere(ResumeBag link) {
+  var from = link.Row;
+  var me = Session.CurrentUser;
+  if (me != null && from.Owner != null && from.Owner!.Id == me!.Id) { return ""; }
+  List<string> missed = [];
+  foreach (var l in from.Lines.ToList()) {
+    var v = l.Variant;
+    var name = VariantName(v);
+    // What is in this device's bag already — asked again each time, as each `AddToBag` commits.
+    var here = BagFor(false);
+    var have = here == null ? 0 : here.Lines.Where(x => x.Variant == v).Sum(x => x.Quantity);
+    var wanted = v.Unlimited ? l.Quantity : Math.Min(l.Quantity, Buyable(v));
+    if (wanted > have) {
+      var problem = AddToBag(v, wanted - have);
+      if (problem != "") { missed.Add($"{name}: {problem.TrimEnd('.').ToLower()}"); continue; }
+    }
+    if (wanted < l.Quantity) { missed.Add(wanted == 0 ? $"{name}: sold out" : $"{name}: only {wanted} left"); }
+  }
+  return missed.Count == 0 ? "" : $"Not everything could come along. {string.Join("; ", missed)}.";
+}
+
+/// Takes back every link to `bag` — it was ordered or emptied, so there is nothing left to open. Only a bag that was
+/// reminded about ever had one.
+void EndBagLinks(Bag bag) {
+  if (bag.RemindedAt != null) { ResumeBag.RevokeAll(bag); }
+}
+
+void EndBagLinksIfEmpty(Bag bag) {
+  if (bag.RemindedAt != null && bag.Lines.Count() == 0) { ResumeBag.RevokeAll(bag); }
+}
+
+/// What the goods in the bag cost — everything but gift cards, which are no goods: what a discount and a free delivery
+/// are measured against.
+public decimal BagGoodsSubtotal(Bag bag) {
+  return bag.Lines.ToList().Where(l => !l.Variant.Product.IsGiftCard).Sum(l => LinePrice(l) * l.Quantity);
+}
+
+/// What the bag's contents cost, before delivery.
+public decimal BagSubtotal(Bag bag) {
+  return bag.Lines.ToList().Sum(l => LinePrice(l) * l.Quantity);
+}
+
+/// How many things are in the bag — what the bag icon's badge says.
+[AllowAnonymous]
+public int BagCount() {
+  var bag = BagFor(false);
+  return bag == null ? 0 : bag.Lines.Sum(l => l.Quantity);
+}
+
+/// A variant is back: asks to be mailed when it is. Answers the sentence to show.
+[AllowAnonymous]
+public string NotifyMe(Variant variant, string email) {
+  var address = email.Trim().ToLower();
+  if (!address.Contains("@")) { return "We need an email address to tell you."; }
+  if (variant.Stock > 0) { return "It is in stock now."; }
+  // No check for an alert already waiting: a visitor may not read the alerts, and the mail goes once per address.
+  new StockAlert { Variant = variant, Email = address };
+  UnitOfWork.Commit();
+  return "We will mail you when it is back.";
+}
+
+/// A whole product is gone: waits for ANY of its sizes to come back, one alert per sold-out size. Answers the sentence
+/// to show.
+[AllowAnonymous]
+public string NotifyWhenBack(Product product, string email) {
+  var address = email.Trim().ToLower();
+  if (!address.Contains("@")) { return "We need an email address to tell you."; }
+  var gone = product.Variants.ToList().Where(v => v.Stock == 0).ToList();
+  if (gone.Count == 0) { return "It is in stock now."; }
+  foreach (var v in gone) { new StockAlert { Variant = v, Email = address }; }
+  UnitOfWork.Commit();
+  return "We will mail you when it is back.";
+}
+
+/// Somebody waiting for a variant to come back.
+public entity StockAlert {
+  [Required] Variant Variant;
+  [Required, MaxLength(255)] string Email;
+  DateTime? SentAt;
+  security {
+    allow create when IsAnonymous || IsAuthenticated;
+    allow read when IsAuthenticated where Email == user.Email;
+    allow read when IsShopStaff;
+    allow update, delete when IsShopStaff;
+  }
+}
+
+/// A variant as a customer reads it — "Loafer (39)", or the product's own name when it has only one variant.
+public string VariantName(Variant variant) {
+  return VariantLabel(variant) == "" ? variant.Product.Name : $"{variant.Product.Name} ({VariantLabel(variant)})";
+}
+
+/// Mails everybody waiting for a variant that is back in stock, once per address. Runs as whoever raised the stock —
+/// staff restocking, or an order's workflow giving goods back.
+void SendStockAlerts(Variant variant) {
+  if (variant.Stock <= 0) { return; }
+  var waiting = StockAlert.Where(a => a.Variant == variant && a.SentAt == null).ToList();
+  if (waiting.Count == 0) { return; }
+  // One mail per LANGUAGE — it says the same thing to each of them, in the language of their account when they have one.
+  var mails = new Dictionary<string, RenderedEmail>();
+  var mailed = new List<string>();
+  foreach (var a in waiting) {
+    if (!mailed.Contains(a.Email)) {
+      var language = ShopLanguageOf(a.Email);
+      var key = language ?? "";
+      if (!mails.ContainsKey(key)) { mails[key] = App.Setting<ShopSetup>().Mails.BackInStock(variant, language); }
+      Mail(a.Email, mails[key]);
+      mailed.Add(a.Email);
+    }
+    a.SentAt = DateTime.UtcNow;
+  }
+}

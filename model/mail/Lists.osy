@@ -1,0 +1,230 @@
+// The shop on the app's mailing lists (`Osysharp.MailingLists`): the newsletter a customer joins at the checkout or
+// from their account, a campaign sent to a list, and the one reminder about a bag left with things in it.
+//
+// ⚑ THE LIST IS THE CONSENT. The shop mails a newsletter or a reminder only to a CONFIRMED reader of the list the store
+//   names (`ShopSetup.NewsletterList`, `BagReminderList`) — double opt-in, the words they agreed to kept, one link to
+//   leave in every mail and the one-click header beside the sender. A customer is never on a list because they bought
+//   something.
+//
+// ⚑ THE STORE WIRES IT ONCE, in its own source (the shop cannot re-open another kit's tables):
+//     app.MailingLists = new MailingListSetup { Lists = [ … ], Mailer = new ShopListMailer(), Mails = new ShopListMails() };
+//     policy RunsMailingLists => IsShopStaff;
+//     policy OwnsListAddress(string email) => email == user.Email;
+
+namespace Osysharp.Shop;
+
+using Osysharp.MailingLists;
+using Osysharp.EmailTemplates;
+using Osysharp.Workflow;
+
+/// A list's mail, into the shop's outbox — sent through the shop's provider with the one-click unsubscribe pair,
+/// retried there, held without a provider, and kept once however often the list hands it over.
+public class ShopListMailer : ListMailer {
+  public override void Send(ListMailOut mail) {
+    if (mail.Key != "" && ShopMail.Any(m => m.SendKey == mail.Key)) { return; }
+    Mail(mail.To, mail.Mail, mail.Unsubscribe, mail.Key == "" ? null : mail.Key);
+  }
+}
+
+/// The list's own mail — the confirmation — in the shop's frame.
+public class ShopListMails : ListMails {
+  public override RenderedEmail Confirmation(ListSubscriber subscriber, MailingList list, string confirmUrl) {
+    return ShopListConfirmation(subscriber, list, confirmUrl);
+  }
+}
+
+/// "Confirm your subscription", in the shop's own frame — in the language on their account, else the one they signed
+/// up in.
+[Email]
+public component ShopListConfirmation(ListSubscriber reader, MailingList list, string confirmUrl) {
+  language => ShopLanguageOf(reader.Email) ?? reader.Language;
+  subject => $"Confirm your subscription to {list.Name}";
+  render {
+    ShopMailLayout("One press and you are on the list.") {
+      EmailHeading("Please confirm your address");
+      EmailText($"You asked for {list.Name} at {reader.Email}. Press the button to confirm it is you.");
+      EmailButton("Confirm my subscription", confirmUrl);
+      EmailNote("The link works for seven days. If you did not ask, ignore this mail and nothing more will come.");
+    }
+  }
+}
+
+// ── the newsletter at the checkout and on the account ────────────────────────────────────────────────────────
+
+/// The words beside the checkout's newsletter box — exactly what is recorded when it is ticked. "" when the shop offers
+/// no newsletter.
+[AllowAnonymous]
+public string NewsletterWords() {
+  var key = App.Setting<ShopSetup>().NewsletterList;
+  if (key == "") { return ""; }
+  var list = DeclaredLists().FirstOrDefault(l => l.Key == key);
+  if (list == null) { return ""; }
+  var reminders = App.Setting<ShopSetup>().BagReminderList == key;
+  return $"Yes, send me {list.Name}{(reminders ? ", and one reminder if I leave something in my bag" : "")}. I can leave at any time.";
+}
+
+/// The checkout's box was ticked: `email` (and the name they gave) joins the shop's newsletter, from the checkout, with
+/// the words it showed — and is asked to confirm it from their inbox. Answers "" or the sentence to show.
+[AllowAnonymous]
+public string JoinNewsletterAtCheckout(string email, string name = "") {
+  var words = NewsletterWords();
+  if (words == "") { return ""; }
+  return SignUpToList(email, App.Setting<ShopSetup>().NewsletterList, "checkout", words, name);
+}
+
+// ── a campaign sent to a list ────────────────────────────────────────────────────────────────────────────────
+
+/// A newsletter staff wrote, as a list sends it: one mail per reader, greeted by their name, with their own way out.
+public class ShopCampaignToList : ListCampaign {
+  public ShopCampaign Campaign;
+  public override string Key() { return $"shopcampaign-{Campaign.Id}"; }
+  public override RenderedEmail For(ListSubscriber reader, string unsubscribe) {
+    // The name they signed up with, else their account's, else what is before the @.
+    var name = reader.Name ?? ShopAccount.FirstOrDefault(a => a.Email == reader.Email)?.Name
+      ?? reader.Email.Substring(0, reader.Email.IndexOf("@"));
+    // …in the language on their account, else the one they signed up in.
+    return CampaignFor(Campaign, name, unsubscribe, ShopLanguageOf(reader.Email) ?? reader.Language);
+  }
+}
+
+/// What sending a campaign did, as the desk says it.
+public class CampaignSendReport {
+  public string Problem = "";
+  public int Sent = 0;
+  public int AlreadySent = 0;
+  public int Skipped = 0;
+}
+
+/// Staff send a newsletter to a list — every confirmed reader it has not reached yet, one mail each through the outbox.
+/// Safe to press again: a reader it reached is not mailed twice.
+[Authorize(IsShopStaff)]
+public CampaignSendReport SendShopCampaign(Guid campaignId, string listKey) {
+  var campaign = ShopCampaign.Single(c => c.Id == campaignId);
+  var refusal = ShopCampaignRefusal(campaign);
+  if (refusal != "") { return new CampaignSendReport { Problem = refusal }; }
+  if (DeclaredLists().All(l => l.Key != listKey)) { return new CampaignSendReport { Problem = "Choose the list to send it to." }; }
+  var result = SendToList(new ShopCampaignToList { Campaign = campaign }, listKey);
+  if (result.Sent > 0 || result.AlreadySent > 0) {
+    campaign.State = ShopCampaignState.Sent;
+    if (campaign.SentAt == null) { campaign.SentAt = DateTime.UtcNow; }
+    UnitOfWork.Commit();
+  }
+  return new CampaignSendReport { Sent = result.Sent, AlreadySent = result.AlreadySent, Skipped = result.Skipped };
+}
+
+// ── the bag left behind ──────────────────────────────────────────────────────────────────────────────────────
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum BagReminderState { Waiting, Sent, Skipped }
+
+/// One wait on a signed-in customer's bag: when it ends, the bag is looked at again and — if it still holds things,
+/// nothing was ordered, it was not reminded before and its owner is a confirmed reader of the reminder list — ONE mail
+/// goes out. Armed by the bag's own functions; nobody writes the outcome but its workflow.
+public entity BagReminder {
+  [Required] Bag Bag;
+  /// How long it waits — the shop's `BagReminderHours` when it was armed.
+  int Hours;
+  BagReminderState State;                            // no default — BagReminding owns it
+  DateTime? SentAt;
+  security {
+    allow read, create when IsAnonymous || IsAuthenticated where Bag.Owner == user;
+    allow read, create when IsShopStaff;
+  }
+}
+
+public workflow BagReminding {
+  Tracks    = BagReminder.State;
+  Autostart = true;
+  Initial   = Waiting;
+
+  /// The bag was ordered or emptied first — nothing to remind about.
+  event Settle();
+
+  state Waiting {
+    subscribe Settle() as Settled {
+      Finished {
+        Within = TimeSpan.FromHours(this.Item.Hours);
+        Unfinished {
+          if (RemindAboutBag(this.Item)) { goto Sent; }
+          goto Skipped;
+        }
+      }
+    }
+    on Settled() { goto Skipped; }
+  }
+
+  terminal success Sent { }
+  terminal cancel Skipped { }
+}
+
+/// Arms the reminder for a signed-in customer's bag, if the shop sends them and one is not already waiting. Called by
+/// the bag's own functions after a change.
+void ArmBagReminder(Bag bag) {
+  var setup = App.Setting<ShopSetup>();
+  if (setup.BagReminderList == "" || bag.Owner == null || bag.RemindedAt != null) { return; }
+  if (BagReminder.Any(r => r.Bag == bag && r.State == BagReminderState.Waiting)) { return; }
+  new BagReminder { Bag = bag, Hours = setup.BagReminderHours };
+}
+
+/// When a bag's things last changed — the newest line's.
+DateTime LastTouched(Bag bag) {
+  var touched = bag.CreatedAt;
+  foreach (var l in bag.Lines) {
+    var at = l.ModifiedAt ?? l.CreatedAt;
+    if (at > touched) { touched = at; }
+  }
+  return touched;
+}
+
+/// The reminder's wait ended: sends the one mail when the bag still deserves it, and answers whether it did. A bag
+/// touched since the wait began waits again, from its last change.
+public bool RemindAboutBag(BagReminder reminder) {
+  var setup = App.Setting<ShopSetup>();
+  var bag = reminder.Bag;
+  var owner = bag.Owner;
+  if (owner == null || bag.RemindedAt != null || bag.Lines.Count() == 0 || setup.BagReminderList == "") { return false; }
+  // Never after they ordered — anything placed since the bag last changed means it was bought, or given up on.
+  var touched = LastTouched(bag);
+  if (Order.Any(o => o.Account == owner && o.PlacedAt >= touched)) { return false; }
+  if (touched > DateTime.UtcNow.AddHours(-reminder.Hours)) {
+    new BagReminder { Bag = bag, Hours = Math.Max(1, (int)Math.Ceiling((touched.AddHours(reminder.Hours) - DateTime.UtcNow).TotalHours)) };
+    return false;
+  }
+  // Only a confirmed reader of the reminder list — the consent is theirs, given in their own words.
+  var choice = ListChoicesFor(owner.Email).FirstOrDefault(c => c.Key == setup.BagReminderList);
+  if (choice == null || !choice.On || choice.Waiting || choice.Stopped) { return false; }
+  var reader = ListSubscriber.Single(s => s.Email == ListAddress(owner.Email));
+  // ONE reader link (a platform grant), in the footer and in the one-click header alike.
+  var link = $"{ListReaderLink.For(reader)}";
+  var lists = App.Setting<MailingListSetup>();
+  // …and a link that opens THIS bag on whatever device the mail is read on — the bag is the account's, and the phone
+  // the mail is read on is rarely signed in.
+  var resume = ShopLink($"{setup.ResumeBagPath}/{ResumeBag.For(bag)}");
+  Mail(owner.Email, setup.Mails.BagReminder(bag, ListLink(lists.PreferencesPath, link), resume),
+       ListLink(lists.OneClickPath, link, setup.BagReminderList), $"bag-{bag.Id}-{touched.Ticks}");
+  bag.RemindedAt = DateTime.UtcNow;
+  reminder.SentAt = DateTime.UtcNow;
+  return true;
+}
+
+/// "You left something in your bag": what is in it, and the way back to it — in the language on the owner's account.
+[Email]
+public component ShopBagReminder(Bag bag, string? unsubscribe = null, string resume = "") {
+  language => bag.Owner?.Language;
+  subject => $"Still thinking it over? Your bag at {TheShop().Name}";
+  render {
+    var shop = TheShop();
+    ShopMailLayout("What you left is still in your bag.", unsubscribe) {
+      EmailHeading("You left something in your bag");
+      EmailText("It is still there, as you left it:");
+      EmailTable() {
+        foreach (var l in bag.Lines) {
+          EmailRow(l.Quantity == 1 ? VariantName(l.Variant) : $"{l.Quantity} × {VariantName(l.Variant)}", MoneyIn(LinePrice(l) * l.Quantity, BagCurrency(bag), shop));
+        }
+      }
+      EmailButton("Back to your bag", resume == "" ? ShopLink(App.Setting<ShopSetup>().BagPath) : resume);
+      EmailNote(resume == "" ? "This is the only reminder we send about it. Prices and stock can change until you order."
+        : "The button opens your bag on any phone or computer for the next seven days, without signing in. This is the only reminder we send about it, and prices and stock can change until you order.");
+    }
+  }
+}

@@ -1,0 +1,26 @@
+// A type of your own: a shop declares `entity Bike : Product` for the fields every bike has, and the kit treats a
+// Bike as the Product it is — listed, bagged, ordered and taken from stock through the kit's own functions.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Floor)]
+void a_type_of_your_own_is_a_product_to_every_page_and_carries_its_own_fields() {
+  runas (Desk) {
+    var gravel = new Bike { Name = "Gravel", Slug = "gravel", Price = 1450m, FrameSize = "56 cm", Material = "Steel" };
+    new Variant { Product = gravel, Stock = 1 };
+  }
+
+  // Its own fields read back on its own type…
+  Assert.Equal("56 cm", Bike.Single(b => b.Slug == "gravel").FrameSize);
+  // …and it is a Product wherever the kit looks for one.
+  Assert.Equal("Gravel", Product.Single(p => p.Slug == "gravel").Name);
+
+  // A visitor buys it through the kit's checkout, and the kit takes it from stock like any product.
+  var reference = Buy("v-bike", "Gravel", "", 1);
+  Assert.StartsWith("KT-", reference);
+  Assert.Equal(0, Pick("Gravel", "").Stock);
+  // Read as the desk: an order is read by the visit or account that placed it and by staff, never by a body that is
+  // neither (SECURITY-INVARIANT an-order-reads-through-its-link) — this line predated that rule and read as nobody.
+  runas (Desk) { Assert.Equal(1450m, Order.Single(o => o.Reference == reference).Total); }
+}

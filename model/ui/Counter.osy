@@ -1,0 +1,432 @@
+// The counter's screen — a tablet on the counter (a phone will do): the sale being rung up on one side, who it is for
+// and how they pay on the other; then the payment, then the receipt. Returns and today's sales are its other two tabs.
+// A store puts it on a staff page of its own: `[Authorize(IsShopCounter)] … ShopCounter()`.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Ui;
+
+/// The counter: ring up a sale, take the money, hand it over — and take goods back.
+[Composable]
+[Authorize(IsShopCounter)]
+public component ShopCounter() {
+  live var shop = ShopSettings.FirstOrDefault();
+  string tab = "sale";
+  List<StockLocation> counters = [];
+  StockLocation? at = null;
+  bool chosen = false;
+  // ── the sale ──
+  Bag? bag = null;
+  CounterSaleView? sale = null;
+  List<CounterPayChoice> pays = [];
+  string scan = "";
+  List<CounterPick> found = [];
+  string code = "";
+  string customerEmail = "";
+  string customerCode = "";
+  CounterCustomerView? ask = null;
+  bool useCredit = true;
+  string receiptEmail = "";
+  DateOnly? bornOn = null;
+  string payKey = "";
+  string problem = "";
+  string notice = "";
+  // ── paying, and paid ──
+  Order? placed = null;
+  CounterPayView? paying = null;
+  string slip = "";
+  string receiptLink = "";
+  string sentTo = "";
+  // ── returns ──
+  string lookFor = "";
+  Order? back = null;
+  List<CounterReturnPick> backLines = [];
+  CounterReturnPick? backLine = null;
+  int backQuantity = 1;
+  string backReason = "";
+  bool backAsCredit = false;
+  CounterReturn? backDone = null;
+  // ── today ──
+  List<CounterSaleRow> today = [];
+
+  on mount {
+    counters = MyCounters();
+    // One counter, or a shop without locations: nothing to choose.
+    if (counters.Count <= 1) { at = counters.FirstOrDefault(); chosen = true; NewSale(); }
+  }
+
+  on every (TimeSpan.FromSeconds(2)) {
+    if (placed != null && paying != null && paying!.State == "waiting" && payKey != CounterCardKey()) { Poll(); }
+  }
+
+  action Choose(StockLocation l) { at = l; chosen = true; NewSale(); }
+  action Show(string which) {
+    tab = which;
+    if (which == "today") { today = CounterSalesToday(at); }
+  }
+
+  action NewSale() {
+    problem = ""; notice = ""; placed = null; paying = null; slip = ""; receiptLink = ""; sentTo = "";
+    found = []; scan = ""; code = ""; ask = null; customerEmail = ""; customerCode = ""; receiptEmail = ""; bornOn = null;
+    useCredit = true;
+    bag = StartCounterSale(at);
+    Reprice();
+  }
+
+  action Reprice() {
+    sale = CounterSale(bag!, useCredit);
+    pays = CounterPaymentsFor(bag!);
+    if (payKey == "" || !pays.Any(p => p.Key == payKey)) { payKey = pays.Count == 0 ? "" : pays[0].Key; }
+  }
+
+  /// What the scanner typed (or the clerk did): a barcode or SKU goes straight in; anything else is searched by name.
+  action Scan() {
+    problem = ""; notice = "";
+    var s = scan.Trim();
+    if (s == "") { return; }
+    if (s.Length >= 8 && s.ToCharArray().All(c => c >= '0' && c <= '9')) {
+      try { notice = $"{ScanIntoCounterSale(bag!, s)} is in."; scan = ""; found = []; Reprice(); }
+      catch (Exception ex) { problem = ex.Message; }
+      return;
+    }
+    found = CounterFind(bag!, s);
+    if (found.Count == 0) { problem = $"Nothing on sale is called “{s}”."; }
+  }
+
+  action Add(CounterPick p) {
+    problem = "";
+    try { AddToCounterSale(bag!, p.Variant!, 1); found = []; scan = ""; Reprice(); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+
+  action More(CounterLine l) {
+    problem = "";
+    try { SetCounterQuantity(l.Line!, l.Quantity + 1); Reprice(); } catch (Exception ex) { problem = ex.Message; }
+  }
+  action Fewer(CounterLine l) {
+    problem = "";
+    try { SetCounterQuantity(l.Line!, l.Quantity - 1); Reprice(); } catch (Exception ex) { problem = ex.Message; }
+  }
+
+  action UseCode() {
+    problem = ""; notice = "";
+    try { notice = CounterCode(bag!, code); code = ""; Reprice(); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action DropCard(BagGiftCard g) { RemoveCounterGiftCard(g); Reprice(); }
+
+  action AskCustomer() {
+    problem = "";
+    try { ask = AskForCustomer(bag!, customerEmail); customerCode = ""; if (ask!.State == "closed") { problem = ask!.Problem; } }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action CheckCode() {
+    problem = "";
+    ask = ConfirmCustomer(ask!.Ask!, customerCode);
+    if (ask!.State == "confirmed") { customerCode = ""; Reprice(); }
+    else if (ask!.Problem != "") { problem = ask!.Problem; }
+  }
+  action NoCustomer() { DropCustomer(bag!); ask = null; customerEmail = ""; Reprice(); }
+  action Credit(bool on) { useCredit = on; Reprice(); }
+  action PayWith(CounterPayChoice p) { payKey = p.Key; }
+
+  action Place() {
+    problem = "";
+    try {
+      placed = PlaceCounterSale(bag!, payKey, useCredit, receiptEmail, bornOn);
+      if (placed!.Status == OrderStatus.Reserved && payKey != CounterCardKey()) { paying = StartCounterPayment(placed!, payKey); }
+      else { paying = CounterPayState(placed!); }
+      if (paying!.State == "paid") { Done(); }
+    }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+
+  action Poll() {
+    paying = CounterPayState(placed!);
+    if (paying!.State == "paid") { Done(); }
+  }
+
+  action TryAgain() {
+    problem = "";
+    try { paying = StartCounterPayment(placed!, payKey); } catch (Exception ex) { problem = ex.Message; }
+  }
+
+  action CardPaid() {
+    problem = "";
+    try { CardPaidAtCounter(placed!, slip); paying = CounterPayState(placed!); if (paying!.State == "paid") { Done(); } }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+
+  action CallOff() {
+    problem = "";
+    try { CancelCounterSale(placed!); NewSale(); notice = "The sale is called off, and its goods are back on the shelf."; }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+
+  action Done() {
+    try { receiptLink = CounterReceiptLink(placed!); } catch (Exception ex) { receiptLink = ""; }
+  }
+
+  action MailReceipt() {
+    problem = "";
+    try { EmailCounterReceipt(placed!, receiptEmail); sentTo = receiptEmail; }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+
+  action FindSale() {
+    problem = ""; backDone = null; backLine = null;
+    back = CounterFindSale(lookFor);
+    if (back == null) { problem = $"No sale here has the number {lookFor.Trim().ToUpper()}. A parcel goes back by post."; backLines = []; return; }
+    backLines = CounterReturnLines(back!);
+  }
+  action PickBack(CounterReturnPick p) { backLine = p; backQuantity = 1; }
+  action TakeBack() {
+    problem = "";
+    try {
+      backDone = TakeBackAtCounter(back!, [new CounterBack { Line = backLine!.Line, Quantity = backQuantity }], backReason, backAsCredit, true);
+      backLine = null; backReason = ""; backAsCredit = false;
+      backLines = CounterReturnLines(back!);
+    }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+
+  render {
+    var wide = Layout.AtLeast(Tablet);
+    Stack(gap: 5, w: "100%", label: "Till") {
+      if (!chosen) {
+        Stack(gap: 3, label: "Which counter") {
+          SectionLabel("Which counter are you at?");
+          Row(gap: 3, wrap: Wrapping.Wrap) {
+            foreach (var l in counters) { Button(l.Name, onPress: () => Choose(l), size: Size.Lg); }
+          }
+        }
+      } else {
+        Row(justify: Justify.Between, align: Align.Center, gap: 3, wrap: Wrapping.Wrap) {
+          Tabs() {
+            Tab("Sale", selected: tab == "sale", onPress: () => Show("sale"));
+            Tab("Returns", selected: tab == "returns", onPress: () => Show("returns"));
+            Tab("Today", selected: tab == "today", onPress: () => Show("today"));
+          }
+          if (at != null) { Text(at!.Name, color: Colors.TextMuted, fontSize: FontSize.Label); }
+        }
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+
+        if (tab == "sale" && placed == null && sale != null) {
+          Box(display: Display.Grid, cols: wide ? "minmax(0, 7fr) minmax(0, 5fr)" : "minmax(0, 1fr)", gap: wide ? 8 : 5, align: Align.Start) {
+            // ── what they buy ──
+            Stack(gap: 4, label: "What they buy") {
+              Row(gap: 2, align: Align.End) {
+                Box(grow: 1, minW: "0") { Field("Scan or search", value: scan, placeholder: "Barcode, SKU or name", onEnter: Scan); }
+                Button("Find", onPress: Scan, size: Size.Lg);
+              }
+              if (notice != "") { Text(notice, color: Colors.TextMuted, fontSize: FontSize.Label); }
+              foreach (var p in found) {
+                Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 2, borderBW: 1, border: Colors.Border, label: p.Name) {
+                  Stack(gap: 0, minW: "0") {
+                    Text(p.Name, fontWeight: FontWeight.Semibold);
+                    Text(p.Unlimited ? Money(p.Price, shop) : $"{Money(p.Price, shop)} · {p.HereStock} on the shelf",
+                         color: Colors.TextMuted, fontSize: FontSize.Label);
+                  }
+                  Button("Add", onPress: () => Add(p), disabled: !p.Unlimited && p.HereStock == 0);
+                }
+              }
+              Stack(gap: 0, role: UiRole.List, label: "The sale") {
+                if (sale!.Lines.Count == 0) {
+                  EmptyState("Nothing rung up yet", body: "Scan a barcode, or search by name.");
+                }
+                foreach (var l in sale!.Lines) {
+                  // On a phone the name keeps its line and the stepper wraps under it, rather than squeezing the name.
+                  Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 3, borderBW: 1, border: Colors.Border, wrap: Wrapping.Wrap,
+                      role: UiRole.ListItem, label: $"Line {l.Name}") {
+                    Box(grow: 1, minW: "11rem") {
+                      Stack(gap: 0) {
+                        Text(l.Name, fontWeight: FontWeight.Semibold);
+                        Text(l.Quantity == 1 ? Money(l.Unit, shop) : $"{l.Quantity} × {Money(l.Unit, shop)}", color: Colors.TextMuted, fontSize: FontSize.Label);
+                      }
+                    }
+                    Row(gap: 2, align: Align.Center) {
+                      IconButton("One fewer", onPress: () => Fewer(l), size: Size.Lg) { Text("−"); }
+                      Text($"{l.Quantity}", fontWeight: FontWeight.Semibold, minW: "2ch", textAlign: TextAlign.Center);
+                      IconButton("One more", onPress: () => More(l), size: Size.Lg) { Text("+"); }
+                      Text(Money(l.Amount, shop), fontWeight: FontWeight.Semibold, minW: "7ch", textAlign: TextAlign.End);
+                    }
+                  }
+                }
+              }
+            }
+            // ── who, how, how much ──
+            Stack(gap: 5, label: "Payment") {
+              Stack(gap: 2, label: "Customer") {
+                SectionLabel("Customer");
+                if (ask != null && ask!.State == "confirmed") {
+                  Row(justify: Justify.Between, align: Align.Center, gap: 2) {
+                    Stack(gap: 0) {
+                      Text(ask!.Name, fontWeight: FontWeight.Semibold);
+                      Text(ask!.PriceList != "" ? $"Buys on {ask!.PriceList}" : $"Store credit {Money(ask!.CreditBalance, shop)}",
+                           color: Colors.TextMuted, fontSize: FontSize.Label);
+                    }
+                    Button("Remove", onPress: NoCustomer, tone: Tone.Ghost);
+                  }
+                  if (ask!.CreditBalance > 0) { Checkbox($"Pay with their store credit ({Money(ask!.CreditBalance, shop)})", value: useCredit, onToggle: Credit); }
+                } else if (ask != null && ask!.State == "code-sent") {
+                  Text($"We mailed a code to {customerEmail}. Ask them to read it out.", color: Colors.TextMuted);
+                  Row(gap: 2, align: Align.End) {
+                    Box(grow: 1, minW: "0") { Field("Their code", value: customerCode, placeholder: "Six letters and digits", onEnter: CheckCode); }
+                    Button("Check", onPress: CheckCode);
+                  }
+                  Button("Sell without an account", onPress: NoCustomer, tone: Tone.Ghost);
+                } else {
+                  Row(gap: 2, align: Align.End) {
+                    Box(grow: 1, minW: "0") { Field("Their account's email", value: customerEmail, type: "email", placeholder: "Optional", onEnter: AskCustomer); }
+                    Button("Send code", onPress: AskCustomer);
+                  }
+                  Hint("For their store credit or their trade prices. Without it, it is a sale like any other.");
+                }
+              }
+              Stack(gap: 2, label: "Gift card or code") {
+                Row(gap: 2, align: Align.End) {
+                  Box(grow: 1, minW: "0") { Field("Gift card or discount code", value: code, onEnter: UseCode); }
+                  Button("Use", onPress: UseCode);
+                }
+                foreach (var g in sale!.GiftCards) {
+                  Row(justify: Justify.Between, align: Align.Center, gap: 2) {
+                    Text($"Gift card …{g.Last4}, {Money(g.Available, shop)}", fontSize: FontSize.Label);
+                    Button("Remove", onPress: () => DropCard(g), size: Size.Sm, tone: Tone.Ghost);
+                  }
+                }
+              }
+              Stack(gap: 1, pt: 4, borderTW: 2, border: Colors.OnBg, label: "Total") {
+                foreach (var a in sale!.Totals.Adjustments.Where(x => x.Amount > 0)) {
+                  Row(justify: Justify.Between, gap: 2) { Text(a.Label, color: Colors.TextMuted); Text($"−{Money(a.Amount, shop)}", color: Colors.TextMuted); }
+                }
+                if (sale!.Totals.GiftCards > 0) {
+                  Row(justify: Justify.Between, gap: 2) { Text("Gift cards", color: Colors.TextMuted); Text($"−{Money(sale!.Totals.GiftCards, shop)}", color: Colors.TextMuted); }
+                }
+                if (sale!.Totals.Credit > 0) {
+                  Row(justify: Justify.Between, gap: 2) { Text("Store credit", color: Colors.TextMuted); Text($"−{Money(sale!.Totals.Credit, shop)}", color: Colors.TextMuted); }
+                }
+                Row(justify: Justify.Between, align: Align.Baseline, gap: 2) {
+                  Text("To pay", fontWeight: FontWeight.Semibold);
+                  Text(Money(sale!.Totals.ToPay, shop), fontSize: FontSize.Title, fontWeight: FontWeight.Bold, label: "To pay");
+                }
+                if (sale!.Totals.Vat > 0) { Text($"Of which VAT {Money(sale!.Totals.Vat, shop)}", color: Colors.TextMuted, fontSize: FontSize.Label); }
+              }
+              if (sale!.Totals.Problem != "") { Alert(sale!.Totals.Problem, tone: Tone.Warning); }
+              if (sale!.AgeNeeded > 0) {
+                DatePicker($"Date of birth on their ID ({sale!.AgeNeeded}+)", value: bornOn,
+                           hint: "Check their ID before you sell it.");
+              }
+              if (sale!.Totals.ToPay > 0) {
+                Stack(gap: 2, label: "How they pay") {
+                  SectionLabel("How they pay");
+                  Row(gap: 2, wrap: Wrapping.Wrap) {
+                    foreach (var p in pays) {
+                      Button(p.Label, onPress: () => PayWith(p), size: Size.Lg, tone: payKey == p.Key ? Tone.Primary : Tone.Default);
+                    }
+                  }
+                }
+              }
+              Field("Email the receipt to", value: receiptEmail, type: "email", placeholder: "Optional — it prints either way");
+              Button(sale!.Totals.ToPay > 0 ? $"Take {Money(sale!.Totals.ToPay, shop)}" : "Complete the sale", onPress: Place,
+                     tone: Tone.Primary, size: Size.Lg, disabled: sale!.Lines.Count == 0 || (sale!.Totals.ToPay > 0 && payKey == ""));
+            }
+          }
+        }
+
+        if (tab == "sale" && placed != null && paying != null && paying!.State != "paid") {
+          Stack(gap: 5, maxW: "640px", label: "Taking the money") {
+            Text($"Sale {placed!.Reference}", color: Colors.TextMuted, fontSize: FontSize.Label);
+            Text(Money(AmountDue(placed!), shop), fontSize: FontSize.Title, fontWeight: FontWeight.Bold, label: "To pay");
+            if (payKey == CounterCardKey()) {
+              Text("Charge it on the card terminal. When the terminal says approved, press Paid.", fontSize: FontSize.Subhead);
+              Field("Slip number", value: slip, placeholder: "Optional — from the terminal's slip");
+              Row(gap: 3, wrap: Wrapping.Wrap) {
+                Button("Paid", onPress: CardPaid, tone: Tone.Primary, size: Size.Lg);
+                Button("Call the sale off", onPress: CallOff, size: Size.Lg);
+              }
+            } else {
+              if (paying!.Qr != "") {
+                Box(bg: Colors.Surface, p: 4, w: "fit-content", borderW: 2, border: Colors.OnBg, label: "Code to scan") {
+                  Image(src: paying!.Qr, alt: $"Code to pay sale {placed!.Reference}", w: "260px", maxW: "100%", aspectRatio: "1 / 1");
+                }
+              }
+              Text(paying!.State == "failed" ? paying!.Message : paying!.Message == "" ? "Waiting for the payment." : paying!.Message, fontSize: FontSize.Subhead);
+              if (paying!.State == "waiting") {
+                Row(gap: 2, align: Align.Center) { Spinner(size: Size.Sm); Text("This moves on by itself once it is paid.", color: Colors.TextMuted, fontSize: FontSize.Label); }
+              }
+              Row(gap: 3, wrap: Wrapping.Wrap) {
+                if (paying!.State == "failed") { Button("Try again", onPress: TryAgain, tone: Tone.Primary, size: Size.Lg); }
+                Button("Call the sale off", onPress: CallOff, size: Size.Lg);
+              }
+            }
+          }
+        }
+
+        if (tab == "sale" && placed != null && paying != null && paying!.State == "paid") {
+          Stack(gap: 5, maxW: "640px", label: "Paid") {
+            Text("Paid. Hand it over.", fontSize: FontSize.Title, fontWeight: FontWeight.Bold);
+            Text($"Sale {placed!.Reference} · {Money(placed!.Total, shop)}", color: Colors.TextMuted);
+            Row(gap: 3, wrap: Wrapping.Wrap) {
+              if (receiptLink != "") { Link(href: receiptLink, label: "Print the receipt") { Text("Print the receipt", fontWeight: FontWeight.Semibold, color: Colors.Primary); } }
+            }
+            if (sentTo == "") {
+              Row(gap: 2, align: Align.End) {
+                Box(grow: 1, minW: "0") { Field("Email the receipt to", value: receiptEmail, type: "email"); }
+                Button("Send", onPress: MailReceipt);
+              }
+            } else {
+              Text($"The receipt is on its way to {sentTo}.", color: Colors.TextMuted);
+            }
+            Button("Next sale", onPress: NewSale, tone: Tone.Primary, size: Size.Lg);
+          }
+        }
+
+        if (tab == "returns") {
+          Stack(gap: 4, maxW: "720px", label: "Returns") {
+            Row(gap: 2, align: Align.End) {
+              Box(grow: 1, minW: "0") { Field("Sale or order number", value: lookFor, placeholder: "On the receipt", onEnter: FindSale); }
+              Button("Find", onPress: FindSale, size: Size.Lg);
+            }
+            if (back != null) {
+              Text($"{back!.Reference} · {StatusText(back!)} · {Money(back!.Total, shop)}", fontWeight: FontWeight.Semibold);
+              foreach (var l in backLines) {
+                Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 2, borderBW: 1, border: Colors.Border, label: l.Name) {
+                  Stack(gap: 0, minW: "0") {
+                    Text(l.Name);
+                    Text(l.CanReturn == 0 ? "Nothing more can come back" : $"{l.CanReturn} of {l.Bought} can come back", color: Colors.TextMuted, fontSize: FontSize.Label);
+                  }
+                  Button("Take back", onPress: () => PickBack(l), disabled: l.CanReturn == 0,
+                         tone: backLine != null && backLine!.Line!.Id == l.Line!.Id ? Tone.Primary : Tone.Default);
+                }
+              }
+              if (backLine != null) {
+                Stack(gap: 3, label: "Taking back") {
+                  NumberField("How many", value: backQuantity, min: 1, max: backLine!.CanReturn);
+                  Field("Why", value: backReason, placeholder: "Optional");
+                  if (back!.Account != null) { Checkbox("As store credit", value: backAsCredit); }
+                  Button("Take it back", onPress: TakeBack, tone: Tone.Primary, size: Size.Lg);
+                }
+              }
+              if (backDone != null) { Alert($"Taken back: {Money(backDone!.Amount, shop)}. {backDone!.Settled ?? ""}", tone: Tone.Success); }
+            }
+          }
+        }
+
+        if (tab == "today") {
+          Stack(gap: 0, role: UiRole.List, label: "Today's sales") {
+            if (today.Count == 0) { EmptyState("No sales yet today", body: "Each sale shows here as soon as it is paid or called off."); }
+            foreach (var s in today) {
+              Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 3, borderBW: 1, border: Colors.Border, role: UiRole.ListItem, label: s.Reference) {
+                Stack(gap: 0) {
+                  Text(s.Reference, fontWeight: FontWeight.Semibold);
+                  Text(s.PaidWith == "" ? s.Status : $"{s.Status} · {s.PaidWith}", color: Colors.TextMuted, fontSize: FontSize.Label);
+                }
+                Text(Money(s.Total, shop));
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

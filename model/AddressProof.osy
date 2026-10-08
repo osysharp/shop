@@ -1,0 +1,176 @@
+// Proving an address — asked for only when the store turns it on (`ShopSetup.RequireConfirmedEmail`). The mail that
+// proves it carries a LINK and a six-digit CODE; either one is enough, and using one spends the other. It is the
+// Accounts kit's proof (Osysharp.Accounts' `EmailCheck` + `OneTimeCode`) on the shop's own account, which is a principal
+// of its own — one row here carries both halves, because the shop proves nothing else (no phones, no second step).
+//
+// ⚑ EVERY CODE IS BOUNDED THREE WAYS. It is kept only as a keyed fingerprint (`Security.Fingerprint`, with a nonce of its
+//   own), so a stolen table cannot be guessed offline; it lapses in fifteen minutes and dies at its fifth wrong try (a
+//   newer mail spends the older); and a wrong one throws inside an `[AuthMethod]`, so the platform's sign-in limits
+//   count it against the caller's network and the address. Six digits is a million guesses; this makes them years.
+//
+// ⚑ THE FIRST PROOF CLAIMS THE ACCOUNT. An account made before its address was proven has a password chosen by
+//   somebody who had not shown the address is theirs — its owner, or a stranger who signed up first with it. The mail
+//   proves who HOLDS the address; only the password says whether that is who CHOSE it. So a first proof is accepted
+//   only together with the account's password (the sign-up and sign-in screens pass the one they just took) or with a
+//   NEW one — which is the owner taking the account back, every other session signed out.
+
+namespace Osysharp.Shop;
+
+/// One mailed proof of an account's address: its link's token, hashed, and its code, fingerprinted.
+///
+/// SECURITY-INVARIANT(shop-address-proof-is-hashed-short-lived-and-limited): neither half is ever stored as sent — the
+/// token as a SHA-256, the code as a keyed fingerprint with its own nonce; the code lapses after `ShopCodeLifetime()` and
+/// dies at its `ShopCodeMissesAllowed()`th wrong try, the link after `ShopProofLifetime()`; a newer proof spends every
+/// older one, and either half spends both. Only the sign-in flow reads or writes a row. Guarded by
+/// tests/confirm-email.test.osy.
+public entity ShopAddressProof {
+  [Required] ShopAccount Account;
+  /// The address it went to — a proof for an address the account has since left proves nothing.
+  [Required, MaxLength(255)] string Email;
+  [Required, Unique, MaxLength(64)] string TokenHash;
+  [Required, MaxLength(64)] string CodeHash;
+  [Required, MaxLength(40)] string Nonce;
+  /// When the link lapses.
+  DateTime ExpiresAt;
+  /// When the code lapses — much sooner: a code is guessable in a way a 32-character token is not.
+  DateTime CodeExpiresAt;
+  int Misses = 0;
+  DateTime? UsedAt;
+  security { allow read, create, update when IsShopAuthenticator; }
+}
+
+/// How long a proof's link works.
+public TimeSpan ShopProofLifetime() { return TimeSpan.FromDays(3); }
+
+/// How long a proof's code works.
+public TimeSpan ShopCodeLifetime() { return TimeSpan.FromMinutes(15); }
+
+/// Wrong tries a code survives.
+int ShopCodeMissesAllowed() { return 5; }
+
+/// Whether the shop asks a new account to prove its address before it is signed in — what the sign-up page asks, so it
+/// offers the code step instead of a ticket.
+[AllowAnonymous]
+public bool ShopProvesAddresses() {
+  return App.Setting<ShopSetup>().RequireConfirmedEmail;
+}
+
+/// Does `account` still have to prove its address before it gets a ticket?
+bool MustProveAddress(ShopAccount account) {
+  return App.Setting<ShopSetup>().RequireConfirmedEmail && account.EmailConfirmedAt == null;
+}
+
+/// Six random digits — drawn from random hex, keeping only its digit characters, so every code is equally likely.
+string ShopNewCode() {
+  var code = "";
+  while (code.Length < 6) {
+    var hex = Security.RandomHex(16);
+    for (var i = 0; i < hex.Length && code.Length < 6; i++) {
+      var c = hex.Substring(i, 1);
+      if ("0123456789".IndexOf(c) >= 0) { code = code + c; }
+    }
+  }
+  return code;
+}
+
+/// A code as it is compared: digits only (people type "123 456" and "123-456").
+string ShopCodeDigits(string code) { return code.Replace(" ", "").Replace("-", "").Trim(); }
+
+string ShopCodeFingerprint(string nonce, string code) {
+  return Security.Fingerprint("shop-address-code:" + nonce + ":" + ShopCodeDigits(code));
+}
+
+/// Mail `account` a fresh link and code that prove its address — unless one went out within the last minute, so nobody
+/// can fill a stranger's inbox from the sign-in page. A new proof spends every older one: one live code is one to guess.
+void SendShopAddressCheck(ShopAccount account) {
+  var now = DateTime.UtcNow;
+  var aMinuteAgo = now + ShopCodeLifetime() - TimeSpan.FromMinutes(1);
+  if (ShopAddressProof.Any(p => p.Account == account && p.Email == account.Email && p.UsedAt == null
+                                && p.CodeExpiresAt > aMinuteAgo)) { return; }
+  foreach (var earlier in ShopAddressProof.Where(p => p.Account == account && p.UsedAt == null).ToList()) { earlier.UsedAt = now; }
+  var token = Security.RandomId(32);
+  var code = ShopNewCode();
+  var nonce = Security.RandomId(24);
+  new ShopAddressProof {
+    Account = account, Email = account.Email, TokenHash = Crypto.Sha256Hex(token),
+    CodeHash = ShopCodeFingerprint(nonce, code), Nonce = nonce,
+    ExpiresAt = now + ShopProofLifetime(), CodeExpiresAt = now + ShopCodeLifetime(),
+  };
+  Mail(account.Email, App.Setting<ShopSetup>().Mails.ConfirmAddress(account, code, ShopLink($"/account/confirm/{token}")));
+}
+
+/// The sentence a wrong or spent code answers — one sentence for both, so it says nothing about which.
+string ShopWrongCode() { return "That code is not right, or it has expired — check the newest mail, or sign in again for a new code."; }
+
+/// Prove an address with the six-digit code its mail carried — typed on the sign-up or sign-in screen, which pass the
+/// `password` they just took (so nobody is asked twice). Answers the ticket. Throws the sentence to show for a wrong or
+/// spent code, or a password that is not the account's.
+[AuthMethod(AuthSlot.EmailVerifyCode)]
+public string ShopConfirmEmailCode(string email, string code, string password = "", string newPassword = "") {
+  var address = Normalised(email);
+  var now = DateTime.UtcNow;
+  var live = ShopAddressProof.Where(p => p.Email == address && p.UsedAt == null && p.CodeExpiresAt > now).ToList();
+  ShopAddressProof? match = null;
+  foreach (var p in live) {
+    if (p.CodeHash == ShopCodeFingerprint(p.Nonce, code)) { match = p; }
+  }
+  if (match == null) {
+    foreach (var p in live) {
+      p.Misses = p.Misses + 1;
+      if (p.Misses >= ShopCodeMissesAllowed()) { p.UsedAt = now; }
+    }
+    UnitOfWork.Commit();   // the miss is kept: the throw below would discard it
+    throw new Exception(ShopWrongCode());
+  }
+  var answer = ShopClaimAddress(match, password, newPassword);
+  if (answer.MustConfirmPassword) { throw new Exception("Type the password you chose for this account."); }
+  return answer.Ticket;
+}
+
+/// Open the link a proof mail carried. Answers `MustConfirmPassword` and proves nothing until it is asked again with the
+/// account's `password` (proven, and signed in) or a `newPassword` (whoever holds the address takes the account — see
+/// `ShopClaimAddress`). Throws the sentence to show for a link that is wrong, used or old.
+[AuthMethod(AuthSlot.EmailVerify)]
+public ShopSignInAnswer ShopConfirmEmail(string token, string password = "", string newPassword = "") {
+  var proof = ShopAddressProof.FirstOrDefault(p => p.TokenHash == Crypto.Sha256Hex(token.Trim()));
+  if (proof == null || proof.UsedAt != null || proof.ExpiresAt < DateTime.UtcNow) {
+    throw new Exception("That link has expired or was already used — sign in to have a new one sent.");
+  }
+  return ShopClaimAddress(proof, password, newPassword);
+}
+
+/// A proof of `proof.Account`'s address, as the first proof of an account with a password must be taken:
+///   - `password` is the account's: the person who made the account is the one proving it — proven, and signed in;
+///   - `newPassword`: whoever holds the address takes the account — every other session ends, the new password is set,
+///     the address is proven, and they are signed in;
+///   - neither: nothing proven and nothing spent — `MustConfirmPassword`, so the page asks for one or the other.
+///
+/// SECURITY-INVARIANT(shop-first-proof-claims-the-account): an address proven for the first time is proven ONLY together
+/// with the account's password, or by choosing a new one that signs every other session out — so a stranger who signed
+/// up first with somebody else's address loses the account to its owner the moment the owner proves it, instead of
+/// keeping a password the owner never knew of. Guarded by tests/confirm-email.test.osy.
+ShopSignInAnswer ShopClaimAddress(ShopAddressProof proof, string password, string newPassword) {
+  var account = proof.Account;
+  if (proof.Email != account.Email) { throw new Exception("That link is for an address this account no longer uses."); }
+  if (newPassword != "") {
+    if (newPassword.Length < 8) { throw new Exception("Choose a password of at least 8 characters."); }
+    Security.EndOtherSessions(account.Id);
+    account.PasswordHash = Security.HashPassword(newPassword);
+  } else if (password != "") {
+    if (!Security.VerifyPassword(password, account.PasswordHash)) {
+      throw new Exception("That is not the password this account was made with. Type it again — or, if you did not make this account or do not know its password, choose a new one.");
+    }
+  } else {
+    return new ShopSignInAnswer { MustConfirmPassword = true, Email = account.Email };
+  }
+  ProveShopAddress(account);
+  UnitOfWork.Commit();
+  return new ShopSignInAnswer { Ticket = Security.IssueJwt(account.Id, account.Email), Email = account.Email };
+}
+
+/// Mark `account`'s address proven, and spend every proof still out for it — the address is settled.
+void ProveShopAddress(ShopAccount account) {
+  var now = DateTime.UtcNow;
+  account.EmailConfirmedAt = now;
+  foreach (var p in ShopAddressProof.Where(x => x.Account == account && x.UsedAt == null).ToList()) { p.UsedAt = now; }
+}

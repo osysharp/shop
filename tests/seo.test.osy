@@ -1,0 +1,82 @@
+// What a search engine reads: the sitemap and robots.txt the store serves, and the words a product page puts in its head.
+
+using Osysharp.Shop;
+
+[Test(Floor)]
+void the_sitemap_lists_every_listed_product_and_category_and_nothing_hidden() {
+  var xml = ShopSitemap();
+  Assert.StartsWith("<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset", xml);
+  Assert.Contains("/p/loafer</loc>", xml);
+  Assert.Contains("/p/super</loc>", xml);
+  Assert.Contains("/shop/womens-shoes</loc>", xml);
+  Assert.DoesNotContain("/p/secret", xml);                                   // a draft is never listed
+}
+
+[Test(Floor)]
+void robots_keeps_crawlers_out_of_one_customers_pages_and_points_at_the_sitemap() {
+  var robots = ShopRobots();
+  Assert.Contains("Disallow: /checkout", robots);
+  Assert.Contains("Disallow: /account", robots);
+  Assert.Contains("Disallow: /staff", robots);
+  Assert.Contains("/sitemap.xml", robots);
+}
+
+[Test(Floor)]
+void a_products_head_names_it_and_the_shop_and_says_what_it_is() {
+  var loafer = Product.Single(p => p.Name == "Loafer");
+  Assert.Equal("Loafer | " + TheShop().Name, ProductHeadTitle(loafer, TheShop()));
+  Assert.EndsWith("/p/loafer", ProductUrl(loafer));
+  runas (Desk) { loafer.Summary = "Hand-stitched leather loafers."; UnitOfWork.Commit(); }
+  Assert.Equal("Hand-stitched leather loafers.", ProductHeadDescription(Product.Single(p => p.Name == "Loafer")));
+}
+
+[Test(Floor)]
+void a_products_structured_data_carries_its_price_currency_stock_and_address() {
+  var json = ProductStructuredData(Product.Single(p => p.Name == "Loafer")).ToJson();
+  Assert.Contains("\"@type\":\"Product\"", json);
+  Assert.Contains("\"name\":\"Loafer\"", json);
+  Assert.Contains("\"priceCurrency\":\"" + TheShop().Currency + "\"", json);
+  Assert.Contains("\"availability\":\"https://schema.org/InStock\"", json);
+  Assert.Contains("/p/loafer\"", json);
+}
+
+/// ⭐ READ IN SWEDISH, what a product says about itself points at its Swedish page — the structured data a search engine
+/// shows beside a Swedish result, and a Swedish feed's links — never at the English one.
+[Test(Floor)]
+void read_in_swedish_a_products_address_is_its_swedish_page() {
+  Session.SetLanguage("sv");
+  Assert.Equal("sv", Session.Language);
+  var loafer = Product.Single(p => p.Name == "Loafer");
+  Assert.EndsWith("/sv/p/loafer", ProductUrl(loafer));
+  var json = ProductStructuredData(loafer).ToJson();
+  Assert.Contains("/sv/p/loafer\"", json);
+  Session.SetLanguage("en");
+  Assert.EndsWith("/p/loafer", ProductUrl(loafer));
+  Assert.DoesNotContain("/sv/", ProductUrl(loafer));
+}
+
+[Test(Floor)]
+void a_product_that_moves_keeps_its_old_address_and_says_where_it_went() {
+  runas (Desk) {
+    var loafer = Product.Single(p => p.Slug == "loafer");
+    SetProductSlug(loafer, "Penny Loafer");                                  // made into an address
+    Assert.Equal("penny-loafer", loafer.Slug);
+    Assert.Equal("/p/penny-loafer", MovedProductPath("loafer"));
+    SetProductSlug(loafer, "classic-loafer");                                // moved twice: both old ones arrive
+    Assert.Equal("/p/classic-loafer", MovedProductPath("loafer"));
+    Assert.Equal("/p/classic-loafer", MovedProductPath("penny-loafer"));
+    Assert.Null(MovedProductPath("classic-loafer"));                          // a live address is not a move
+    Assert.Null(MovedProductPath("never-was"));
+    Assert.Contains("already lives", Assert.Throws<Exception>(() => SetProductSlug(loafer, "super")).Message);
+    SetProductSlug(loafer, "loafer");                                         // taking an old address back
+    Assert.Null(MovedProductPath("loafer"));
+    Assert.Contains("/p/loafer</loc>", ShopSitemap());
+  }
+}
+
+[Test(Floor)]
+void a_customer_cannot_move_a_product() {
+  runas (Maja) {
+    Assert.Throws<Exception>(() => SetProductSlug(Product.Single(p => p.Slug == "loafer"), "mine"));
+  }
+}

@@ -1,0 +1,14 @@
+// The store's mailing lists (`Osysharp.MailingLists`): one letter, whose readers also agreed to one bag reminder, and
+// the kit's two questions every store answers — staff run the lists, a customer sees their own address.
+
+using Osysharp.MailingLists;
+using Osysharp.Shop;
+
+app.MailingLists = new MailingListSetup {
+  Lists = [ new ListInfo { Key = "letter", Name = "The Kit Test letter", Description = "New shoes, once a month." } ],
+  Mailer = new ShopListMailer(),
+  Mails = new ShopListMails(),
+};
+
+policy RunsMailingLists => IsShopStaff;
+policy OwnsListAddress(string email) => email == user.Email;

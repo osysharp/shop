@@ -1,0 +1,251 @@
+// The desk's Wholesale tab: the price lists, the accounts on them, and the invoices not paid yet.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Ui;
+
+/// Price lists — what each takes off, its minimum and its terms, and its own prices — the business accounts on them,
+/// and the invoices waiting for their money.
+[Composable]
+[Authorize(IsShopStaff)]
+public component DeskWholesale() {
+  live var shop = ShopSettings.FirstOrDefault();
+  live var lists = PriceList.Include(l => l.Prices).OrderBy(l => l.Name).ToList();
+  live var accounts = WholesaleAccount.Include(w => w.Account).Include(w => w.PriceList).OrderBy(w => w.Company).ToList();
+  List<Order> unpaid = [];
+  // A price list being written.
+  bool editingList = false;
+  PriceList? list = null;
+  string listName = "";
+  decimal percentOff = 0;
+  decimal minimumOrder = 0;
+  int invoiceDays = 30;
+  // One list's prices open, and a price being set on it.
+  PriceList? showing = null;
+  List<PriceListPrice> prices = [];
+  bool pricing = false;
+  string search = "";
+  List<DeskPick> found = [];
+  DeskPick? pick = null;
+  decimal price = 0;
+  int minQuantity = 0;
+  // An account being made wholesale.
+  bool adding = false;
+  string who = "";
+  List<CustomerRow> customers = [];
+  ShopAccount? account = null;
+  PriceList? onList = null;
+  string vatNumber = "";
+  bool invoice = true;
+  string problem = "";
+  string said = "";
+
+  on mount { unpaid = UnpaidInvoices(); }
+
+  action NewList() { editingList = true; list = null; listName = ""; percentOff = 0; minimumOrder = 0; invoiceDays = 30; problem = ""; }
+  action EditList(PriceList l) {
+    editingList = true; list = l; listName = l.Name; percentOff = l.PercentOff; minimumOrder = l.MinimumOrder; invoiceDays = l.InvoiceDays; problem = "";
+  }
+  action SaveList() {
+    problem = "";
+    try { SavePriceList(list, listName, percentOff, minimumOrder, invoiceDays); editingList = false; }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action Show(PriceList l) { showing = l; prices = l.Prices.ToList(); }
+  action Hide() { showing = null; }
+  action AskPrice() { pricing = true; search = ""; found = []; pick = null; price = 0; minQuantity = 0; problem = ""; }
+  action Find() { found = DeskFindVariants(search); }
+  action Choose(DeskPick p) { pick = p; price = p.Price; }
+  action SavePrice() {
+    problem = "";
+    if (pick == null) { problem = "Find the size first."; return; }
+    try {
+      SetListPrice(showing!, pick!.Variant!, "", price, minQuantity);
+      pricing = false;
+      prices = PriceListPrice.Include(p => p.Variant.Product).Where(p => p.List == showing).ToList();
+    }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action RemovePrice(PriceListPrice p) {
+    SetListPrice(showing!, p.Variant, p.Currency ?? "", -1m, 0);
+    prices = PriceListPrice.Include(x => x.Variant.Product).Where(x => x.List == showing).ToList();
+  }
+  action AddAccount() { adding = true; who = ""; customers = []; account = null; onList = lists.FirstOrDefault(); vatNumber = ""; invoice = true; problem = ""; said = ""; }
+  action FindCustomer() { customers = Customers(who).Take(6).ToList(); }
+  action ChooseCustomer(ShopAccount a) { account = a; }
+  action SaveAccount() {
+    problem = "";
+    if (account == null || onList == null) { problem = "Choose the customer and the price list."; return; }
+    try { said = MakeWholesale(account!, onList!, vatNumber, invoice); adding = false; }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action End(WholesaleAccount w) { EndWholesale(w.Account); }
+  action Paid(Order o) {
+    problem = "";
+    try { MarkInvoicePaid(o, ""); unpaid = UnpaidInvoices(); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action Close() { editingList = false; pricing = false; adding = false; }
+
+  render {
+    Stack(gap: 8) {
+      if (problem != "" && !editingList && !pricing && !adding) { Alert(problem, tone: Tone.Danger); }
+      if (said != "") { Alert($"{said} now buys wholesale.", tone: Tone.Success); }
+      Stack(gap: 2, label: "Price lists") {
+        Row(justify: Justify.Between, align: Align.Center, gap: 3) {
+          SectionLabel("Price lists");
+          Button("New price list…", onPress: NewList, size: Size.Sm);
+        }
+        if (lists.Count == 0) {
+          Text("A price list gives business customers their own prices, or a percentage off, with a minimum order and invoice terms if you want them.",
+               color: Colors.TextMuted);
+        }
+        foreach (var l in lists) {
+          Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 2, borderTW: 1, border: Colors.Border, wrap: Wrapping.Wrap, label: l.Name) {
+            Stack(gap: 0, minW: "0") {
+              Text(l.Name, fontWeight: FontWeight.Semibold);
+              Text(PriceListTerms(l, shop), color: Colors.TextMuted, fontSize: FontSize.Label);
+            }
+            Row(gap: 2) {
+              Button("Prices", onPress: () => Show(l), size: Size.Sm);
+              Button("Edit…", onPress: () => EditList(l), size: Size.Sm);
+            }
+          }
+          if (showing != null && showing!.Id == l.Id) {
+            Stack(gap: 1, pl: 4, pb: 2) {
+              if (prices.Count == 0) { Text("No prices of its own: everything is the retail price less its percentage.", color: Colors.TextMuted, fontSize: FontSize.Label); }
+              foreach (var p in prices) {
+                Row(justify: Justify.Between, align: Align.Center, gap: 3, wrap: Wrapping.Wrap) {
+                  Text(VariantName(p.Variant));
+                  Row(gap: 3, align: Align.Center) {
+                    Text(MoneyIn(p.Price, p.Currency, shop) + (p.MinQuantity > 0 ? $", {p.MinQuantity} or more" : ""), color: Colors.TextMuted);
+                    Button("Remove", onPress: () => RemovePrice(p), size: Size.Sm);
+                  }
+                }
+              }
+              Row(gap: 2) {
+                Button("Set a price…", onPress: AskPrice, size: Size.Sm);
+                Button("Close", onPress: Hide, size: Size.Sm);
+              }
+            }
+          }
+        }
+      }
+      Stack(gap: 2, label: "Wholesale accounts") {
+        Row(justify: Justify.Between, align: Align.Center, gap: 3) {
+          SectionLabel("Wholesale accounts");
+          if (lists.Count > 0) { Button("Make an account wholesale…", onPress: AddAccount, size: Size.Sm); }
+        }
+        if (accounts.Count == 0) { Text("No business customers yet.", color: Colors.TextMuted); }
+        foreach (var w in accounts) {
+          Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 2, borderTW: 1, border: Colors.Border, wrap: Wrapping.Wrap, label: w.Company ?? w.Account.Email) {
+            Stack(gap: 0, minW: "0") {
+              Row(gap: 2, align: Align.Center) {
+                Text(w.Company ?? w.Account.Email, fontWeight: FontWeight.Semibold);
+                if (!w.Active) { Badge("Ended"); }
+              }
+              Text($"{w.Account.Email} · {w.VatNumber} · {w.PriceList.Name}{(w.PaysByInvoice ? " · pays by invoice" : "")}",
+                   color: Colors.TextMuted, fontSize: FontSize.Label);
+            }
+            if (w.Active) { Button("End", onPress: () => End(w), size: Size.Sm); }
+          }
+        }
+      }
+      if (unpaid.Count > 0) {
+        Stack(gap: 2, label: "Invoices to be paid") {
+          SectionLabel("Invoices to be paid");
+          foreach (var o in unpaid) {
+            Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 2, borderTW: 1, border: Colors.Border, wrap: Wrapping.Wrap, label: o.Reference) {
+              Stack(gap: 0, minW: "0") {
+                Text($"{o.Reference} · {MoneyIn(o.Total, o.Currency, shop)}");
+                Text($"{o.BuyerCompany ?? ""} · due {o.InvoiceDueAt!.Value.ToString("d MMM yyyy")}",
+                     color: o.InvoiceDueAt!.Value < DateTime.UtcNow ? Colors.Danger : Colors.TextMuted, fontSize: FontSize.Label);
+              }
+              Button("Paid", onPress: () => Paid(o), tone: Tone.Primary, size: Size.Sm);
+            }
+          }
+        }
+      }
+    }
+    if (editingList) {
+      Dialog(list == null ? "A new price list" : listName, onDismiss: Close,
+             subtitle: "Prices of its own come first; anything else is the retail price less the percentage.") {
+        Stack(gap: 4) {
+          Field("Name", value: listName, placeholder: "Cafés and restaurants");
+          Box(display: Display.Grid, cols: "repeat(auto-fit, minmax(150px, 1fr))", gap: 3) {
+            DecimalField("Percent off retail", value: percentOff, min: 0, max: 99, unit: "%");
+            DecimalField("Least order", value: minimumOrder, min: 0, hint: "0 for none");
+            NumberField("Days to pay an invoice", value: invoiceDays, min: 0, hint: "0: no invoice");
+          }
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+          Row(gap: 3, justify: Justify.End) {
+            Button("Cancel", onPress: Close);
+            Button("Save", onPress: SaveList, tone: Tone.Primary);
+          }
+        }
+      }
+    }
+    if (pricing && showing != null) {
+      Dialog($"A price on {showing!.Name}", onDismiss: Close, subtitle: "VAT included, as every price in the shop is.") {
+        Stack(gap: 4) {
+          Row(gap: 2, align: Align.End) {
+            Box(grow: 1) { Field("Product or SKU", value: search, onEnter: Find); }
+            Button("Find", onPress: Find);
+          }
+          Stack(gap: 1) {
+            foreach (var f in found) {
+              Button($"{f.Name}, {Money(f.Price, shop)}", onPress: () => Choose(f), size: Size.Sm,
+                     tone: pick != null && pick!.Name == f.Name ? Tone.Primary : Tone.Default);
+            }
+          }
+          if (pick != null) {
+            Box(display: Display.Grid, cols: "repeat(auto-fit, minmax(150px, 1fr))", gap: 3) {
+              DecimalField("Price", value: price, min: 0);
+              NumberField("Least they take", value: minQuantity, min: 0, hint: "0 for any number");
+            }
+          }
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+          Row(gap: 3, justify: Justify.End) {
+            Button("Cancel", onPress: Close);
+            Button("Save", onPress: SavePrice, tone: Tone.Primary);
+          }
+        }
+      }
+    }
+    if (adding) {
+      Dialog("Make an account wholesale", onDismiss: Close,
+             subtitle: "Its VAT number is checked against the register now. It then sees its list's prices, and nobody else does.") {
+        Stack(gap: 4) {
+          Row(gap: 2, align: Align.End) {
+            Box(grow: 1) { Field("Customer's name or email", value: who, onEnter: FindCustomer); }
+            Button("Find", onPress: FindCustomer);
+          }
+          Stack(gap: 1) {
+            foreach (var c in customers) {
+              Button(c.Account.Name == null ? c.Account.Email : $"{c.Account.Name}, {c.Account.Email}", onPress: () => ChooseCustomer(c.Account), size: Size.Sm,
+                     tone: account != null && account!.Id == c.Account.Id ? Tone.Primary : Tone.Default);
+            }
+          }
+          Dropdown("Price list", value: onList, options: lists) { l => Text(l.Name); }
+          Field("VAT number", value: vatNumber, placeholder: "SE556677889901");
+          Checkbox("Pays by invoice, with the list's terms", value: invoice);
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+          Row(gap: 3, justify: Justify.End) {
+            Button("Cancel", onPress: Close);
+            Button("Check and save", onPress: SaveAccount, tone: Tone.Primary);
+          }
+        }
+      }
+    }
+  }
+}
+
+/// A price list's terms in a line — "20 % off · orders from 300 kr · 30 days to pay".
+public string PriceListTerms(PriceList l, ShopSettings? shop) {
+  List<string> said = [];
+  said.Add(l.PercentOff > 0 ? $"{l.PercentOff:0.##} % off" : "Retail prices");
+  if (l.Prices.Count() > 0) { said.Add(l.Prices.Count() == 1 ? "1 price of its own" : $"{l.Prices.Count()} prices of its own"); }
+  if (l.MinimumOrder > 0) { said.Add($"orders from {Money(l.MinimumOrder, shop)}"); }
+  said.Add(l.InvoiceDays > 0 ? $"{l.InvoiceDays} days to pay" : "no invoice");
+  return string.Join(" · ", said);
+}

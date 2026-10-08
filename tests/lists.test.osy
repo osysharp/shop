@@ -1,0 +1,303 @@
+// The shop on the store's mailing list: the checkout's box joins the letter (confirmed from the inbox first), a campaign
+// goes to every confirmed reader once with the one-click unsubscribe, a bag left behind is reminded about once — and
+// only to a reader who agreed to it — and erasing a customer takes them off the list.
+
+using Osysharp.Shop;
+using Osysharp.MailingLists;
+using Osysharp.Workflow;
+
+/// The shop's outbox, as staff read it — subject and whether it carries the one-click unsubscribe.
+class OutMail {
+  public string Subject = "";
+  public string Text = "";
+  public string? ListUnsubscribe;
+}
+
+List<OutMail> OutboxTo(string to) {
+  List<OutMail> found = [];
+  runas (Desk) {
+    foreach (var m in ShopMail.Where(m => m.To == to).OrderBy(m => m.CreatedAt).ToList()) {
+      found.Add(new OutMail { Subject = m.Subject, Text = m.Text, ListUnsubscribe = m.ListUnsubscribe });
+    }
+  }
+  return found;
+}
+
+string ConfirmToken(string text) {
+  var at = text.IndexOf("/newsletter/confirm/");
+  Assert.True(at >= 0, $"no confirm link in: {text}");
+  var rest = text.Substring(at + "/newsletter/confirm/".Length);
+  var end = 0;
+  while (end < rest.Length && rest[end] != ' ' && rest[end] != '\n' && rest[end] != ')' && rest[end] != ']') { end = end + 1; }
+  return rest.Substring(0, end);
+}
+
+/// The bag link in the reminder `email` was sent last — the grant at the end of "Back to your bag".
+string BagLinkIn(string email) {
+  var text = OutboxTo(email).Last(m => m.Subject.StartsWith("Still thinking")).Text;
+  var at = text.IndexOf("/bag/back/");
+  Assert.True(at >= 0, $"no bag link in: {text}");
+  var rest = text.Substring(at + "/bag/back/".Length);
+  var end = 0;
+  while (end < rest.Length && rest[end] != ' ' && rest[end] != '\n' && rest[end] != ')' && rest[end] != ']') { end = end + 1; }
+  return rest.Substring(0, end);
+}
+
+/// Maja, on the letter, leaves a Loafer (38) in her bag. (The test then lets a day pass and calls `RemindedLink`.)
+void MajaLeavesHerBag(string visit) {
+  JoinsTheLetter("maja@example.test");
+  runas (Maja) { Bag(visit, "Loafer", "38", 1); }
+}
+
+/// The reminders whose wait is over go out — answers the bag link in the one Maja got last.
+string RemindedLink() {
+  runas (Desk) { foreach (var r in BagReminder.ToList()) { Workflow.Settle(r); } }
+  return BagLinkIn("maja@example.test");
+}
+
+/// What a function holding a bag link can read of whose bag it is: the bag's own details about her, her account, the
+/// contact on her orders and her place on the list. `-` for a column that reads as nothing.
+[AllowAnonymous] string WhatTheLinkSeesOfHer(ResumeBag link) {
+  var bag = link.Row;
+  return $"{bag.VisitId ?? "-"}|{bag.BuyerCompany ?? "-"}|{(bag.BuyerBornOn == null ? "-" : "born")}|{bag.PickupPointName ?? "-"}"
+       + $"|{(bag.Owner != null && bag.Owner!.Email == "maja@example.test" ? "her email" : "-")}|{ShopAccount.Count()}|{OrderContact.Count()}|{ListSubscriber.Count()}"
+       + $"|{bag.Lines.Count()} line";
+}
+
+/// `email` ticks the checkout's box and confirms from the mail it gets.
+void JoinsTheLetter(string email) {
+  Assert.Equal("", JoinNewsletterAtCheckout(email));
+  var confirm = OutboxTo(email).Last(m => m.Subject.StartsWith("Confirm your subscription"));
+  Assert.Equal("", ConfirmSubscription(ListConfirmation.From(ConfirmToken(confirm.Text))));
+}
+
+[Test(Floor)]
+void the_checkout_box_asks_for_confirmation_with_the_words_it_showed() {
+  Assert.Equal("Yes, send me The Kit Test letter, and one reminder if I leave something in my bag. I can leave at any time.",
+               NewsletterWords());
+  Assert.Equal("", JoinNewsletterAtCheckout("maja@example.test"));
+  var mails = OutboxTo("maja@example.test");
+  Assert.Equal(1, mails.Count);
+  Assert.Equal("Confirm your subscription to The Kit Test letter", mails[0].Subject);
+  Assert.Contains("Kit Test Shop", mails[0].Text);                         // in the shop's own frame
+  Assert.Null(mails[0].ListUnsubscribe);
+  runas (Desk) {
+    var consent = ListConsent.Single(c => c.Kind == ConsentKind.Given);
+    Assert.Equal("checkout", consent.Source);
+    Assert.Equal(NewsletterWords(), consent.Words);
+    Assert.Equal(0, ReadersOf("letter").Count);                            // nothing until it is confirmed
+  }
+  Assert.Equal("", ConfirmSubscription(ListConfirmation.From(ConfirmToken(mails[0].Text))));
+  runas (Desk) { Assert.Equal(1, ReadersOf("letter").Count); }
+  // Maja, signed in, sees her own address on the list — and nobody else's.
+  runas (Maja) {
+    Assert.True(ListChoicesFor("maja@example.test").Single(c => c.Key == "letter").On);
+    Assert.Equal(1, ListSubscriber.Count());
+  }
+  runas (Olle) { Assert.Equal(0, ListSubscriber.Count()); }
+}
+
+[Test(Floor)]
+void a_campaign_goes_to_each_confirmed_reader_once_with_the_one_click_unsubscribe() {
+  JoinsTheLetter("maja@example.test");
+  JoinsTheLetter("olle@example.test");
+  Assert.Equal("", JoinNewsletterAtCheckout("waiting@example.test"));        // never confirms
+  runas (Desk) {
+    var id = NewShopCampaign("Autumn at the shop");
+    var campaign = ShopCampaign.Single(c => c.Id == id);
+    campaign.Body = "Hello {subscriber.firstname}, new boots are in.";
+    UnitOfWork.Commit();
+    var first = SendShopCampaign(id, "letter");
+    Assert.Equal("", first.Problem);
+    Assert.Equal(2, first.Sent);
+    Assert.Equal(1, first.Skipped);
+    var again = SendShopCampaign(id, "letter");                              // pressed twice
+    Assert.Equal(0, again.Sent);
+    Assert.Equal(2, again.AlreadySent);
+    Assert.Equal(ShopCampaignState.Sent, ShopCampaign.Single(c => c.Id == id).State);
+  }
+  var got = OutboxTo("maja@example.test").Where(m => m.Subject == "Autumn at the shop").ToList();
+  Assert.Equal(1, got.Count);
+  Assert.Contains("Hello Maja, new boots are in.", got[0].Text);
+  Assert.Contains("/lists/leave/", got[0].ListUnsubscribe!);                // the header a mail client offers
+  Assert.Contains("/newsletter/", got[0].Text);                             // and the footer's own link
+  Assert.Equal(0, OutboxTo("waiting@example.test").Count(m => m.Subject == "Autumn at the shop"));
+  // Only staff send.
+  runas (Maja) { Assert.Throws<Exception>(() => SendShopCampaign(Guid.NewGuid(), "letter")); }
+}
+
+[Test(Floor)]
+void a_bag_left_behind_is_reminded_about_once_and_only_to_a_reader_who_agreed() {
+  JoinsTheLetter("maja@example.test");
+  runas (Maja) { Bag("v-maja", "Loafer", "38", 1); }
+  runas (Olle) { Bag("v-olle", "Chelsea", "38", 1); }                       // never agreed to anything
+  TestClock.Advance(TimeSpan.FromHours(23));
+  runas (Desk) { foreach (var r in BagReminder.ToList()) { Workflow.Settle(r); } }
+  Assert.Equal(0, OutboxTo("maja@example.test").Count(m => m.Subject.StartsWith("Still thinking")));   // not yet
+  TestClock.Advance(TimeSpan.FromHours(2));
+  runas (Desk) { foreach (var r in BagReminder.ToList()) { Workflow.Settle(r); } }
+  var reminders = OutboxTo("maja@example.test").Where(m => m.Subject.StartsWith("Still thinking")).ToList();
+  Assert.Equal(1, reminders.Count);
+  Assert.Contains("Loafer (38)", reminders[0].Text);
+  // The way back to the bag — there even though this shop never filled in its "Web address" (SiteUrl), and an
+  // ADDRESS a mail client can open, though the reminder is written by a workflow that runs with no request. It opens
+  // THIS bag on any device: the bag is her account's, and the phone she reads mail on is not signed in.
+  Assert.Contains("Back to your bag: http", reminders[0].Text);
+  Assert.Contains("/bag/back/g1.", reminders[0].Text);
+  Assert.Contains("/lists/leave/", reminders[0].ListUnsubscribe!);
+  Assert.Equal(0, OutboxTo("olle@example.test").Count(m => m.Subject.StartsWith("Still thinking")));
+
+  // One reminder: she changes the bag and leaves it again — nothing more.
+  runas (Maja) { Bag("v-maja", "Loafer", "39", 1); }
+  TestClock.Advance(TimeSpan.FromHours(30));
+  runas (Desk) { foreach (var r in BagReminder.ToList()) { Workflow.Settle(r); } }
+  Assert.Equal(1, OutboxTo("maja@example.test").Count(m => m.Subject.StartsWith("Still thinking")));
+}
+
+[Test(Floor)]
+void a_bag_that_was_ordered_is_never_reminded_about() {
+  JoinsTheLetter("maja@example.test");
+  runas (Maja) {
+    Bag("v-maja", "Loafer", "38", 1);
+    Checkout("v-maja");
+  }
+  TestClock.Advance(TimeSpan.FromHours(30));
+  runas (Desk) { foreach (var r in BagReminder.ToList()) { Workflow.Settle(r); } }
+  Assert.Equal(0, OutboxTo("maja@example.test").Count(m => m.Subject.StartsWith("Still thinking")));
+}
+
+[Test(Floor)]
+void a_bag_touched_again_waits_from_its_last_change() {
+  JoinsTheLetter("maja@example.test");
+  runas (Maja) { Bag("v-maja", "Loafer", "38", 1); }
+  TestClock.Advance(TimeSpan.FromHours(20));
+  runas (Maja) { Bag("v-maja", "Chelsea", "38", 1); }                        // back, and gone again
+  TestClock.Advance(TimeSpan.FromHours(5));
+  runas (Desk) { foreach (var r in BagReminder.ToList()) { Workflow.Settle(r); } }
+  Assert.Equal(0, OutboxTo("maja@example.test").Count(m => m.Subject.StartsWith("Still thinking")));   // 5h since
+  TestClock.Advance(TimeSpan.FromHours(20));
+  runas (Desk) { foreach (var r in BagReminder.ToList()) { Workflow.Settle(r); } }
+  Assert.Equal(1, OutboxTo("maja@example.test").Count(m => m.Subject.StartsWith("Still thinking")));
+}
+
+[Test(Floor)]
+void erasing_a_customer_takes_them_off_the_list() {
+  JoinsTheLetter("maja@example.test");
+  runas (Maja) { EraseMyAccount(); }
+  runas (Desk) {
+    foreach (var e in ShopErasure.ToList()) { Workflow.Settle(e); }
+    Assert.False(ListSubscriber.Any(s => s.Email == "maja@example.test"));
+    Assert.Equal(0, ReadersOf("letter").Count);
+  }
+}
+
+[Test(Floor)]
+void the_reminders_link_brings_the_bag_to_a_device_nobody_signed_in_on() {
+  runas (new Visitor { Id = "v-maja-phone" }) {
+    MajaLeavesHerBag("v-maja-laptop");
+    TestClock.Advance(TimeSpan.FromHours(25));
+    var link = RemindedLink();
+    runas (Desk) {                                                             // the price moved since she bagged it
+      Product.Single(p => p.Name == "Loafer").Price = 110m;
+      UnitOfWork.Commit();
+    }
+    // Her phone: a fresh visit, nobody signed in. The link shows what she left, at today's price…
+    Ui.Viewport(390, 844);
+    Ui.Visit("/bag/back/" + link);
+    Assert.Visible("Your bag, as you left it");
+    Assert.Visible("Loafer (38)");
+    Assert.Visible("€110");
+    Assert.Hidden("maja@example.test");
+    Assert.NoOverflow();
+    Ui.Shot("a bag link, on a phone");
+    // …and one press puts it in THIS device's bag, and goes there.
+    Ui.Click("Put these in my bag");
+    Assert.Visible("In the bag: Loafer (38) × 1 at €110");
+
+    // The same, as functions: priced and checked as adding to the bag is, and pressed twice nothing doubles.
+    Assert.Equal("", BringBagHere(ResumeBag.From(link)));
+    Assert.Equal("", BringBagHere(ResumeBag.From(link)));
+    var phone = Bag.Single(b => b.VisitId == "v-maja-phone");
+    Assert.Equal(1, phone.Lines.Single().Quantity);
+    Assert.Equal(110m, phone.Lines.Single().PriceWhenAdded);
+    Assert.Equal(1, BagToResume(ResumeBag.From(link)).Lines.Count);                     // the link still opens her bag
+    runas (Maja) { Assert.Equal(1, Bag.Single(b => b.Owner == Maja).Lines.Count()); }   // hers is as she left it
+
+    // Signed in as her on the phone, the link is simply her bag.
+    runas (Maja) { Assert.True(BagToResume(ResumeBag.From(link)).Yours); }
+    runas (Olle) { Assert.False(BagToResume(ResumeBag.From(link)).Yours); }
+  }
+}
+
+[Test(Floor)]
+void what_has_gone_since_stays_behind_and_says_so() {
+  runas (new Visitor { Id = "v-phone-gone" }) {
+    MajaLeavesHerBag("v-maja-gone");
+    TestClock.Advance(TimeSpan.FromHours(25));
+    var link = RemindedLink();
+    runas (Desk) {
+      Pick("Loafer", "38").Stock = 0;
+      UnitOfWork.Commit();
+    }
+    var view = BagToResume(ResumeBag.From(link));
+    Assert.Equal("Sold out", view.Lines.Single().Problem);
+    Assert.Equal(0m, view.Total);
+    Assert.Contains("Loafer (38): sold out", BringBagHere(ResumeBag.From(link)));
+    Assert.Equal(0, BagCount());
+  }
+}
+
+[Test(Floor)]
+void a_bag_link_reads_the_bag_and_nothing_of_whose_it_is() {
+  runas (new Visitor { Id = "v-guest" }) {
+    // Maja has ordered before (so her orders carry her contact), is on the list, and got as far as the checkout's
+    // details on the bag she left: a company, a date of birth, a point to collect from.
+    runas (Maja) { Buy("v-maja-before", "Chelsea", "38", 1); }
+    MajaLeavesHerBag("v-maja-details");
+    TestClock.Advance(TimeSpan.FromHours(25));
+    var link = RemindedLink();
+    runas (Desk) {
+      var bag = Bag.Single(b => b.Owner == Maja);
+      bag.BuyerCompany = "Berg Skor AB";
+      bag.BuyerBornOn = new DateOnly(1990, 4, 2);
+      bag.PickupPointName = "ICA Hornstull";
+      UnitOfWork.Commit();
+    }
+    // The link reads the bag's one line. Of HER: nothing — not the visit it was last seen on, not what she gave at the
+    // checkout, not her account, not the contact on her order, not her place on the list.
+    Assert.Equal("-|-|-|-|-|0|0|0|1 line", WhatTheLinkSeesOfHer(ResumeBag.From(link)));
+    // …and it is still all hers to read, and a guest's own bag is still its visitor's.
+    runas (Maja) {
+      var mine = Bag.Single(b => b.Owner == Maja);
+      Assert.Equal("Berg Skor AB", mine.BuyerCompany);
+      Assert.Equal("v-maja-details", mine.VisitId);
+    }
+    SetBirthDate(new DateOnly(1985, 1, 1));
+    Assert.Equal(new DateOnly(1985, 1, 1), Bag.Single(b => b.VisitId == "v-guest").BuyerBornOn);
+    // Anybody else's link opens nothing; a link of another kind for the same row neither.
+    Assert.Throws<NotAuthorized>(() => ResumeBag.From(link.Substring(0, link.Length - 4) + (link.EndsWith("AAAA") ? "BBBB" : "AAAA")));
+  }
+}
+
+[Test(Floor)]
+void a_bag_link_stops_working_once_the_bag_is_ordered_or_emptied() {
+  MajaLeavesHerBag("v-maja-order");
+  TestClock.Advance(TimeSpan.FromHours(25));
+  var first = RemindedLink();
+  Assert.Equal(1, BagToResume(ResumeBag.From(first)).Lines.Count);
+  runas (Maja) { Checkout("v-maja-order"); }                                 // ordered
+  Assert.Throws<NotAuthorized>(() => ResumeBag.From(first));
+  Ui.Visit("/bag/back/" + first);
+  Assert.Visible("This link has expired or is not valid.");
+  Assert.Hidden("Your bag, as you left it");
+
+  // Filled and left again, she is reminded once more — and emptying the bag takes that link back too.
+  TestClock.Advance(TimeSpan.FromHours(1));
+  runas (Maja) { Bag("v-maja-order", "Loafer", "39", 1); }
+  TestClock.Advance(TimeSpan.FromHours(25));
+  var second = RemindedLink();
+  Assert.NotEqual(first, second);
+  Assert.Equal(1, BagToResume(ResumeBag.From(second)).Lines.Count);
+  runas (Maja) { RemoveFromBag(Bag.Single(b => b.Owner == Maja).Lines.Single()); }
+  Assert.Throws<NotAuthorized>(() => ResumeBag.From(second));
+}

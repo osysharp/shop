@@ -1,0 +1,265 @@
+// The counter (Counter.osy): a sale rung up in the shop — scanned in, paid on the terminal, by a card reader or with a
+// customer's credit brought in by their own code — is an ORDER like the web's, handed over the moment it is paid; and
+// goods come back over the same counter. A clerk sells at their own counter and sees no money beyond the sale.
+
+using Osysharp.Http;
+using Osysharp.Payments;
+using Osysharp.Shop;
+using Osysharp.Payments.Stripe;
+using Osysharp.Workflow;
+
+/// The clerk's sale of one `product`/`size`, rung up at a shop without locations and paid on the shop's own terminal.
+/// Answers the order, settled.
+Order SoldByCard(string product, string size) {
+  var reference = "";
+  runas (Clerk) {
+    var bag = StartCounterSale(null);
+    AddToCounterSale(bag, Pick(product, size), 1);
+    var order = PlaceCounterSale(bag, CounterCardKey(), false, "", null);
+    CardPaidAtCounter(order, "");
+    reference = order.Reference;
+  }
+  runas (Desk) {
+    var o = Order.Single(x => x.Reference == reference);
+    Workflow.Settle(o);
+    return o;
+  }
+}
+
+[Test(Floor)]
+void a_counter_sale_is_an_order_priced_paid_and_handed_over_at_the_counter() {
+  runas (Desk) { Pick("Loafer", "38").Barcode = "7350000000017"; UnitOfWork.Commit(); }
+  var reference = "";
+  runas (Clerk) {
+    var bag = StartCounterSale(null);
+    // A scanner types the barcode and Enter.
+    Assert.Equal("Loafer (38)", ScanIntoCounterSale(bag, "7350000000017"));
+    Assert.Contains("Nothing on sale has the code", Assert.Throws<Exception>(() => ScanIntoCounterSale(bag, "0000000000000")).Message);
+    Assert.Equal(120m, CounterSale(bag, false).Totals.ToPay);
+    Assert.Equal(new List<string> { "Card on the terminal", "Card on the reader" }, CounterPaymentsFor(bag).Select(c => c.Label).ToList());
+    var order = PlaceCounterSale(bag, CounterCardKey(), false, "", null);
+    Assert.Equal(OrderStatus.Reserved, order.Status);
+    CardPaidAtCounter(order, "4711");
+    reference = order.Reference;
+  }
+  runas (Desk) {
+    var o = Order.Single(x => x.Reference == reference);
+    Workflow.Settle(o);
+    // An order like any other: priced by the shop, invoiced when paid, its VAT per rate — and handed over at once.
+    Assert.Equal(OrderStatus.Delivered, o.Status);
+    Assert.True(o.AtCounter);
+    Assert.False(o.PlacedByShop);
+    Assert.Equal("cia@shop.test", o.SoldBy!.Email);
+    Assert.Equal(CounterCardKey(), o.PaymentMethod);
+    Assert.Equal("Card on the terminal, slip 4711", o.PaidWith);
+    Assert.Equal("Sold at the counter", o.DeliveryLabel);
+    Assert.NotNull(o.DeliveredAt);
+    Assert.Equal(1, Invoice.Count(i => i.Order == o));
+    Assert.True(o.VatRates.Count() > 0);
+    // Sold: out of stock, nothing held for it.
+    Assert.Equal(1, Pick("Loafer", "38").Stock);
+    Assert.Equal(0, Pick("Loafer", "38").Reserved);
+    // Nobody gave an address: nothing is mailed, to them or to the shop.
+    Assert.Equal(0, ShopMail.Count());
+  }
+  runas (Clerk) {
+    var o = Order.Single(x => x.Reference == reference);
+    Assert.NotEqual("", CounterReceiptLink(o));
+    Assert.Equal(new List<string> { reference }, CounterSalesToday(null).Select(s => s.Reference).ToList());
+    // …and the clerk sees no money beyond the sale: not its invoice, not the desk's refund.
+    Assert.Equal(0, Invoice.Count());
+    Assert.Throws<Exception>(() => RefundOrder(o, "", true));
+  }
+}
+
+[Test(Floor)]
+void a_sale_the_customer_does_not_pay_is_called_off_and_its_goods_go_back() {
+  var reference = "";
+  runas (Clerk) {
+    var bag = StartCounterSale(null);
+    AddToCounterSale(bag, Pick("Chelsea", "38"), 1);
+    Assert.Contains("only 1", Assert.Throws<Exception>(() => AddToCounterSale(bag, Pick("Chelsea", "38"), 1)).Message);
+    var order = PlaceCounterSale(bag, CounterCardKey(), false, "", null);
+    reference = order.Reference;
+    CancelCounterSale(order);
+  }
+  runas (Desk) {
+    var o = Order.Single(x => x.Reference == reference);
+    Workflow.Settle(o);
+    Assert.Equal(OrderStatus.Cancelled, o.Status);
+    Assert.Equal(1, Pick("Chelsea", "38").Stock);
+  }
+}
+
+// SECURITY-INVARIANT(a-counter-sells-only-at-its-location) and
+// SECURITY-INVARIANT(a-counter-sees-only-its-own-counters-collections) are guarded here.
+[Test(Floor)]
+void a_clerk_sells_only_at_their_own_counter() {
+  var w = Warehouse();
+  Move("Loafer", "38", w, 1);
+  runas (Desk) { LimitCounter(ShopAccount.Single(a => a.Email == "cia@shop.test"), Counter()); }
+  Bag("v-at-counter-c", "Loafer", "38", 1);
+  var collected = PlaceTo("v-at-counter-c", "collect");
+  Bag("v-by-post-c", "Loafer", "38", 1);
+  var parcel = PlaceTo("v-by-post-c", "courier");
+  runas (Clerk) {
+    Assert.Equal(new List<string> { "The counter" }, MyCounters().Select(l => l.Name).ToList());
+    Assert.Contains("You do not sell at", Assert.Throws<Exception>(() => StartCounterSale(w)).Message);
+    // Not by writing the row either.
+    Assert.Denied(() => { new Bag { AtCounter = true, SoldAt = w }; UnitOfWork.Commit(); });
+    var bag = StartCounterSale(Counter());
+    Assert.Equal(1, Bag.Count(b => b.AtCounter));
+    // It reads what its counter hands over — the collection — and no parcel's order, nor where a parcel goes.
+    Assert.Equal(new List<string> { collected.Reference }, Order.ToList().Select(o => o.Reference).ToList());
+    Assert.Equal(1, OrderContact.Count());
+    Assert.Null(CounterFindSale(parcel.Reference));
+  }
+  // A clerk for every counter sells at the warehouse's too; still no parcel.
+  runas (Desk) { LimitCounter(ShopAccount.Single(a => a.Email == "cia@shop.test"), null); }
+  runas (Clerk) {
+    Assert.Equal(2, MyCounters().Count);
+    Assert.Equal(1, Order.Count());
+  }
+}
+
+// SECURITY-INVARIANT(a-customer-joins-a-counter-sale-only-by-their-code) is guarded here.
+[Test(Floor)]
+void a_customer_joins_a_sale_only_with_the_code_mailed_to_them() {
+  ShopAccount? maja = null;
+  runas (Desk) {
+    maja = ShopAccount.Single(a => a.Email == "maja@example.test");
+    GrantCredit(maja!, 50m, "For the wait");
+  }
+  Bag? bag = null;
+  runas (Clerk) {
+    bag = StartCounterSale(null);
+    AddToCounterSale(bag!, Pick("Loafer", "39"), 1);
+    // The clerk cannot name the customer — nor put their account on a sale themselves.
+    Assert.Denied(() => { new CounterCustomer { Bag = bag!, Email = "maja@example.test", ServedBy = Session.CurrentUser!, Account = maja }; UnitOfWork.Commit(); });
+    Assert.Denied(() => { new Order { Reference = "KT-FORGED", Fulfilment = Fulfilment.Collect, DeliveryMethod = "counter", PaymentMethod = "counter-card",
+                                      Account = maja, AtCounter = true, SoldBy = Session.CurrentUser, PlacedAt = DateTime.UtcNow }; UnitOfWork.Commit(); });
+    var asked = AskForCustomer(bag!, "maja@example.test");
+    Assert.Equal("code-sent", asked.State);
+    var wrong = ConfirmCustomer(asked.Ask!, "AAAAAA");
+    Assert.Equal("code-sent", wrong.State);
+    Assert.Equal("That is not the code we mailed.", wrong.Problem);
+    Assert.Equal("", CounterSale(bag!, true).Customer);
+    Assert.Equal(0m, CounterSale(bag!, true).CreditUsed);
+  }
+  var code = "";
+  runas (Desk) {
+    var mail = ShopMail.Single(m => m.To == "maja@example.test" && m.Subject.StartsWith("Your code at"));
+    code = mail.Subject.Substring(mail.Subject.Length - 6);
+  }
+  var reference = "";
+  runas (Clerk) {
+    var right = ConfirmCustomer(CounterCustomer.Single(), code.ToLower());
+    Assert.Equal("confirmed", right.State);
+    Assert.Equal(50m, right.CreditBalance);
+    var sale = CounterSale(bag!, true);
+    Assert.Equal("Maja Berg", sale.Customer);
+    Assert.Equal(50m, sale.CreditUsed);
+    Assert.Equal(70m, sale.Totals.ToPay);
+    var order = PlaceCounterSale(bag!, CounterCardKey(), true, "", null);
+    CardPaidAtCounter(order, "");
+    reference = order.Reference;
+  }
+  runas (Desk) {
+    var o = Order.Single(x => x.Reference == reference);
+    Workflow.Settle(o);
+    Assert.Equal(OrderStatus.Delivered, o.Status);
+    // Her account — put on the order by its workflow, never by the clerk — her credit spent, and her receipt mailed.
+    Assert.Equal("maja@example.test", o.Account!.Email);
+    Assert.Equal(50m, o.CreditUsed);
+    Assert.Equal(0m, CreditBalanceOf(maja));
+    Assert.Equal(CounterCustomerStatus.Closed, CounterCustomer.Single().Status);
+    Assert.Equal(1, ShopMail.Count(m => m.To == "maja@example.test" && m.Subject.StartsWith($"Collected — order {reference}")));
+  }
+}
+
+HttpResponse Intent(string id, string status, string reference, long amount) {
+  return new HttpResponse { StatusCode = 200, Body = "{\"id\":\"" + id + "\",\"status\":\"" + status + "\",\"amount\":" + Convert.ToString(amount)
+    + ",\"currency\":\"eur\",\"metadata\":{\"reference\":\"" + reference + "\"}}" };
+}
+
+HttpResponse Reader(string status) {
+  return new HttpResponse { StatusCode = 200, Body = "{\"id\":\"tmr_counter\",\"status\":\"online\",\"action\":{\"type\":\"process_payment_intent\","
+    + "\"status\":\"" + status + "\",\"process_payment_intent\":{\"payment_intent\":\"pi_counter\"}}}" };
+}
+
+[Test(Floor)]
+void a_card_on_the_reader_is_paid_only_when_stripe_says_so_and_goes_back_through_stripe() {
+  // [reference, intent status, the reference the intent carries]
+  var said = new List<string> { "", "requires_payment_method", "" };
+  var posted = new List<string>();
+  Http.Post.Stub((url, body) => {
+    posted.Add(url + " " + body);
+    if (url.Contains("/v1/refunds")) { return new HttpResponse { StatusCode = 200, Body = "{\"id\":\"re_counter\",\"status\":\"succeeded\"}" }; }
+    return url.Contains("/terminal/readers/") ? Reader("in_progress") : Intent("pi_counter", said[1], said[2], 19000);
+  });
+  Http.Get.Stub((url, headers) => url.Contains("/terminal/readers/") ? Reader("in_progress") : Intent("pi_counter", said[1], said[2], 19000));
+  Order? order = null;
+  runas (Clerk) {
+    var bag = StartCounterSale(null);
+    AddToCounterSale(bag, Pick("Chelsea", "38"), 1);
+    order = PlaceCounterSale(bag, "stripe-terminal", false, "", null);
+    said[0] = order!.Reference;
+    said[2] = order!.Reference;
+    Assert.Equal("stripe", order!.PaymentMethod);
+    Assert.Equal("Card on the reader", order!.PaymentLabel);
+    var started = StartCounterPayment(order!, "stripe-terminal");
+    Assert.Equal("waiting", started.State);
+    Assert.Equal("Tap, insert or swipe the card on the reader.", started.Message);
+    Assert.Contains(posted, p => p.Contains("/v1/terminal/readers/tmr_counter/process_payment_intent") && p.Contains("pi_counter"));
+    Assert.Contains(posted, p => p.Contains("card_present") && p.Contains("amount=19000"));
+    // A card paid for ANOTHER sale is not this one's.
+    said[1] = "succeeded";
+    said[2] = "KT-OTHER";
+    Assert.Equal("failed", CounterPayState(order!).State);
+    // Stripe says it: paid, and handed over.
+    said[2] = order!.Reference;
+    Assert.Equal("paid", CounterPayState(order!).State);
+  }
+  runas (Desk) {
+    var o = Order.Single(x => x.Reference == said[0]);
+    Workflow.Settle(o);
+    Assert.Equal(OrderStatus.Delivered, o.Status);
+    Assert.Equal("pi_counter", o.PaymentRef);
+  }
+  // Brought back over the counter: refunded by Stripe, the goods back on the shelf.
+  runas (Clerk) {
+    var o = Order.Single(x => x.Reference == said[0]);
+    var line = CounterReturnLines(o).Single();
+    Assert.Equal(1, line.CanReturn);
+    var back = TakeBackAtCounter(o, [new CounterBack { Line = line.Line, Quantity = 1 }], "Too small", false, true);
+    Assert.Equal(190m, back.Amount);
+    Assert.Equal(0m, back.ByHand);
+    Assert.Contains("back to their Card on the reader", back.Settled);
+  }
+  runas (Desk) {
+    Assert.Contains(posted, p => p.Contains("/v1/refunds") && p.Contains("pi_counter"));
+    Assert.Equal(1, Pick("Chelsea", "38").Stock);
+    Assert.Equal(1, CreditNote.Count());
+  }
+}
+
+[Test(Floor)]
+void goods_come_back_over_the_counter_and_a_terminal_card_is_given_back_on_the_terminal() {
+  var o = SoldByCard("Loafer", "39");
+  runas (Clerk) {
+    var line = CounterReturnLines(o).Single();
+    var back = TakeBackAtCounter(o, [new CounterBack { Line = line.Line, Quantity = 1 }], "", false, true);
+    Assert.Equal(120m, back.Amount);
+    Assert.Equal(120m, back.ByHand);
+    Assert.Contains("back on the card terminal", back.Settled);
+    // Nothing more of it can come back.
+    Assert.Equal(0, CounterReturnLines(o).Single().CanReturn);
+    Assert.Throws<Exception>(() => TakeBackAtCounter(o, [new CounterBack { Line = line.Line, Quantity = 1 }], "", false, true));
+    // Store credit needs an account to keep it on.
+    Assert.Equal(1, Pick("Loafer", "39").Stock);
+  }
+  runas (Desk) {
+    Assert.Equal(1, CreditNote.Count());
+    Assert.Equal(1, ReturnRequest.Count(r => r.Status == ReturnStatus.Refunded));
+  }
+}

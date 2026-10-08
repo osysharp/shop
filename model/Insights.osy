@@ -1,0 +1,151 @@
+// What the shop can learn from itself: what sells, what people look at, and what sits. No personal data — a view is a
+// count per product per day, never a person.
+
+namespace Osysharp.Shop;
+
+/// How many times a product's page was opened on one day.
+///
+/// ⚑ A COUNT, NOT A LOG. One row per product per day, raised in place, so a busy page costs one small row a day rather
+///   than one per visit, and nothing here can say who looked. Two first views racing may each start a row for the day;
+///   the statistics sum them, so nothing is lost and nothing needs a lock.
+public entity ProductDayViews {
+  [Required] Product Product;
+  DateTime Day;
+  int Count;
+  security {
+    allow create, update when IsAnonymous || IsAuthenticated;   // a visitor's page open counts itself — nothing more
+    allow read, delete when IsShopStaff;
+  }
+}
+
+/// Counts one opening of a product's page. The product page calls it; it answers nothing and never fails the page.
+[AllowAnonymous]
+public void ViewedProduct(Product product) {
+  var today = DateTime.UtcNow.Date;
+  var raised = ProductDayViews.Where(v => v.Product == product && v.Day == today).Update(v => { v.Count = v.Count + 1; });
+  if (raised == 0) {
+    new ProductDayViews { Product = product, Day = today, Count = 1 };
+    UnitOfWork.Commit();
+  }
+}
+
+/// One product's figures over a period.
+public class ProductFigures {
+  public Product Product;
+  public int Units;
+  public decimal Revenue;
+  public int Views;
+  /// Orders per hundred views, when there were views — the page that is looked at and not bought is the one to fix.
+  public decimal Conversion;
+}
+
+/// The best sellers over the last `days`, by units sold in paid orders — with each one's revenue, views and conversion.
+[Authorize(IsShopStaff)]
+public List<ProductFigures> TopSellers(int days, int count) {
+  var figures = FiguresSince(DateTime.UtcNow.AddDays(-days));
+  return figures.Where(f => f.Units > 0).OrderByDescending(f => f.Units).ThenByDescending(f => f.Revenue).Take(count).ToList();
+}
+
+/// The most looked-at products over the last `days`, with how many of the looks became sales.
+[Authorize(IsShopStaff)]
+public List<ProductFigures> MostViewed(int days, int count) {
+  var figures = FiguresSince(DateTime.UtcNow.AddDays(-days));
+  return figures.Where(f => f.Views > 0).OrderByDescending(f => f.Views).Take(count).ToList();
+}
+
+/// Listed products with stock that have not sold in `days` — what to promote or mark down, longest-sitting first.
+[Authorize(IsShopStaff)]
+public List<Product> SlowMovers(int days, int count) {
+  var since = DateTime.UtcNow.AddDays(-days);
+  var sold = OrderLine.Where(l => l.Order.PaidAt != null && l.Order.PlacedAt >= since).Select(l => l.Variant.Product.Id).ToList();
+  return Product.Where(p => p.Status == ProductStatus.Listed && p.CreatedAt < since).OrderBy(p => p.CreatedAt).ToList()
+    .Where(p => !sold.Contains(p.Id) && p.Variants.ToList().Any(v => v.Stock > 0))
+    .Take(count).ToList();
+}
+
+/// What paid orders brought in over the last `days` — the headline numbers for the desk.
+public class ShopTotals {
+  public int Orders;
+  public decimal Revenue;
+  public decimal AverageOrder;
+  public int Returns;
+  public decimal Refunded;
+  /// What the goods sold brought in without VAT and after discounts, less what they cost the shop — over the sizes
+  /// that have a cost price. `MarginPercent` is that of their revenue; `CostedPercent` how much of the period's goods
+  /// revenue had a cost to measure against, so a margin over half the sales says so.
+  public decimal Margin;
+  public decimal MarginPercent;
+  public decimal CostedPercent;
+}
+
+[Authorize(IsShopStaff)]
+public ShopTotals TotalsFor(int days) {
+  var since = DateTime.UtcNow.AddDays(-days);
+  var paid = Order.Where(o => o.PaidAt != null && o.PlacedAt >= since).ToList();
+  var returns = ReturnRequest.Where(r => r.RequestedAt >= since).ToList();
+  var margin = MarginOf(since);
+  return new ShopTotals {
+    Orders = paid.Count,
+    // In the shop's own money: an order in another currency counts at its own rate.
+    Revenue = paid.Sum(o => InShopMoney(o.Total, o)),
+    AverageOrder = paid.Count == 0 ? 0 : Math.Round(paid.Sum(o => InShopMoney(o.Total, o)) / paid.Count, 2),
+    Returns = returns.Count,
+    Refunded = returns.Where(r => r.Status == ReturnStatus.Refunded).Sum(r => InShopMoney(r.Amount, r.Order)),
+    Margin = margin.Margin,
+    MarginPercent = margin.Percent,
+    CostedPercent = margin.Costed,
+  };
+}
+
+public class MarginFigures {
+  public decimal Margin;
+  public decimal Percent;
+  public decimal Costed;
+}
+
+/// The margin on goods sold in paid orders since `since`. Each line's revenue is its share of the order's goods after
+/// the order's discount, without its VAT; its cost is what the order's workflow recorded when it was placed
+/// (`OrderLine.UnitCost`), so a cost changed later never rewrites a past margin. Lines with no cost are left out of
+/// the margin and counted in `Costed`.
+MarginFigures MarginOf(DateTime since) {
+  var lines = OrderLine.Where(l => l.Order.PaidAt != null && l.Order.PlacedAt >= since).Include(l => l.Order).ToList();
+  var all = 0m;
+  var costedRevenue = 0m;
+  var cost = 0m;
+  foreach (var l in lines) {
+    var afterDiscount = l.Order.Subtotal <= 0 ? 1m : (l.Order.Subtotal - l.Order.Discount) / l.Order.Subtotal;
+    // The cost is the shop's own money, so the revenue it is measured against is too.
+    var net = InShopMoney(l.Price * l.Quantity, l.Order) * afterDiscount / (1m + l.VatPercent / 100m);
+    all = all + net;
+    if (l.UnitCost != null) {
+      costedRevenue = costedRevenue + net;
+      cost = cost + l.UnitCost!.Value * l.Quantity;
+    }
+  }
+  return new MarginFigures {
+    Margin = Math.Round(costedRevenue - cost, 2),
+    Percent = costedRevenue == 0 ? 0 : Math.Round(100m * (costedRevenue - cost) / costedRevenue, 1),
+    Costed = all == 0 ? 0 : Math.Round(100m * costedRevenue / all, 0),
+  };
+}
+
+List<ProductFigures> FiguresSince(DateTime since) {
+  var lines = OrderLine.Where(l => l.Order.PaidAt != null && l.Order.PlacedAt >= since).Include(l => l.Variant.Product).Include(l => l.Order).ToList();
+  var views = ProductDayViews.Where(v => v.Day >= since.Date).Include(v => v.Product).ToList();
+  var byProduct = new Dictionary<Guid, ProductFigures>();
+  foreach (var l in lines) {
+    var p = l.Variant.Product;
+    if (!byProduct.ContainsKey(p.Id)) { byProduct[p.Id] = new ProductFigures { Product = p }; }
+    byProduct[p.Id].Units = byProduct[p.Id].Units + l.Quantity;
+    byProduct[p.Id].Revenue = byProduct[p.Id].Revenue + InShopMoney(l.Price * l.Quantity, l.Order);
+  }
+  foreach (var v in views) {
+    if (!byProduct.ContainsKey(v.Product.Id)) { byProduct[v.Product.Id] = new ProductFigures { Product = v.Product }; }
+    byProduct[v.Product.Id].Views = byProduct[v.Product.Id].Views + v.Count;
+  }
+  var all = byProduct.Values.ToList();
+  foreach (var f in all) {
+    f.Conversion = f.Views == 0 ? 0 : Math.Round(100m * f.Units / f.Views, 1);
+  }
+  return all;
+}

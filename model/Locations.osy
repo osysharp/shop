@@ -1,0 +1,496 @@
+// Where the goods are — a shop's LOCATIONS: a warehouse, the shop's own counter, a pop-up. Each holds its own stock of
+// each variant, has an address, and ships, serves collection, or both.
+//
+// ⚑ A SHOP WITH ONE PLACE HAS NO LOCATIONS, AND NOTHING CHANGES. `Variant.Stock` and `Variant.Reserved` are what the
+//   whole shop holds and holds for orders. The DEFAULT location — the one every shop had before it had locations —
+//   keeps whatever the other locations do not: its stock is `Variant.Stock` less theirs, and it has no `StockLevel`
+//   rows of its own. So a shop's existing stock IS its default location's the moment it adds a second one — there is
+//   nothing to migrate — and every `new Variant { Stock = 5 }`, data file and spreadsheet still means "5 in the shop".
+//
+// ⚑ EVERY MOVE OF STOCK GOES THROUGH `MoveStockAt`, which writes the location's level AND the variant's totals in one
+//   step — so the totals are always the sum, and `Variant.Stock`'s `[ConcurrencyCheck]` makes two orders racing for the
+//   last one meet at whichever location they both take from.
+//
+// ⚑ AN ORDER IS PICKED FROM ONE LOCATION (`Order.Location`, chosen by its workflow as the shop). A collection: the
+//   counter it is collected at. A delivery: the first location in the desk's order that ships and holds EVERY line. When
+//   no one location holds it all the delivery says so at the checkout (`DeliveryChoice.Problem`) and is not placed —
+//   the shop does not split an order into several parcels (ledger D-LOCATIONS1: one order is one pick, one parcel, one
+//   tracking number and one delivery charge; splitting is the owner's call).
+
+namespace Osysharp.Shop;
+
+using Osysharp.Delivery;
+
+/// A place the shop keeps goods. The DEFAULT one holds everything the others do not (see the top of this file) and is
+/// made from the shop's own settings the first time staff add a location.
+public entity StockLocation {
+  /// What staff and customers call it — "The counter on Hornsgatan", "The warehouse".
+  [Required, MaxLength(80), Translatable] string Name;
+  /// Short and unchanging — how a collection there is named in a delivery choice ("collect@hornsgatan").
+  [Required, Unique, MaxLength(40)] string Code;
+  [MaxLength(200)] string? Street;
+  [MaxLength(20)] string? PostCode;
+  [MaxLength(80)] string? City;
+  /// ISO 3166 alpha-2.
+  [MaxLength(2)] string Country = "SE";
+  /// When a customer can collect there — "Weekdays 8–18, Saturday 10–16".
+  [MaxLength(160), Translatable] string? Hours;
+  /// Parcels are packed and sent from here.
+  bool Ships = true;
+  /// Customers collect their orders here.
+  bool Collects = false;
+  /// Holds whatever the others do not — the shop's stock from before it had locations. Exactly one.
+  bool IsDefault = false;
+  /// Out of use: nothing is sold from it and nothing is sent to it. What it holds stays until it is moved.
+  bool Active = true;
+  /// The desk's order — a delivery is picked from the first shipping location that holds it all.
+  int Rank = 0;
+  security {
+    // Where a shop is, and whether it can be collected from, is what a customer reads at the checkout.
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update when IsShopStaff;
+  }
+}
+
+/// What one location holds of one variant — on the shelf (`Stock`) and held for orders not paid yet (`Reserved`). The
+/// default location has none of these: its share is the variant's total less every other location's.
+[Unique(Location, Variant)]
+public entity StockLevel {
+  [Required] StockLocation Location;
+  [Required] Variant Variant;
+  [ConcurrencyCheck] int Stock = 0;
+  int Reserved = 0;
+  invariant Stock >= 0 && Reserved >= 0 message "A location cannot hold less than nothing.";
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum TransferStatus {
+  [Label("On its way")] InTransit,
+  [Label("Received")] Received,
+  [Label("Called off")] Cancelled,
+}
+
+/// Goods on their way from one location to another. Sent: out of `From`'s stock and in no location's — on the road,
+/// sold from nowhere. Received: in `To`'s. Called off: back in `From`'s. Each step is a `StockMove` too.
+public entity StockTransfer {
+  [Required] Variant Variant;
+  [Required] StockLocation From;
+  [Required] StockLocation To;
+  int Quantity;
+  TransferStatus Status = TransferStatus.InTransit;
+  DateTime SentAt;
+  DateTime? ReceivedAt;
+  ShopAccount? SentBy;
+  ShopAccount? ReceivedBy;
+  [MaxLength(200)] string? Note;
+  security { allow read, create, update when IsShopStaff; }
+}
+
+/// Whether `location` is the default one — null is the default of a shop that has no locations yet.
+public bool IsDefaultLocation(StockLocation? location) {
+  return location == null || location.IsDefault;
+}
+
+/// The shop's locations in the desk's order — empty for a shop that keeps everything in one place.
+public List<StockLocation> ShopLocations() {
+  return StockLocation.OrderBy(l => l.Rank).ThenBy(l => l.Name).ToList();
+}
+
+/// The default location's row, or null for a shop with none yet.
+public StockLocation? DefaultLocation() {
+  return StockLocation.FirstOrDefault(l => l.IsDefault);
+}
+
+/// What one location has of each variant, read once — so a checkout asks the database once, not per line.
+public class LocationStock {
+  /// Null: the default (of a shop without locations, the only one).
+  public StockLocation? Location = null;
+  public bool Ships = true;
+  public bool Collects = true;
+  public bool Active = true;
+  /// Variant id → on the shelf there.
+  public Dictionary<Guid, int> Stock = new Dictionary<Guid, int>();
+  public Dictionary<Guid, int> Reserved = new Dictionary<Guid, int>();
+}
+
+/// What every location holds of `variants` — the default's worked out from the totals. One entry, the default, for a
+/// shop with no locations.
+public List<LocationStock> StockOf(List<Variant> variants) {
+  var locations = ShopLocations();
+  List<LocationStock> all = [];
+  if (locations.Count == 0) {
+    var only = new LocationStock();
+    foreach (var v in variants) { only.Stock[v.Id] = v.Stock; only.Reserved[v.Id] = v.Reserved; }
+    all.Add(only);
+    return all;
+  }
+  var ids = variants.Select(v => v.Id).ToList();
+  var levels = StockLevel.Include(s => s.Location).Where(s => ids.Contains(s.Variant.Id)).ToList();
+  foreach (var l in locations) {
+    var at = new LocationStock { Location = l, Ships = l.Ships, Collects = l.Collects, Active = l.Active };
+    foreach (var v in variants) {
+      if (l.IsDefault) {
+        var others = levels.Where(s => s.Variant.Id == v.Id && !s.Location.IsDefault).ToList();
+        at.Stock[v.Id] = v.Stock - others.Sum(s => s.Stock);
+        at.Reserved[v.Id] = v.Reserved - others.Sum(s => s.Reserved);
+      } else {
+        var level = levels.FirstOrDefault(s => s.Variant.Id == v.Id && s.Location.Id == l.Id);
+        at.Stock[v.Id] = level == null ? 0 : level.Stock;
+        at.Reserved[v.Id] = level == null ? 0 : level.Reserved;
+      }
+    }
+    all.Add(at);
+  }
+  // A shop whose locations were all added without a default still has the stock it had: the totals are the default's.
+  if (!locations.Any(l => l.IsDefault)) {
+    var rest = new LocationStock();
+    foreach (var v in variants) {
+      var others = levels.Where(s => s.Variant.Id == v.Id).ToList();
+      rest.Stock[v.Id] = v.Stock - others.Sum(s => s.Stock);
+      rest.Reserved[v.Id] = v.Reserved - others.Sum(s => s.Reserved);
+    }
+    all.Insert(0, rest);
+  }
+  return all;
+}
+
+/// How many of `variant` are on the shelf at `location` (null: the default).
+public int StockAt(StockLocation? location, Variant variant) {
+  var at = StockOf([variant]).FirstOrDefault(s => SameLocation(s.Location, location));
+  return at == null ? 0 : at.Stock[variant.Id];
+}
+
+bool SameLocation(StockLocation? a, StockLocation? b) {
+  if (IsDefaultLocation(a) && IsDefaultLocation(b)) { return true; }
+  return a != null && b != null && a.Id == b.Id;
+}
+
+/// The most of `variant` one order can have — what the fullest location that sells (ships or serves collection) holds.
+/// A shop without locations: its stock. What a bag lets a customer put in it; the checkout then asks the location that
+/// fulfils the delivery they choose.
+public int Buyable(Variant variant) {
+  if (variant.Unlimited) { return int.MaxValue; }
+  if (!StockLocation.Any()) { return variant.Stock; }
+  var selling = StockOf([variant]).Where(s => s.Active && (s.Ships || s.Collects)).ToList();
+  return selling.Count == 0 ? 0 : selling.Max(s => s.Stock[variant.Id]);
+}
+
+/// Moves stock at `location` (null: the default): `stock` onto (or, negative, off) its shelf and `held` into (or out of)
+/// what it holds for orders — and the variant's totals with it. The ONE writer of stock; callers check first.
+public void MoveStockAt(StockLocation? location, Variant variant, int stock, int held) {
+  if (!IsDefaultLocation(location)) {
+    var level = StockLevel.FirstOrDefault(s => s.Location == location && s.Variant == variant);
+    if (level == null) { level = new StockLevel { Location = location!, Variant = variant }; }
+    level.Stock = level.Stock + stock;
+    level.Reserved = level.Reserved + held;
+  }
+  variant.Stock = variant.Stock + stock;
+  variant.Reserved = variant.Reserved + held;
+}
+
+// ── which location an order is picked from ──────────────────────────────────────────────────────────────────────
+
+/// The location a delivery choice collects at: the one its id names ("collect@hornsgatan"), else the shop's one
+/// collecting location. Null: the default.
+public StockLocation? CollectLocation(string deliveryId) {
+  var at = deliveryId.IndexOf("@");
+  if (at >= 0) {
+    var code = deliveryId.Substring(at + 1);
+    return StockLocation.FirstOrDefault(l => l.Code == code);
+  }
+  return StockLocation.Where(l => l.Active && l.Collects).OrderBy(l => l.Rank).FirstOrDefault();
+}
+
+/// The provider's key and option id of a delivery choice — the part before a location ("collect@hornsgatan" → "collect").
+public string DeliveryOptionOf(string deliveryId) {
+  var at = deliveryId.IndexOf("@");
+  return at < 0 ? deliveryId : deliveryId.Substring(0, at);
+}
+
+/// Where an order can be picked from — a location, or why none.
+public class FulfilFrom {
+  public StockLocation? Location = null;
+  /// "" when a location holds it all; else the sentence the customer reads.
+  public string Problem = "";
+}
+
+/// Where goods `lines` (variant → how many) are picked from for a delivery that `collects` (at `collectAt`) or is sent:
+/// the counter it is collected at, when that holds it all; for a parcel, the first location in the desk's order that
+/// ships and holds it all. Otherwise why not, in the customer's words.
+public FulfilFrom FulfilmentFor(Dictionary<Guid, int> lines, List<Variant> variants, bool collects, StockLocation? collectAt) {
+  var counted = variants.Where(v => !v.Unlimited && lines.ContainsKey(v.Id)).ToList();
+  if (counted.Count == 0) { return new FulfilFrom { Location = collects ? collectAt : DefaultLocation() }; }
+  var stock = StockOf(counted);
+  List<LocationStock> candidates = collects
+    ? stock.Where(s => SameLocation(s.Location, collectAt)).ToList()
+    : stock.Where(s => s.Active && s.Ships).ToList();
+  foreach (var c in candidates) {
+    if (counted.All(v => c.Stock[v.Id] >= lines[v.Id])) { return new FulfilFrom { Location = c.Location }; }
+  }
+  if (candidates.Count == 0) {
+    return new FulfilFrom { Problem = collects ? "That place does not hand orders over" : "The shop does not send parcels just now" };
+  }
+  // What no candidate holds enough of, and how many the fullest has; else each line is somewhere, but not together.
+  var missing = counted.Where(v => candidates.All(c => c.Stock[v.Id] < lines[v.Id])).ToList();
+  var where = collects ? "there" : "to send";
+  if (missing.Count > 0) {
+    var said = string.Join("; ", missing.Select(v => ShortSentence(v, candidates.Max(c => c.Stock[v.Id]), where)));
+    return new FulfilFrom { Problem = said.Substring(0, 1).ToUpper() + said.Substring(1) };
+  }
+  return new FulfilFrom { Problem = "No one place has all of it together, so it cannot go in one parcel. Order it in two, or collect it" };
+}
+
+/// Why one variant cannot be had from where the order would come — "only 2 of Kiambu AA (1 kg) are there".
+string ShortSentence(Variant v, int have, string where) {
+  var what = VariantLabel(v) == "" ? v.Product.Name : $"{v.Product.Name} ({VariantLabel(v)})";
+  if (have <= 0) { return $"{what} is not in stock {where}"; }
+  return have == 1 ? $"only one {what} is in stock {where}" : $"only {have} of {what} are in stock {where}";
+}
+
+/// The goods in `bag` as variant → how many.
+Dictionary<Guid, int> GoodsOf(List<BagLine> lines) {
+  var d = new Dictionary<Guid, int>();
+  foreach (var l in lines) { d[l.Variant.Id] = (d.ContainsKey(l.Variant.Id) ? d[l.Variant.Id] : 0) + l.Quantity; }
+  return d;
+}
+
+/// Why `bag` cannot be delivered `way` from one location — "" when it can, and always "" for a shop without locations
+/// (its one place is what the bag was checked against).
+public string DeliveryStockProblem(Bag bag, DeliveryChoice way) {
+  if (way.NothingToShip || !StockLocation.Any()) { return ""; }
+  var goods = bag.Lines.ToList().Where(l => KindOf(l.Variant) == LineKind.Goods).ToList();
+  if (goods.Count == 0) { return ""; }
+  var collects = !way.NeedsAddress && !way.ChoosePoint;
+  var from = FulfilmentFor(GoodsOf(goods), goods.Select(l => l.Variant).ToList(), collects, collects ? CollectLocation(way.Id) : null);
+  return from.Problem;
+}
+
+/// Where `order` is picked from — worked out by its workflow, as the shop, from its lines and its delivery.
+public FulfilFrom FulfilmentOf(Order order) {
+  var goods = order.Lines.ToList().Where(l => l.Kind == LineKind.Goods).ToList();
+  var d = new Dictionary<Guid, int>();
+  foreach (var l in goods) { d[l.Variant.Id] = (d.ContainsKey(l.Variant.Id) ? d[l.Variant.Id] : 0) + l.Quantity; }
+  var collects = order.Fulfilment == Fulfilment.Collect;
+  if (!StockLocation.Any()) {
+    // One place: the order takes what it has, as before — no location to name.
+    return new FulfilFrom();
+  }
+  if (goods.Count == 0) { return new FulfilFrom { Location = collects ? CollectLocation(order.DeliveryMethod) : DefaultLocation() }; }
+  return FulfilmentFor(d, goods.Select(l => l.Variant).Distinct().ToList(), collects, collects ? CollectLocation(order.DeliveryMethod) : null);
+}
+
+/// A location's address as one line — "Hornsgatan 64, 11821 Stockholm" — or its name when it has none.
+public string LocationAddress(StockLocation? location) {
+  if (location == null) { return TheShop().CollectionAddress ?? TheShop().Name; }
+  return LocationLine(location!);
+}
+
+/// A location's address as one line, or its name when it has none — pure, so a page may call it while it renders.
+public string LocationLine(StockLocation location) {
+  var town = $"{location.PostCode ?? ""} {location.City ?? ""}".Trim();
+  var line = string.Join(", ", new List<string> { location.Street ?? "", town }.Where(s => s != ""));
+  return line == "" ? location.Name : line;
+}
+
+/// Where a carrier books a parcel picked at `location` from — its address, for a location that is not the default. Null:
+/// the carrier's own sender (the shop), as for a shop with one place.
+public DeliveryAddress? SenderAt(StockLocation? location) {
+  if (IsDefaultLocation(location) || location!.Street == null) { return null; }
+  var shop = TheShop();
+  return new DeliveryAddress { Name = $"{shop.Name}, {location!.Name}", Street = location!.Street ?? "", PostCode = location!.PostCode ?? "",
+                               City = location!.City ?? "", Country = location!.Country, Email = shop.ContactEmail };
+}
+
+// ── the desk: locations, stock at each, transfers ────────────────────────────────────────────────────────────────
+
+/// Makes the default location from the shop's own settings, when there is none — what the shop's stock is from then on
+/// (nothing moves: its share is the totals less the others'). Orders still being prepared are picked from it. Answers it.
+[Authorize(IsShopStaff)]
+public StockLocation EnsureDefaultLocation() {
+  var existing = DefaultLocation();
+  if (existing != null) { return existing!; }
+  var shop = TheShop();
+  var home = new StockLocation { Name = shop.Name, Code = "shop", Street = shop.CollectionAddress ?? shop.CompanyAddress,
+                                 Country = shop.HomeCountry, Ships = true, Collects = true, IsDefault = true, Rank = 0 };
+  UnitOfWork.Commit();
+  foreach (var o in Order.Where(o => o.Location == null && (o.Status == OrderStatus.Reserved || o.Status == OrderStatus.Paid
+                                     || o.Status == OrderStatus.Picking || o.Status == OrderStatus.Packed)).ToList()) {
+    o.Location = home;
+  }
+  UnitOfWork.Commit();
+  return home;
+}
+
+/// Adds a location — a warehouse, a counter, a pop-up. The shop's own stock stays where it was: at the default, made
+/// first when the shop has none. Answers the new location.
+[Authorize(IsShopStaff)]
+public StockLocation AddLocation(string name, string code, string street, string postCode, string city, string country,
+                                 bool ships, bool collects) {
+  if (name.Trim() == "") { throw new Exception("A location needs a name."); }
+  var c = SlugOf(code.Trim() == "" ? name : code);
+  if (c == "") { throw new Exception("Give it a short code — letters and digits."); }
+  if (StockLocation.Any(l => l.Code == c)) { throw new Exception($"There is already a location called {c}."); }
+  EnsureDefaultLocation();
+  var l = new StockLocation { Name = name.Trim(), Code = c, Street = Blank(street), PostCode = Blank(postCode), City = Blank(city),
+                              Country = country.Trim() == "" ? TheShop().HomeCountry : CountryCode(country),
+                              Ships = ships, Collects = collects, Rank = StockLocation.Count() * 10 };
+  UnitOfWork.Commit();
+  return l;
+}
+
+/// Changes what a location does and where it is.
+[Authorize(IsShopStaff)]
+public void UpdateLocation(StockLocation location, string name, string street, string postCode, string city, string hours,
+                           bool ships, bool collects, bool active) {
+  if (name.Trim() == "") { throw new Exception("A location needs a name."); }
+  if (location.IsDefault && !active) { throw new Exception("The default location holds the shop's stock — it stays in use."); }
+  location.Name = name.Trim();
+  location.Street = Blank(street);
+  location.PostCode = Blank(postCode);
+  location.City = Blank(city);
+  location.Hours = Blank(hours);
+  location.Ships = ships;
+  location.Collects = collects;
+  location.Active = active;
+  UnitOfWork.Commit();
+}
+
+/// Moves a location one place up (-1) or down (1) in the desk's order — which ships first.
+[Authorize(IsShopStaff)]
+public void MoveLocation(StockLocation location, int by) {
+  var all = ShopLocations();
+  var at = all.FindIndex(l => l.Id == location.Id);
+  var to = at + by;
+  if (at < 0 || to < 0 || to >= all.Count) { return; }
+  all.RemoveAt(at);
+  all.Insert(to, location);
+  for (var i = 0; i < all.Count; i = i + 1) { all[i].Rank = i * 10; }
+  UnitOfWork.Commit();
+}
+
+/// Changes what `location` holds of `variant` by `change` (negative takes away), and records why. Answers what it holds
+/// now. Anybody waiting for the variant to come back is mailed when it does.
+[Authorize(IsShopStaff)]
+public int AdjustStockAt(StockLocation? location, Variant variant, int change, StockReason reason, string note) {
+  var have = StockAt(location, variant);
+  if (change == 0) { return have; }
+  if (have + change < 0) {
+    throw new Exception(StockLocation.Any() ? $"{LocationName(location)} has only {have}. You cannot take away {-change}."
+                                            : $"There are only {have} — you cannot take away {-change}.");
+  }
+  MoveStockAt(location, variant, change, 0);
+  new StockMove { Variant = variant, Location = IsDefaultLocation(location) ? DefaultLocation() : location, Change = change,
+                  Reason = reason, Note = note.Trim() == "" ? null : note.Trim(), By = Session.CurrentUser };
+  SendStockAlerts(variant);
+  UnitOfWork.Commit();
+  return have + change;
+}
+
+/// A location's name, or the shop's for the default of a shop without locations.
+public string LocationName(StockLocation? location) {
+  return location == null ? TheShop().Name : location.Name;
+}
+
+/// Sends `quantity` of `variant` from one location to another. It leaves `from` now and is sold from nowhere until it is
+/// received. Answers the transfer.
+[Authorize(IsShopStaff)]
+public StockTransfer SendTransfer(Variant variant, StockLocation from, StockLocation to, int quantity, string note) {
+  if (quantity < 1) { throw new Exception("Send one or more."); }
+  if (from.Id == to.Id) { throw new Exception("Choose two different locations."); }
+  if (!to.Active) { throw new Exception($"{to.Name} is not in use."); }
+  var have = StockAt(from, variant);
+  if (have < quantity) { throw new Exception($"{from.Name} has only {have} of {VariantName(variant)}."); }
+  MoveStockAt(from, variant, -quantity, 0);
+  var t = new StockTransfer { Variant = variant, From = from, To = to, Quantity = quantity, SentAt = DateTime.UtcNow,
+                              SentBy = Session.CurrentUser, Note = note.Trim() == "" ? null : note.Trim() };
+  new StockMove { Variant = variant, Location = from, Change = -quantity, Reason = StockReason.TransferOut,
+                  Transfer = t, By = Session.CurrentUser };
+  UnitOfWork.Commit();
+  return t;
+}
+
+/// The goods of a transfer have arrived — on `To`'s shelf now.
+[Authorize(IsShopStaff)]
+public void ReceiveTransfer(StockTransfer transfer) {
+  if (transfer.Status != TransferStatus.InTransit) { throw new Exception($"That transfer is {transfer.Status.Label.ToLower()}."); }
+  MoveStockAt(transfer.To, transfer.Variant, transfer.Quantity, 0);
+  transfer.Status = TransferStatus.Received;
+  transfer.ReceivedAt = DateTime.UtcNow;
+  transfer.ReceivedBy = Session.CurrentUser;
+  new StockMove { Variant = transfer.Variant, Location = transfer.To, Change = transfer.Quantity, Reason = StockReason.TransferIn,
+                  Transfer = transfer, By = Session.CurrentUser };
+  SendStockAlerts(transfer.Variant);
+  UnitOfWork.Commit();
+}
+
+/// A transfer that never went, or came back: its goods are on `From`'s shelf again.
+[Authorize(IsShopStaff)]
+public void CancelTransfer(StockTransfer transfer) {
+  if (transfer.Status != TransferStatus.InTransit) { throw new Exception($"That transfer is {transfer.Status.Label.ToLower()}."); }
+  MoveStockAt(transfer.From, transfer.Variant, transfer.Quantity, 0);
+  transfer.Status = TransferStatus.Cancelled;
+  transfer.ReceivedAt = DateTime.UtcNow;
+  transfer.ReceivedBy = Session.CurrentUser;
+  new StockMove { Variant = transfer.Variant, Location = transfer.From, Change = transfer.Quantity, Reason = StockReason.TransferIn,
+                  Transfer = transfer, By = Session.CurrentUser };
+  SendStockAlerts(transfer.Variant);
+  UnitOfWork.Commit();
+}
+
+/// Limits a packer to the orders picked at one location — or, with none, lets them pack every location's (Accounts.osy
+/// `PacksAt`). Staff are never limited.
+[Authorize(IsShopStaff)]
+public void LimitPacker(ShopAccount packer, StockLocation? location) {
+  var grant = ShopRoleGrant.FirstOrDefault(g => g.Member == packer && g.Role == ShopRole.Packer);
+  if (grant == null) { throw new Exception($"{packer.Name ?? packer.Email} is not a packer."); }
+  grant.Location = location;
+  UnitOfWork.Commit();
+}
+
+/// One variant as the desk's Stock tab shows it — the whole shop, and each location.
+public class StockRow {
+  public Variant? Variant = null;
+  public string Name = "";
+  public int Stock = 0;
+  public int Reserved = 0;
+  /// Per location, in the desk's order: what is on its shelf and held there. Empty for a shop without locations.
+  public List<StockAtRow> At = [];
+  /// On the road between locations.
+  public int InTransit = 0;
+}
+
+public class StockAtRow {
+  public StockLocation? Location = null;
+  public string Name = "";
+  public int Stock = 0;
+  public int Reserved = 0;
+}
+
+/// Every size of every listed product with what the shop holds, per location — lowest first.
+[Authorize(IsShopStaff)]
+public List<StockRow> StockByLocation() {
+  var variants = Variant.Include(v => v.Product).Where(v => v.Product.Status == ProductStatus.Listed && !v.Unlimited && !v.IsDownload)
+    .OrderBy(v => v.Stock).ToList();
+  var locations = StockLocation.Any() ? StockOf(variants) : [];
+  var moving = StockTransfer.Where(t => t.Status == TransferStatus.InTransit).ToList();
+  return variants.Select(v => new StockRow {
+    Variant = v, Name = VariantName(v), Stock = v.Stock, Reserved = v.Reserved,
+    At = locations.Select(s => new StockAtRow { Location = s.Location, Name = LocationName(s.Location),
+                                                Stock = s.Stock[v.Id], Reserved = s.Reserved[v.Id] }).ToList(),
+    InTransit = moving.Where(t => t.Variant.Id == v.Id).Sum(t => t.Quantity),
+  }).ToList();
+}
+
+/// The transfers on their way, oldest first, then the last twenty that arrived or were called off.
+[Authorize(IsShopStaff)]
+public List<StockTransfer> Transfers() {
+  var open = StockTransfer.Include(t => t.Variant.Product).Include(t => t.From).Include(t => t.To)
+    .Where(t => t.Status == TransferStatus.InTransit).OrderBy(t => t.SentAt).ToList();
+  var done = StockTransfer.Include(t => t.Variant.Product).Include(t => t.From).Include(t => t.To)
+    .Where(t => t.Status != TransferStatus.InTransit).OrderByDescending(t => t.SentAt).Take(20).ToList();
+  return open.Concat(done).ToList();
+}

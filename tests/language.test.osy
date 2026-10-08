@@ -1,0 +1,97 @@
+// A customer's language, on their account (D-I18N1): set when they sign up in the language they are reading, and when
+// they switch while signed in; what the shop's mail to them that is not about an order is written in — the words, the
+// money and the dates alike. An order's mail stays in the language the order was placed in.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// ⭐ SIGNED UP READING SWEDISH, SO THE ACCOUNT IS SWEDISH — and a reset asked for from an English page still arrives in
+/// Swedish, because the person reading the mail is the account's owner, not whoever pressed the button.
+[Test(Floor)]
+void signing_up_in_swedish_keeps_swedish_on_the_account_and_a_reset_mail_is_swedish() {
+  Session.SetLanguage("sv");
+  Assert.NotEqual("", ShopSignup("sara@example.test", "long-enough-1", "Sara"));
+  Session.SetLanguage("en");
+  Assert.Equal("", ShopRequestPasswordReset("sara@example.test"));
+  runas (Desk) {
+    Assert.Equal("sv-SE", ShopAccount.Single(a => a.Email == "sara@example.test").Language);
+    var mail = ShopMail.Single(m => m.To == "sara@example.test");
+    Assert.Equal("Återställ ditt lösenord hos Kit Test Shop", mail.Subject);
+    Assert.Contains("Välj ett nytt lösenord här: http", mail.Text);
+    Assert.DoesNotContain("Choose a new password", mail.Text);
+  }
+  // …and one who signed up in English keeps English.
+  Assert.NotEqual("", ShopSignup("sam@example.test", "long-enough-1", "Sam"));
+  ShopRequestPasswordReset("sam@example.test");
+  runas (Desk) {
+    Assert.Equal("Reset your password at Kit Test Shop", ShopMail.Single(m => m.To == "sam@example.test").Subject);
+  }
+}
+
+/// A signed-in customer's switch is kept on their account; a language the shop does not speak changes nothing, and a
+/// visitor's switch writes nowhere.
+[Test(Floor)]
+void a_signed_in_customer_who_switches_language_keeps_it_on_their_account() {
+  runas (Maja) {
+    Assert.Null(Me().Language);
+    RememberMyLanguage("sv");
+    Assert.Equal("sv-SE", Me().Language);
+    Assert.Equal("sv", ShopSpokenLanguage(Me().Language!));
+    RememberMyLanguage("tlh");
+    Assert.Equal("sv-SE", Me().Language);
+    RememberMyLanguage("en");
+    Assert.Equal("en", ShopSpokenLanguage(Me().Language!));
+  }
+  RememberMyLanguage("sv");                            // a visitor: nothing to keep it on
+  runas (Desk) { Assert.Null(ShopAccount.Single(a => a.Email == "olle@example.test").Language); }
+}
+
+/// `App.CultureOf(language)` is the culture the shop writes a language in — the one a reader of that language formats
+/// in — without switching the run's language to ask; null for a language it does not speak.
+[Test]
+void the_culture_of_a_language_is_the_one_its_readers_format_in() {
+  Assert.Equal("sv-SE", App.CultureOf("sv"));
+  Assert.Null(App.CultureOf("tlh"));
+  Assert.Equal("en", Session.Language);                 // asking changed nothing
+  Session.SetLanguage("sv");
+  Assert.Equal(App.CultureOf("sv"), Session.CurrentCulture);
+}
+
+/// ⭐ MAIL THAT IS NOT ABOUT AN ORDER IS IN THE ACCOUNT'S LANGUAGE — store credit, a restock alert, a change of address —
+/// with its money written the Swedish way, while an ORDER's mail to the same customer stays in the order's language.
+[Test(Floor)]
+void mail_about_the_account_is_in_its_language_and_an_orders_mail_in_the_orders() {
+  runas (Maja) { RememberMyLanguage("sv"); }
+  runas (Desk) {
+    GrantCredit(ShopAccount.Single(a => a.Email == "maja@example.test"), 12.5m, "Paketet kom en vecka sent.");
+    Workflow.Settle(StoreCreditGrant.Single());
+    var credit = ShopMail.Single(m => m.To == "maja@example.test");
+    Assert.StartsWith("€12,50 i tillgodo", credit.Subject);
+    Assert.Contains("Paketet kom en vecka sent.", credit.Text);
+    Assert.DoesNotContain("store credit", credit.Text);
+  }
+
+  // A restock alert: one mail per language — Maja's Swedish, a stranger's in the language of whoever restocks.
+  Buy("v-lang-stock", "Chelsea", "38", 1);             // the last one goes — and two people ask to be told
+  NotifyMe(Pick("Chelsea", "38"), "maja@example.test");
+  NotifyMe(Pick("Chelsea", "38"), "stranger@example.test");
+  runas (Desk) {
+    AdjustStock(Pick("Chelsea", "38"), 2, StockReason.Received, "");
+    Assert.StartsWith("Tillbaka hos Kit Test Shop", ShopMail.Single(m => m.To == "maja@example.test" && m.Subject.Contains("Chelsea")).Subject);
+    Assert.StartsWith("Back at Kit Test Shop", ShopMail.Single(m => m.To == "stranger@example.test").Subject);
+  }
+
+  // Her order, placed while she read English, is mailed in English.
+  runas (Maja) {
+    Session.SetLanguage("en");
+    runas (new Visitor { Id = "v-lang-order" }) {
+      Bag("v-lang-order", "Loafer", "38", 1);
+      PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                 "Storgatan 1", "11122", "Stockholm", "SE");
+    }
+  }
+  runas (Desk) {
+    Assert.True(ShopMail.Any(m => m.To == "maja@example.test" && m.Subject.StartsWith("Your order")));
+    Assert.False(ShopMail.Any(m => m.To == "maja@example.test" && m.Subject.StartsWith("Din order")));
+  }
+}

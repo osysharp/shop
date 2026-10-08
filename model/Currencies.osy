@@ -1,0 +1,667 @@
+// Prices in the visitor's own currency — per currency, SHOWN or SOLD (D-SELLCURRENCY1).
+//
+// SHOWN (every offered currency, until the desk says otherwise) is a DISPLAY: the order, its invoice, its VAT and its
+// payment stay in the shop's own currency (`ShopSettings.Currency`), and a price says "≈ €15.20", and wherever money
+// changes hands "≈ €15.20 · charged as 165 kr".
+//
+// SOLD (`ExchangeRate.Sold`, the desk's "Sell in EUR") is a SALE in that currency: a price is the shop's real price in
+// it — the variant's own (`VariantPrice`, a price list staff keep and the spreadsheet carries), else its own price
+// converted at the day's rate and made a price somebody would set (`PriceRounding`: .95, .90, whole units, 5s, 10s).
+// The customer sees that price with no "≈", the order is placed, invoiced and CHARGED in it, and the day's rate is
+// recorded on the order and on its invoice, which states the VAT in the shop's own currency too (EU VAT Directive
+// art. 230). The books stay in the shop's currency: each sale at its invoice's rate, and the difference to what the
+// payout actually brought in as a currency gain or loss (Osysharp.Shop.Bookkeeping).
+//
+//   · delivery in a sold currency: each option's price set for it (`SoldDeliveryPrice`), else its own converted and
+//     rounded; free from the currency's own threshold (`FreeDeliveryFrom`), else the shop's converted and rounded.
+//   · a gift card is in ONE currency, the one it was bought in, and pays only for an order in it (GiftCards.osy).
+//   · store credit is kept in the shop's own currency and pays only for an order in it (StoreCredit.osy); an order in a
+//     sold currency is refunded the way it was paid, never into credit.
+//   · a subscription is agreed and renewed in the currency it was bought in (the subscriptions kit); when the shop
+//     stops selling in it, the subscription moves to the shop's own at that day's rate, with the price notice's lead time.
+//   · a fixed-amount discount code needs its amount set for the currency (Osysharp.Shop.Discounts).
+//   · a way to pay that cannot take the currency is not offered — Swish is kronor only, Klarna pairs each country with
+//     its own currency, a transfer is paid into the shop's own account (`IPaymentProvider.CurrencyRefusal`).
+//
+//     app.Shop = new ShopSetup {
+//       …,
+//       ExchangeRates = new EcbRates(),                    // Osysharp.Shop.Ecb, or any IExchangeRates
+//       DisplayCurrencies = ["EUR", "NOK", "DKK", "USD"],  // offered besides the shop's own
+//     };
+//
+// ⚑ THE RATES ARE FETCHED BY A JOB, NEVER BY A PAGE. `StartExchangeRates()` (the desk, or the app's data) makes the one
+//   `RateWatch` row; its workflow asks the provider as it starts and every six hours after, and writes one
+//   `ExchangeRate` row per offered currency, against the shop's own. A page only reads those rows.
+// ⚑ A STALE RATE CONVERTS NOTHING. Every rate carries `UsableUntil` — its date plus `ShopSetup.RatesStaleAfterDays` —
+//   and past it the price is shown in the shop's own currency, as if no other had been chosen. A wrong price is worse
+//   than an untranslated one.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Delivery;
+using Osysharp.Workflow;
+
+/// One currency as a rate provider quotes it: how many of `Currency` one unit of the sheet's `Base` buys.
+public class RateQuote {
+  public string Currency = "";
+  public decimal Rate = 0;
+}
+
+/// A provider's rates for one day.
+public class RateSheet {
+  /// The currency every quote is against — "EUR" for the European Central Bank.
+  public string Base = "";
+  /// The day the rates are FOR, as the source dates them — not the moment they were fetched.
+  public DateTime Date;
+  public List<RateQuote> Quotes = [];
+}
+
+/// Where the shop's exchange rates come from — a provider the app lists (`ShopSetup.ExchangeRates`), as it lists its
+/// payment and delivery providers. `Osysharp.Shop.Ecb` asks the European Central Bank.
+public interface IExchangeRates {
+  /// Who publishes the rates, as a visitor may be told: "European Central Bank".
+  string Source { get; }
+  /// The latest sheet. Throws `ExternalServiceException` when the source cannot be reached or answers nonsense.
+  RateSheet Fetch();
+}
+
+/// A currency the shop shows prices in besides its own, with its latest rate. One row per offered currency, written
+/// by the rate job alone; read by every page.
+public entity ExchangeRate {
+  /// ISO 4217: "EUR", "NOK".
+  [Required, Unique, MaxLength(3)] string Currency;
+  /// How many of `Currency` ONE unit of the shop's own currency buys. Zero until the first rate arrives.
+  [Precision(18, 8)] decimal PerUnit = 0;
+  /// The day the rate is for, as its source dates it.
+  DateTime? RateDate;
+  /// Past this the rate is stale and converts nothing — `RateDate` plus the shop's `RatesStaleAfterDays`.
+  DateTime? UsableUntil;
+  [MaxLength(80)] string Source = "";
+  DateTime? FetchedAt;
+  /// How a price in it is written: its sign, which side of the number the sign goes, and how many decimals an
+  /// estimate keeps (`CurrencyLook`).
+  [Required, MaxLength(6)] string Symbol;
+  bool SymbolAfter = false;
+  int Decimals = 2;
+  /// SOLD in this currency: prices are real, and the order is placed and charged in it. False: SHOWN, an estimate.
+  bool Sold = false;
+  /// How a converted price is made one the shop would set, for a variant with no price of its own in the currency.
+  PriceRounding Rounding = PriceRounding.To95;
+  /// Sold: delivery is free from this much of the goods, in this currency. Zero: from the shop's own threshold,
+  /// converted and rounded — or never, when the shop has none.
+  decimal FreeDeliveryFrom = 0;
+  [ForeignKey(Rate)] SoldDeliveryPrice[] DeliveryPrices;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// How a price converted into a sold currency is rounded to one a shop would write. To the NEAREST such price, so
+/// neither the shop nor the buyer is always the one who gains.
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum PriceRounding {
+  [Label("To the cent")] Cents,
+  [Label("Ending in .95")] To95,
+  [Label("Ending in .90")] To90,
+  [Label("Whole units")] Whole,
+  [Label("To the nearest 5")] ToFive,
+  [Label("To the nearest 10")] ToTen,
+}
+
+/// A variant's own price in a sold currency — the price list. A variant without one in a currency is sold at its own
+/// price converted at the day's rate and rounded (`SoldPrice`).
+[Unique(Variant, Currency, "That size already has a price in that currency.")]
+public entity VariantPrice {
+  [Required] Variant Variant;
+  /// ISO 4217: "EUR".
+  [Required, MaxLength(3)] string Currency;
+  decimal Price;
+  invariant Price > 0 message "A price is more than nothing.";
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// A delivery option's price in a sold currency, set by the desk. Without one, its own price is converted and rounded.
+[Unique(Rate, Delivery)]
+public entity SoldDeliveryPrice {
+  [Required] ExchangeRate Rate;
+  /// The option's `DeliveryChoice.Id` — "flat", "postnord/collect".
+  [Required, MaxLength(80)] string Delivery;
+  decimal Price;
+  invariant Price >= 0 message "A delivery price cannot be below nothing.";
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// A day's rate as it was — kept for every day a sheet was fetched, so a payout in another currency is booked at the
+/// rate of ITS day, not today's. The desk's to read.
+[Unique(Currency, Date)]
+public entity ExchangeRateDay {
+  [Required, MaxLength(3)] string Currency;
+  DateOnly Date;
+  /// How many of `Currency` one unit of the shop's own bought that day.
+  [Precision(18, 8)] decimal PerUnit;
+  [MaxLength(80)] string Source = "";
+  security {
+    allow read, create, update when IsShopStaff;
+  }
+}
+
+/// The currency a visit chose to see prices in — keyed to the visit, like its bag, and holding nothing else. No row,
+/// or no `Rate`: the shop's own currency.
+public entity VisitCurrency {
+  [Required, Unique, MaxLength(64)] string VisitId;
+  ExchangeRate? Rate;
+  // The visit's own, as its bag is (SECURITY-INVARIANT(a-guest-row-is-its-visits)): no visitor reads or changes
+  // another's choice — or takes the one row a visit may have by writing it first.
+  security { allow read, create, update when IsAnonymous || IsAuthenticated where VisitId == Visitor.Id;
+  allow read, create, update when IsShopStaff; }
+}
+
+public enum RateWatchStatus { Watching, Stopped }
+
+/// The rate job — one row. Made by `StartExchangeRates()`; its workflow fetches.
+public entity RateWatch {
+  RateWatchStatus Status;
+  /// When the provider was last asked, and what went wrong then ("" when it answered).
+  DateTime? LastAsked;
+  [MaxLength(400)] string Problem = "";
+  security {
+    allow read, create, update when IsShopStaff;
+  }
+}
+
+/// Asks the provider as soon as it has started (after the commit that made the watch), then every six hours: the source publishes once a working day (the ECB at about
+/// 16:00 CET), so a new day's rates land within hours of it, and a fetch that failed is tried again soon. Asking
+/// more often than the source changes costs one small request and changes nothing stored.
+public workflow ExchangeRateRefresh {
+  Tracks    = RateWatch.Status;
+  Autostart = true;
+  Initial   = Watching;
+
+  /// The shop stops showing other currencies (`StopExchangeRates`).
+  event Stop();
+
+  // ⚑ THE FIRST FETCH IS ON A CLOCK DUE AT ONCE, NOT IN `enter`. The watch row is written by somebody's commit (the
+  //   desk's "Show other currencies", the app's data), and an autostarted run's `enter` is part of that commit: it
+  //   would wait on the provider — the ECB, over the network — and past five seconds the commit stops waiting
+  //   (`workflow-first-step-waits-on-a-slow-call`, D-AUTOSTART1). The reminder that already polls every six hours
+  //   simply starts at zero: the same clock, due as the run parks, fired after the commit.
+  state Watching {
+    subscribe Stop() as StopAsking {
+      Finished {
+        Within = TimeSpan.FromDays(36500);
+        Remind Fetch(After = TimeSpan.Zero, ThenEvery = TimeSpan.FromHours(6)) { FetchRates(this.Item); }
+        Unfinished { }
+      }
+    }
+    on StopAsking() { goto Stopped; }
+  }
+  terminal cancel Stopped { }
+}
+
+/// How a currency is written on a price tag.
+public class CurrencyLook {
+  public string Symbol = "";
+  public bool After = false;
+  /// How many decimals an estimate keeps: cents for the euro and the dollar, whole units for the crowns and the yen —
+  /// an estimate to the öre is precision nobody is owed.
+  public int Decimals = 2;
+}
+
+/// How `code` is written. A currency this does not know is written by its code after the number, to two decimals.
+public CurrencyLook CurrencyLookOf(string code) {
+  if (code == "EUR") { return new CurrencyLook { Symbol = "€" }; }
+  if (code == "USD") { return new CurrencyLook { Symbol = "$" }; }
+  if (code == "GBP") { return new CurrencyLook { Symbol = "£" }; }
+  if (code == "JPY") { return new CurrencyLook { Symbol = "¥", Decimals = 0 }; }
+  if (code == "SEK") { return new CurrencyLook { Symbol = "kr", After = true, Decimals = 0 }; }
+  // The Norwegian and Danish crowns are "kr" at home too, and beside a Swedish shop's "charged as 165 kr" that would
+  // read as the same money — so they carry their codes.
+  if (code == "NOK" || code == "DKK" || code == "ISK" || code == "CZK" || code == "HUF") {
+    return new CurrencyLook { Symbol = code, After = true, Decimals = 0 };
+  }
+  return new CurrencyLook { Symbol = code, After = true };
+}
+
+/// One offered currency as the desk lists it.
+public class DeskRate {
+  public string Currency = "";
+  public decimal PerUnit = 0;
+  /// The shop SELLS in it — not only shows it.
+  public bool Sold = false;
+  /// "28 September", or "" before the first rate.
+  public string Date = "";
+  public bool Usable = false;
+}
+
+/// The rates as the desk shows them (`DeskExchangeRates`).
+public class RatesOnTheDesk {
+  /// The app lists a provider — without one there is nothing to show.
+  public bool Listed = false;
+  public string Source = "";
+  /// The shop's own currency.
+  public string Own = "";
+  public List<string> Offered = [];
+  /// The rate job is running.
+  public bool Running = false;
+  /// What went wrong on the last fetch, or "".
+  public string Problem = "";
+  public List<DeskRate> Rates = [];
+}
+
+[Authorize(IsShopStaff)]
+public RatesOnTheDesk ExchangeRatesOnTheDesk() {
+  var setup = App.Setting<ShopSetup>();
+  if (setup.ExchangeRates == null) { return new RatesOnTheDesk(); }
+  var watch = RateWatch.FirstOrDefault(w => w.Status == RateWatchStatus.Watching);
+  var view = new RatesOnTheDesk {
+    Listed = true, Source = setup.ExchangeRates.Source, Own = TheShop().Currency, Running = watch != null,
+    Problem = watch == null ? "" : watch.Problem,
+    Offered = setup.DisplayCurrencies.Where(c => c != TheShop().Currency).ToList(),
+  };
+  foreach (var r in ExchangeRate.OrderBy(x => x.Currency).ToList()) {
+    view.Rates.Add(new DeskRate { Currency = r.Currency, PerUnit = r.PerUnit, Usable = RateUsable(r), Sold = r.Sold,
+                                  Date = r.RateDate == null ? "" : r.RateDate.Value.ToString("d MMMM") });
+  }
+  return view;
+}
+
+/// Makes the rate job, if there is none; its first fetch runs just after this commit. Safe to call again. To ask the
+/// provider NOW and read the answer, `FetchExchangeRatesNow()`.
+[Authorize(IsShopStaff)]
+public void StartExchangeRates() {
+  if (App.Setting<ShopSetup>().ExchangeRates == null) {
+    throw new Exception("This shop lists no exchange-rate provider (ShopSetup.ExchangeRates), so it has nothing to fetch rates from.");
+  }
+  var watch = RateWatch.FirstOrDefault(w => w.Status == RateWatchStatus.Watching);
+  if (watch == null) { new RateWatch(); }
+  UnitOfWork.Commit();
+}
+
+/// Asks the provider again now — the desk's "Fetch now". Answers what went wrong, or "".
+[Authorize(IsShopStaff)]
+public string FetchExchangeRatesNow() {
+  // No job yet: start one — and still ask now, because "Fetch now" is a question the desk waits on, where the job's
+  // own first fetch runs after its commit.
+  if (!RateWatch.Any(w => w.Status == RateWatchStatus.Watching)) { StartExchangeRates(); }
+  var watch = RateWatch.First(w => w.Status == RateWatchStatus.Watching);
+  FetchRates(watch);
+  UnitOfWork.Commit();
+  return watch.Problem;
+}
+
+/// Stops showing prices in other currencies: the job ends, the rates go, and every visit sees the shop's own again.
+[Authorize(IsShopStaff)]
+public void StopExchangeRates() {
+  foreach (var choice in VisitCurrency.Where(v => v.Rate != null).ToList()) { choice.Rate = null; }
+  foreach (var bag in Bag.Where(b => b.Currency != null).ToList()) { SwitchBagCurrency(bag, null); }
+  foreach (var rate in ExchangeRate.ToList()) {
+    if (rate.Sold) { StopSelling(rate); }
+    foreach (var d in rate.DeliveryPrices.ToList()) { d.Delete(); }
+    rate.Delete();
+  }
+  foreach (var watch in RateWatch.Where(w => w.Status == RateWatchStatus.Watching).ToList()) { ExchangeRateRefresh.RaiseStop(watch); }
+  UnitOfWork.Commit();
+}
+
+/// One fetch: asks the app's provider for its sheet and writes each offered currency's rate against the shop's own.
+/// A failure is recorded on the watch and changes no rate — they go stale on their own and stop converting.
+void FetchRates(RateWatch watch) {
+  var setup = App.Setting<ShopSetup>();
+  var shop = TheShop();
+  watch.LastAsked = DateTime.UtcNow;
+  if (setup.ExchangeRates == null) { watch.Problem = "No exchange-rate provider is listed (ShopSetup.ExchangeRates)."; return; }
+  RateSheet? sheet = null;
+  try { sheet = setup.ExchangeRates.Fetch(); }
+  catch (Exception ex) {
+    watch.Problem = ex.Message;
+    Log.Warning($"Could not fetch exchange rates: {ex.Message}");
+    return;
+  }
+  var ours = PerSheetUnit(sheet!, shop.Currency);
+  if (ours <= 0) { watch.Problem = $"{setup.ExchangeRates.Source} quotes no rate for {shop.Currency}, the shop's own currency."; return; }
+  List<string> missing = [];
+  var offered = setup.DisplayCurrencies.Select(c => c.Trim().ToUpper()).Where(c => c != "" && c != shop.Currency).Distinct().ToList();
+  foreach (var code in offered) {
+    var theirs = PerSheetUnit(sheet!, code);
+    var rate = ExchangeRate.FirstOrDefault(r => r.Currency == code);
+    if (rate == null) {
+      var look = CurrencyLookOf(code);
+      rate = new ExchangeRate { Currency = code, Symbol = look.Symbol, SymbolAfter = look.After, Decimals = look.Decimals };
+    }
+    if (theirs <= 0) { missing.Add(code); continue; }
+    rate.PerUnit = Math.Round(theirs / ours, 8);
+    rate.RateDate = sheet!.Date;
+    // …and the day's rate kept, for a payout booked later at the rate of its own day.
+    var day = DateOnly.FromDateTime(sheet!.Date);
+    var kept = ExchangeRateDay.FirstOrDefault(d => d.Currency == code && d.Date == day);
+    if (kept == null) { kept = new ExchangeRateDay { Currency = code, Date = day }; }
+    kept.PerUnit = rate.PerUnit;
+    kept.Source = setup.ExchangeRates.Source;
+    rate.UsableUntil = sheet!.Date.AddDays(setup.RatesStaleAfterDays);
+    rate.Source = setup.ExchangeRates.Source;
+    rate.FetchedAt = DateTime.UtcNow;
+  }
+  // A currency the app no longer offers stops being shown: the visits that chose it see the shop's own.
+  foreach (var gone in ExchangeRate.ToList().Where(r => !offered.Contains(r.Currency)).ToList()) {
+    foreach (var choice in VisitCurrency.Where(v => v.Rate == gone).ToList()) { choice.Rate = null; }
+    if (gone.Sold) { StopSelling(gone); }
+    foreach (var d in gone.DeliveryPrices.ToList()) { d.Delete(); }
+    gone.Delete();
+  }
+  watch.Problem = missing.Count == 0 ? "" : $"{setup.ExchangeRates.Source} quotes no rate for {string.Join(", ", missing)}.";
+}
+
+/// How many of `code` one unit of the sheet's base buys — 1 for the base itself, 0 when the sheet has no quote.
+decimal PerSheetUnit(RateSheet sheet, string code) {
+  if (code == sheet.Base) { return 1m; }
+  var quote = sheet.Quotes.FirstOrDefault(q => q.Currency == code);
+  return quote == null ? 0m : quote.Rate;
+}
+
+/// Shows this visit's prices in `currency` — one the shop offers, or its own. The choice is kept for the visit.
+[AllowAnonymous]
+public void ShowPricesIn(string currency) {
+  var code = currency.Trim().ToUpper();
+  var rate = code == TheShop().Currency ? null : ExchangeRate.FirstOrDefault(r => r.Currency == code);
+  if (code != TheShop().Currency && rate == null) { throw new Exception($"This shop does not show prices in {code}."); }
+  var visitId = Visitor.Id;
+  var choice = VisitCurrency.FirstOrDefault(v => v.VisitId == visitId);
+  if (choice == null) { choice = new VisitCurrency { VisitId = visitId }; }
+  choice.Rate = rate;
+  // A SOLD currency is the currency the bag is bought in from now on; any other leaves the bag in the shop's own.
+  var bag = BagFor(false);
+  if (bag != null) { SwitchBagCurrency(bag, rate != null && rate.Sold && RateUsable(rate) ? rate.Currency : null); }
+  UnitOfWork.Commit();
+}
+
+/// Whether a rate may be used: it has arrived, and is not past `UsableUntil`.
+public bool RateUsable(ExchangeRate? rate) {
+  return rate != null && rate.PerUnit > 0 && rate.UsableUntil != null && rate.UsableUntil.Value > DateTime.UtcNow;
+}
+
+/// `amount` of the shop's money in the visitor's, rounded and written as that currency is: "€15.20", "$16.40",
+/// "158 NOK". "" when the rate cannot be used — none yet, or stale — and the caller shows the shop's own price.
+public string InTheirMoney(decimal amount, ExchangeRate? rate) {
+  if (!RateUsable(rate)) { return ""; }
+  var value = Math.Round(amount * rate!.PerUnit, rate.Decimals, MidpointRounding.AwayFromZero);
+  var number = rate.Decimals == 0 ? $"{value:N0}" : $"{value:N2}";
+  return rate.SymbolAfter ? $"{number} {rate.Symbol}" : $"{rate.Symbol}{number}";
+}
+
+/// A price as the visitor chose to see it: "≈ €15.20", or the shop's own ("165 kr") when they chose none or the rate
+/// is stale.
+public string ShownMoney(decimal amount, ExchangeRate? rate, ShopSettings shop) {
+  var theirs = InTheirMoney(amount, rate);
+  return theirs == "" ? Money(amount, shop) : "≈ " + theirs;
+}
+
+/// A price where money changes hands — the bag, the checkout, a payment: "≈ €15.20 · charged as 165 kr", or only
+/// the shop's own when there is no estimate to give.
+public string ChargedAs(decimal amount, ExchangeRate? rate, ShopSettings shop) {
+  var theirs = InTheirMoney(amount, rate);
+  return theirs == "" ? Money(amount, shop) : $"≈ {theirs} · charged as {Money(amount, shop)}";
+}
+
+
+// ── selling in another currency ────────────────────────────────────────────────────────────────────────────────
+
+/// A currency with no minor unit — the yen, the won, the Icelandic krona. Every provider here counts money in
+/// hundredths (`Minor`), so the shop does not SELL in one; it may still show it.
+public bool ZeroDecimalCurrency(string code) {
+  var c = code.Trim().ToUpper();
+  return c == "JPY" || c == "KRW" || c == "ISK" || c == "CLP" || c == "VND" || c == "PYG" || c == "UGX" || c == "XAF" || c == "XOF";
+}
+
+/// The rate a sale in `currency` is made at — its row, when the shop SELLS in it and the rate is fresh; else null,
+/// and the sale is in the shop's own currency. A stale rate sells nothing, as it shows nothing.
+public ExchangeRate? SaleRate(string? currency) {
+  if (currency == null || currency == "") { return null; }
+  var code = currency;
+  var rate = ExchangeRate.FirstOrDefault(r => r.Currency == code);
+  return rate != null && rate.Sold && RateUsable(rate) ? rate : null;
+}
+
+/// `amount` made a price a shop would write, by `rule` — the nearest such price, never nothing.
+public decimal NicePrice(decimal amount, PriceRounding rule) {
+  if (amount <= 0) { return 0m; }
+  decimal nice;
+  if (rule == PriceRounding.Whole) { nice = Math.Round(amount, 0, MidpointRounding.AwayFromZero); }
+  else if (rule == PriceRounding.ToFive) { nice = Math.Round(amount / 5m, 0, MidpointRounding.AwayFromZero) * 5m; }
+  else if (rule == PriceRounding.ToTen) { nice = Math.Round(amount / 10m, 0, MidpointRounding.AwayFromZero) * 10m; }
+  else if (rule == PriceRounding.To95 || rule == PriceRounding.To90) {
+    var ending = rule == PriceRounding.To95 ? 0.95m : 0.90m;
+    // The two candidates either side: …, 13.95, 14.95, … — whichever is nearer (the higher on a tie).
+    var below = Math.Floor(amount) + ending;
+    if (below > amount) { below = below - 1m; }
+    var above = below + 1m;
+    nice = amount - below < above - amount ? below : above;
+  }
+  else { nice = Math.Round(amount, 2, MidpointRounding.AwayFromZero); }
+  // A price never rounds away to nothing: the smallest price the rule allows instead.
+  if (nice <= 0) {
+    nice = rule == PriceRounding.ToFive ? 5m : rule == PriceRounding.ToTen ? 10m : rule == PriceRounding.Whole ? 1m
+         : rule == PriceRounding.To95 ? 0.95m : rule == PriceRounding.To90 ? 0.90m : 0.01m;
+  }
+  return nice;
+}
+
+/// What `variant` costs in the sold currency of `rate`: its own price there (the price list), else its own price
+/// converted at the rate and rounded by the currency's rule.
+public decimal SoldPrice(Variant variant, ExchangeRate rate) {
+  var code = rate.Currency;
+  var listed = VariantPrice.FirstOrDefault(p => p.Variant == variant && p.Currency == code);
+  if (listed != null) { return listed.Price; }
+  return NicePrice(PriceOf(variant) * rate.PerUnit, rate.Rounding);
+}
+
+/// A variant's price as a page reads it while it renders — from the prices loaded WITH the variant, so no trip to
+/// the server: its own in `rate`'s currency, else converted and rounded. The shop's own price with no sold rate.
+public decimal SoldPriceFrom(VariantPrice[] prices, decimal own, ExchangeRate? rate) {
+  if (rate == null || !rate.Sold) { return own; }
+  var code = rate.Currency;
+  var listed = prices.FirstOrDefault(p => p.Currency == code);
+  return listed != null ? listed.Price : NicePrice(own * rate.PerUnit, rate.Rounding);
+}
+
+/// An amount of the shop's money in the currency of `rate`, to the cent — a THRESHOLD (a minimum spend, a gift card's
+/// bounds), not a price: nothing is rounded to look nice.
+public decimal Converted(decimal amount, ExchangeRate? rate) {
+  return rate == null ? amount : Math.Round(amount * rate.PerUnit, 2, MidpointRounding.AwayFromZero);
+}
+
+/// An amount written in `currency` — the shop's own as the shop writes it ("165 kr", "€1,200"), another as its look
+/// says ("€14.95", "$16"). Whole amounts drop the cents, as `Money` does.
+public string MoneyIn(decimal amount, string? currency, ShopSettings shop) {
+  if (currency == null || currency == "" || currency == shop.Currency) { return Money(amount, shop); }
+  var look = CurrencyLookOf(currency);
+  var number = amount == Math.Round(amount) ? $"{amount:N0}" : $"{amount:N2}";
+  return look.After ? $"{number} {look.Symbol}" : $"{look.Symbol}{number}";
+}
+
+/// An amount of an order, written in the order's currency.
+public string OrderMoney(decimal amount, Order order) {
+  return MoneyIn(amount, order.Currency, TheShop());
+}
+
+/// The currency an order is in — its own, or the shop's for one placed in it.
+public string OrderCurrency(Order order) {
+  return order.Currency == null || order.Currency == "" ? TheShop().Currency : order.Currency!;
+}
+
+/// An amount of an order in the SHOP's own currency, at the order's rate (its invoice's once it has one) — what the
+/// figures and the books add up. The amount itself for an order in the shop's own currency.
+public decimal InShopMoney(decimal amount, Order order) {
+  if (order.Currency == null || order.Currency == "" || order.Rate <= 0 || order.Rate == 1m) { return amount; }
+  return Math.Round(amount / order.Rate, 2, MidpointRounding.AwayFromZero);
+}
+
+/// The currency the bag is bought in: its own sold currency while that is sold and its rate fresh, else the shop's.
+public string BagCurrency(Bag bag) {
+  var rate = SaleRate(bag.Currency);
+  return rate == null ? TheShop().Currency : rate.Currency;
+}
+
+/// Moves a bag to `currency` (null: the shop's own). What it holds is priced in it from now on — each line's price
+/// "when added" is its price in the new currency, since the customer changed the currency, not the shop its prices;
+/// and a gift card of the buyer's own amount is converted at the day's rate, to whole units ("€50", "575 kr").
+void SwitchBagCurrency(Bag bag, string? currency) {
+  var from = bag.Currency == null || bag.Currency == "" ? null : bag.Currency;
+  var to = currency == null || currency == "" || currency == TheShop().Currency ? null : currency;
+  if ((from ?? "") == (to ?? "")) { return; }
+  var fromCode = from ?? "";
+  var toCode = to ?? "";
+  var fromRate = from == null ? null : ExchangeRate.FirstOrDefault(r => r.Currency == fromCode);
+  var toRate = to == null ? null : ExchangeRate.FirstOrDefault(r => r.Currency == toCode);
+  foreach (var l in bag.Lines.ToList()) {
+    var gift = l.Gift.FirstOrDefault();
+    if (gift != null && l.Variant.AnyAmount) {
+      var own = fromRate == null || fromRate.PerUnit <= 0 ? gift.Amount : gift.Amount / fromRate.PerUnit;
+      gift.Amount = Math.Round(toRate == null ? own : own * toRate.PerUnit, 0, MidpointRounding.AwayFromZero);
+    }
+  }
+  bag.Currency = to;
+  // An add-on that agreed a price in the old currency (a subscription) agrees it again in the new one — as the shop.
+  foreach (var addOn in ShopAddOns()) { addOn.BagCurrencyChanged(bag); }
+  foreach (var l in bag.Lines.ToList()) { l.PriceWhenAdded = LinePrice(l); }
+}
+
+/// The currency a new bag starts in — the visit's choice, when it chose a currency the shop sells in.
+string? VisitSaleCurrency(string visitId) {
+  var choice = VisitCurrency.Include(v => v.Rate).FirstOrDefault(v => v.VisitId == visitId);
+  if (choice == null || choice.Rate == null) { return null; }
+  return choice.Rate!.Sold && RateUsable(choice.Rate) ? choice.Rate!.Currency : null;
+}
+
+/// Why the shop may not sell in `code` — "" when it may.
+string SellRefusal(string code) {
+  if (ZeroDecimalCurrency(code)) {
+    return $"{code} has no minor unit, and the payment providers count money in hundredths — it can be shown, not sold.";
+  }
+  return "";
+}
+
+/// Sells in `currency` (true), or only shows it again (false). Selling needs its rate — start the rates first.
+[Authorize(IsShopStaff)]
+public void SellInCurrency(string currency, bool sold) {
+  var code = currency.Trim().ToUpper();
+  var rate = ExchangeRate.FirstOrDefault(r => r.Currency == code);
+  if (rate == null) { throw new Exception($"The shop has no rate for {code} yet — start the rates, then sell in it."); }
+  if (sold && SellRefusal(code) != "") { throw new Exception(SellRefusal(code)); }
+  var wasSold = rate.Sold;
+  rate.Sold = sold;
+  // Only showing it again: every bag bought in it goes back to the shop's own currency, and what an add-on agreed in
+  // it moves too (a subscription, to the shop's currency at today's rate — with notice).
+  if (!sold) { foreach (var bag in Bag.Where(b => b.Currency == code).ToList()) { SwitchBagCurrency(bag, null); } }
+  if (wasSold && !sold) { StopSelling(rate); }
+  UnitOfWork.Commit();
+}
+
+/// The shop no longer sells in `rate`'s currency — ONLY an explicit stop: "Only show it", stopping the rates, or the
+/// app no longer offering it. A rate that has merely gone stale stops nothing here: it sells nothing while stale, and
+/// what waits on it (a renewal) waits for a fresh one (D-SELLCURRENCY1). Each add-on is told while the rate still
+/// stands, so what it converts is converted at that day's rate.
+void StopSelling(ExchangeRate rate) {
+  foreach (var addOn in ShopAddOns()) { addOn.CurrencyNoLongerSold(rate); }
+}
+
+/// How prices without one of their own are rounded in `currency`, and from what delivery is free in it.
+[Authorize(IsShopStaff)]
+public void SetCurrencySale(string currency, PriceRounding rounding, decimal freeDeliveryFrom) {
+  var code = currency.Trim().ToUpper();
+  var rate = ExchangeRate.FirstOrDefault(r => r.Currency == code);
+  if (rate == null) { throw new Exception($"The shop has no rate for {code}."); }
+  if (freeDeliveryFrom < 0) { throw new Exception("Free delivery from below nothing means nothing."); }
+  rate.Rounding = rounding;
+  rate.FreeDeliveryFrom = Math.Round(freeDeliveryFrom, 2, MidpointRounding.AwayFromZero);
+  UnitOfWork.Commit();
+}
+
+/// A delivery option's price in `currency` — "" takes it off, and the option's own is converted and rounded again.
+[Authorize(IsShopStaff)]
+public void SetSoldDeliveryPrice(string currency, string delivery, string price) {
+  var code = currency.Trim().ToUpper();
+  var rate = ExchangeRate.FirstOrDefault(r => r.Currency == code);
+  if (rate == null) { throw new Exception($"The shop has no rate for {code}."); }
+  var row = SoldDeliveryPrice.FirstOrDefault(d => d.Rate == rate && d.Delivery == delivery);
+  var amount = ParseAmount(price);
+  if (price.Trim() != "" && (amount == null || amount!.Value < 0)) { throw new Exception($"\"{price.Trim()}\" is not a price."); }
+  if (amount == null) { if (row != null) { row.Delete(); } }
+  else {
+    if (row == null) { row = new SoldDeliveryPrice { Rate = rate, Delivery = delivery }; }
+    row.Price = Math.Round(amount!.Value, 2, MidpointRounding.AwayFromZero);
+  }
+  UnitOfWork.Commit();
+}
+
+/// A size's own price in `currency` — "" takes it off the price list, and the size is sold at its own price converted
+/// and rounded again.
+[Authorize(IsShopStaff)]
+public void SetVariantPrice(Variant variant, string currency, string price) {
+  var code = currency.Trim().ToUpper();
+  if (code == TheShop().Currency) { throw new Exception($"{code} is the shop's own currency — set the price itself."); }
+  var amount = ParseAmount(price);
+  if (price.Trim() != "" && (amount == null || amount!.Value <= 0)) { throw new Exception($"A price in {code} of \"{price.Trim()}\" is not a price."); }
+  var row = VariantPrice.FirstOrDefault(p => p.Variant == variant && p.Currency == code);
+  if (amount == null) { if (row != null) { row.Delete(); } }
+  else {
+    if (row == null) { row = new VariantPrice { Variant = variant, Currency = code }; }
+    row.Price = Math.Round(amount!.Value, 2, MidpointRounding.AwayFromZero);
+  }
+  UnitOfWork.Commit();
+}
+
+/// A currency the shop sells in, as the desk lists it: its rule, its threshold, what each delivery costs in it, and
+/// the ways to pay that cannot take it — with why.
+public class SoldOnTheDesk {
+  public string Currency = "";
+  public PriceRounding Rounding = PriceRounding.To95;
+  public decimal FreeDeliveryFrom = 0;
+  /// The shop's own threshold converted and rounded — what applies while `FreeDeliveryFrom` is zero.
+  public decimal FreeDeliveryConverted = 0;
+  public List<SoldDeliveryLine> Delivery = [];
+  public List<string> NotOffered = [];
+}
+
+public class SoldDeliveryLine {
+  public string Id = "";
+  public string Label = "";
+  /// Set by the desk, or "" — then `Converted` applies.
+  public string Set = "";
+  public decimal Converted = 0;
+}
+
+/// The sold currencies with what the desk needs to run them.
+[Authorize(IsShopStaff)]
+public List<SoldOnTheDesk> SoldCurrenciesOnTheDesk() {
+  var shop = TheShop();
+  var setup = App.Setting<ShopSetup>();
+  List<SoldOnTheDesk> all = [];
+  foreach (var r in ExchangeRate.Where(x => x.Sold).OrderBy(x => x.Currency).ToList()) {
+    var view = new SoldOnTheDesk { Currency = r.Currency, Rounding = r.Rounding, FreeDeliveryFrom = r.FreeDeliveryFrom,
+                                   FreeDeliveryConverted = shop.FreeDeliveryFrom > 0 ? NicePrice(shop.FreeDeliveryFrom * r.PerUnit, r.Rounding) : 0m };
+    var set = r.DeliveryPrices.ToList();
+    var request = new DeliveryQuoteRequest { Currency = shop.Currency, Subtotal = 0, Items = 1, WeightGrams = 1000 };
+    foreach (var d in setup.Delivery.Where(x => x.IsReady())) {
+      FillFromTheDesk(d, shop);
+      foreach (var o in d.Quote(request)) {
+        var id = o.Id == d.Key ? d.Key : d.Key + "/" + o.Id;
+        var row = set.FirstOrDefault(s => s.Delivery == id);
+        view.Delivery.Add(new SoldDeliveryLine { Id = id, Label = o.Label, Set = row == null ? "" : $"{row.Price:0.00}",
+                                                 Converted = NicePrice(o.Price / 100m * r.PerUnit, r.Rounding) });
+      }
+    }
+    foreach (var p in setup.Payments.Where(x => x.IsReady())) {
+      var no = p.CurrencyRefusal(r.Currency, "", shop.Currency);
+      if (no != "") { view.NotOffered.Add($"{p.Label}: {no}"); }
+    }
+    all.Add(view);
+  }
+  return all;
+}

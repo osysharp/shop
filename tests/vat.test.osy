@@ -1,0 +1,246 @@
+// VAT per product: each rate's share of what was paid, delivery and discounts following the goods.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Floor)]
+void a_basket_mixing_rates_states_the_vat_at_each_and_delivery_and_discount_follow_the_goods() {
+  runas (new Visitor { Id = "v-promo-vat" }) {
+    runas (Desk) {
+      var shop = TheShop(); shop.VatPercent = 25m; shop.VatReducedPercent = 12m; UnitOfWork.Commit();
+      SetProductVat(Product.Single(p => p.Name == "Chelsea"), VatClass.Reduced);
+    }
+    Bag("v-promo-vat", "Loafer", "38", 1);        // 120 at 25 %
+    Bag("v-promo-vat", "Chelsea", "38", 1);       // 190 at 12 %; the visit's promo takes 10 % off
+    var receipt = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                             "Storgatan 1", "11122", "Stockholm", "SE");
+    Assert.Equal(329m, receipt.Total);            // 310 − 31 + 50
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == receipt.Reference);
+      var standard = order.VatRates.Single(v => v.Percent == 25m);
+      var reduced = order.VatRates.Single(v => v.Percent == 12m);
+      Assert.Equal(127.35m, standard.Gross);      // 120 + 19.35 of delivery − 12 of discount
+      Assert.Equal(25.47m, standard.Vat);
+      Assert.Equal(201.65m, reduced.Gross);       // 190 + 30.65 − 19
+      Assert.Equal(21.61m, reduced.Vat);
+      Assert.Equal(order.Total, order.VatRates.Sum(v => v.Gross));
+      Assert.Equal(47.08m, order.Vat);
+      Assert.Equal(12m, order.Lines.Single(l => l.ProductName == "Chelsea").VatPercent);
+      Assert.True(ShopMail.Any(m => m.Subject.Contains(order.Reference) && m.Text.Contains("Of which VAT (25 %): €25.47\nOf which VAT (12 %): €21.61")));
+    }
+  }
+}
+
+[Test(Floor)]
+void an_exempt_product_carries_no_vat() {
+  runas (Desk) {
+    var shop = TheShop(); shop.VatPercent = 25m; UnitOfWork.Commit();
+    SetProductVat(Product.Single(p => p.Name == "Loafer"), VatClass.Exempt);
+  }
+  var reference = Buy("v-exempt", "Loafer", "38", 1);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Assert.Equal(0m, order.Vat);
+    Assert.Equal(0m, order.VatRates.Single().Percent);
+  }
+}
+
+[Test(Floor)]
+void a_shop_registered_for_oss_charges_the_destinations_vat_and_its_own_at_home() {
+  runas (new Visitor { Id = "v-oss-de" }) {
+    runas (Desk) {
+      var shop = TheShop(); shop.VatPercent = 25m; shop.HomeCountry = "SE"; shop.OssRegistered = true; UnitOfWork.Commit();
+      Assert.Equal(27, SeedEuVatRates());
+      Assert.Equal(0, SeedEuVatRates());                        // a second press adds nothing, keeps what staff corrected
+    }
+    Bag("v-oss-de", "Loafer", "38", 1);
+    Assert.Equal(Math.Round(170m * 19m / 119m, 2), CheckoutQuote("courier", "DE").Vat);   // shown as it is charged
+    var germany = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                             "Hauptstraße 1", "10115", "Berlin", "DE");
+    Bag("v-oss-se", "Loafer", "39", 1);
+    var sweden = "";
+    runas (new Visitor { Id = "v-oss-se" }) {
+      sweden = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                          "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+    }
+    runas (Desk) {
+      var de = Order.Single(o => o.Reference == germany.Reference);
+      Assert.Equal(19m, de.VatRates.Single().Percent);           // Germany's
+      Assert.Equal("DE", de.VatRates.Single().Country);          // …filed on the OSS return under Germany
+      Assert.Equal(Math.Round(170m * 19m / 119m, 2), de.Vat);     // the same price, Germany's VAT inside it
+      Assert.Equal(25m, Order.Single(o => o.Reference == sweden).VatRates.Single().Percent);
+    }
+  }
+}
+
+[Test(Floor)]
+void a_shop_not_registered_charges_its_own_vat_everywhere() {
+  runas (new Visitor { Id = "v-no-oss" }) {
+    runas (Desk) { var shop = TheShop(); shop.VatPercent = 25m; UnitOfWork.Commit(); SeedEuVatRates(); }
+    Bag("v-no-oss", "Loafer", "38", 1);
+    var germany = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                             "Hauptstraße 1", "10115", "Berlin", "DE");
+    runas (Desk) { Assert.Equal(25m, Order.Single(o => o.Reference == germany.Reference).VatRates.Single().Percent); }
+  }
+}
+
+[Test(Floor)]
+void a_business_in_another_eu_country_buys_without_vat_and_its_invoice_says_why() {
+  runas (new Visitor { Id = "v-b2b" }) {
+    runas (Desk) { var shop = TheShop(); shop.VatPercent = 25m; UnitOfWork.Commit(); }
+    Bag("v-b2b", "Loafer", "38", 1);
+    Assert.Equal("Muster GmbH", SetBuyerVatNumber("de 123 456 789"));
+    var quote = CheckoutQuote("courier", "DE");
+    Assert.True(quote.ReverseCharge);
+    Assert.Equal(136m, quote.Total);                              // 120 and 50, each without its 25 %
+    Assert.Equal(0m, quote.Vat);
+    var receipt = PlaceOrder("Klaus Muster", "klaus@muster.test", "", "courier", "banktransfer",
+                             "Hauptstraße 1", "10115", "Berlin", "DE");
+    Assert.Equal(quote.Total, receipt.Total);
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == receipt.Reference);
+      Assert.True(order.ReverseCharge);
+      Assert.Equal("DE123456789", order.BuyerVatNumber);
+      Assert.Equal(96m, order.Lines.Single().Price);
+      Assert.Equal(0m, order.Vat);
+      Assert.Equal("DE", order.VatRates.Single().Country);
+      MarkPaid(order, ""); Workflow.Settle(order);
+      var hex = Crypto.ToHex(ReceiptPdf(order)).ToUpper();
+      Assert.Contains(Crypto.ToHex(Text.ToBytes("Reverse charge")).ToUpper(), hex);
+    }
+  }
+}
+
+// SECURITY-INVARIANT(a-vat-number-is-checked-by-the-register)'s guard: the bag is the customer's to write, so a
+// "checked" number written onto it by hand buys nothing — neither one never checked, nor one swapped in afterwards.
+[Test(Floor)]
+void a_customer_cannot_mark_their_own_vat_number_as_checked() {
+  runas (new Visitor { Id = "v-b2b-forged" }) {
+    runas (Desk) { var shop = TheShop(); shop.VatPercent = 25m; UnitOfWork.Commit(); }
+    Bag("v-b2b-forged", "Loafer", "38", 1);
+    var bag = BagFor(false)!;
+    bag.BuyerVatNumber = "DE000000000";
+    bag.BuyerCompany = "Nobody GmbH";
+    bag.BuyerVatValid = true;
+    UnitOfWork.Commit();
+    Assert.False(CheckoutQuote("courier", "DE").ReverseCharge);
+    Assert.Equal(170m, CheckoutQuote("courier", "DE").Total);
+    // A real check, then a different number written over it by hand.
+    SetBuyerVatNumber("DE123456789");
+    Assert.True(CheckoutQuote("courier", "DE").ReverseCharge);
+    bag = BagFor(false)!;
+    bag.BuyerVatNumber = "DE999999999";
+    UnitOfWork.Commit();
+    Assert.False(CheckoutQuote("courier", "DE").ReverseCharge);
+    var receipt = PlaceOrder("Klaus Muster", "klaus@muster.test", "", "courier", "banktransfer",
+                             "Hauptstraße 1", "10115", "Berlin", "DE");
+    Assert.Equal(170m, receipt.Total);
+    runas (Desk) { Assert.False(Order.Single(o => o.Reference == receipt.Reference).ReverseCharge); }
+  }
+}
+
+[Test(Floor)]
+void reverse_charge_needs_a_valid_number_from_the_country_the_goods_go_to() {
+  runas (new Visitor { Id = "v-b2b-2" }) {
+    runas (Desk) { var shop = TheShop(); shop.VatPercent = 25m; UnitOfWork.Commit(); }
+    Bag("v-b2b-2", "Loafer", "38", 1);
+    Assert.Contains("not a valid VAT number", Assert.Throws<Exception>(() => SetBuyerVatNumber("DE000000000")).Message);
+    Assert.Contains("pays VAT", Assert.Throws<Exception>(() => SetBuyerVatNumber("SE556677889901")).Message);
+    SetBuyerVatNumber("DE123456789");
+    Assert.False(CheckoutQuote("courier", "SE").ReverseCharge);    // delivered at home: VAT as usual
+    Assert.False(CheckoutQuote("collect", "DE").ReverseCharge);    // collected: it never leaves
+    Assert.Equal(170m, CheckoutQuote("courier", "SE").Total);
+  }
+}
+
+[Test(Floor)]
+void a_shop_for_businesses_shows_prices_without_vat_and_charges_the_same() {
+  runas (new Visitor { Id = "v-b2b" }) {
+    runas (Desk) { var shop = TheShop(); shop.VatPercent = 25m; shop.PricesExcludeVat = true; UnitOfWork.Commit(); }
+    var s = TheShop();
+    Assert.Equal(96m, ShownPrice(120m, VatClass.Standard, s));              // 120 with 25 % in it
+    Assert.Equal(1m, ShownPrice(1m, VatClass.Exempt, s));
+    Assert.Equal("excl. VAT", PriceNote(s));
+    Bag("v-b2b", "Loafer", "38", 1);
+    var q = CheckoutQuote("courier", "SE");
+    Assert.Equal(170m, q.Total);                                             // what is charged does not change
+    Assert.Equal(34m, q.Vat);
+    Assert.Equal(136m, q.Net);
+    Ui.Visit("/search");
+    Assert.Visible("€96", within: "Loafer");
+    Assert.Visible("excl. VAT", within: "Loafer");
+    Assert.Hidden("€120");
+  }
+}
+
+[Test(Floor)]
+void a_shop_for_consumers_shows_prices_with_vat() {
+  runas (Desk) { var shop = TheShop(); shop.VatPercent = 25m; UnitOfWork.Commit(); }
+  Assert.Equal(120m, ShownPrice(120m, VatClass.Standard, TheShop()));
+  Assert.Equal("", PriceNote(TheShop()));
+  Ui.Visit("/search");
+  Assert.Visible("€120", within: "Loafer");
+  Assert.Hidden("excl. VAT");
+}
+
+[Test(Floor)]
+void a_parcel_leaving_the_eu_is_sold_without_vat_and_declared_to_customs() {
+  runas (new Visitor { Id = "v-export" }) {
+    runas (Desk) { var shop = TheShop(); shop.VatPercent = 25m; shop.HomeCountry = "SE"; UnitOfWork.Commit(); }
+    Bag("v-export", "Loafer", "38", 1);                                      // 120 with 25 % in it
+    var q = CheckoutQuote("courier", "NO");
+    Assert.True(q.Exported);
+    Assert.Equal(0m, q.Vat);
+    Assert.Contains("leave the EU", q.VatNote);
+    Assert.Equal(96m + 40m, q.Total);                                        // 96 net goods + 40 net delivery (50 incl.)
+    var reference = PlaceOrder("Ola Nordmann", "ola@example.test", "", "courier", "banktransfer",
+                               "Karl Johans gate 1", "0154", "Oslo", "NO").Reference;
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      Assert.True(order.Exported);
+      Assert.Equal(136m, order.Total);
+      Assert.Equal(0m, order.VatRates.Single().Vat);
+      Assert.Equal("NO", order.VatRates.Single().Country);
+      MarkPaid(order, ""); Workflow.Settle(order);
+      // Customs needs the shop's EORI and each product's tariff number and origin — said before anything is booked.
+      Assert.Contains("EORI", Assert.Throws<Exception>(() => MarkSent(order, "")).Message);
+      TheShop().Eori = "SE5566778899"; UnitOfWork.Commit();
+      Assert.Contains("tariff number", Assert.Throws<Exception>(() => MarkSent(order, "")).Message);
+      SetProductCustoms(Product.Single(p => p.Name == "Loafer"), "6403 99", "Leather shoes", "it");
+      MarkSent(order, "");
+      Workflow.Settle(order);
+      Assert.Contains("customs=640399x1-IT-96&eori=SE5566778899", order.TrackingUrl);
+    }
+  }
+}
+
+[Test(Floor)]
+void a_parcel_inside_the_eu_carries_no_customs() {
+  runas (new Visitor { Id = "v-eu" }) {
+    Bag("v-eu", "Loafer", "38", 1);
+    var reference = PlaceOrder("Anna Müller", "anna@example.test", "", "courier", "banktransfer",
+                               "Hauptstraße 1", "10115", "Berlin", "DE").Reference;
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      Assert.False(order.Exported);
+      MarkPaid(order, ""); Workflow.Settle(order);
+      MarkSent(order, ""); Workflow.Settle(order);
+      Assert.DoesNotContain("customs=", order.TrackingUrl);
+    }
+  }
+}
+
+[Test(Floor)]
+void a_country_typed_as_a_name_is_read_as_its_code_and_an_unknown_one_is_never_an_export() {
+  runas (new Visitor { Id = "v-names" }) {
+    runas (Desk) { var shop = TheShop(); shop.VatPercent = 25m; shop.HomeCountry = "SE"; UnitOfWork.Commit(); }
+    Bag("v-names", "Loafer", "38", 1);
+    Assert.False(CheckoutQuote("courier", "Sweden").Exported);
+    Assert.False(CheckoutQuote("courier", "sverige").Exported);
+    Assert.True(CheckoutQuote("courier", "Norway").Exported);
+    Assert.True(CheckoutQuote("courier", " Norge ").Exported);
+    var unknown = CheckoutQuote("courier", "Atlantis");
+    Assert.False(unknown.Exported);                                          // charged VAT, not let off it
+    Assert.Equal(34m, unknown.Vat);
+  }
+}

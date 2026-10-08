@@ -1,0 +1,285 @@
+// The shop's mail. Every message is a row in an outbox first, and a small workflow delivers it through Resend.
+//
+// ⚑ THE OUTBOX IS WHY MAIL CANNOT LOSE AN ORDER. A mail is written in the same commit as whatever it is about, and
+//   delivered after: a mail provider that is down, or not set up yet, leaves the order standing and the mail waiting.
+//   A shop with no provider at all still works — its mail sits in the outbox as `Held`, where the desk can read it.
+//
+// ⚑ AND NOBODY BUT THE SHOP WRITES IT. A visitor never creates a mail row: an order's confirmation is written by the
+//   order's workflow (which writes as the system), a reset link by the sign-in. Otherwise a stranger could send mail
+//   in the shop's name to anybody.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Resend;
+using Osysharp.Storage;
+using Osysharp.Workflow;
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum MailStatus {
+  [Label("Waiting")] Queued,
+  [Label("Sent")] Sent,
+  [Label("Not sent — no mail provider")] Held,
+}
+
+public entity ShopMail {
+  [Required, MaxLength(255)] string To;
+  [Required, MaxLength(200)] string Subject;
+  [Required] string Text;
+  /// The same mail as HTML — what a mail client shows; `Text` is its plain-text twin. Null for a mail written as text
+  /// alone.
+  string? Html;
+  MailStatus Status;                                 // no default — ShopMailDelivery owns it
+  DateTime? SentAt;
+  /// The provider's id for the sent message — what its support asks for.
+  [MaxLength(80)] string? ProviderId;
+  [MaxLength(300)] string? Problem;
+  /// The pictures the mail carries inside itself — a logo, a QR code — attached by content id when it is sent.
+  [ForeignKey(Mail)] ShopMailImage[] Images;
+  /// For a mail a reader signed up to (a newsletter, a bag reminder): the address a mail client POSTs to stop it —
+  /// sent as the one-click `List-Unsubscribe` pair (RFC 2369 + 8058). Null for a receipt, which cannot be stopped.
+  [MaxLength(600)] string? ListUnsubscribe;
+  /// The key a mailing list gave this mail — handed the same mail twice, the outbox keeps one.
+  [Unique, MaxLength(200)] string? SendKey;
+  /// The order it is about, for a mail to the customer about one — what the order's timeline lists. Null otherwise.
+  Order? Order;
+  security {
+    // Staff read the outbox; a customer reads what was sent to them — their copy of their own data asks for it. The
+    // sign-in flow reads it to mail a taken address at most once a minute (`TellShopAddressIsTaken`) — the flow that
+    // already reads every hash and mints every reset link.
+    allow read when IsAuthenticated || IsShopAuthenticator where To == user.Email;
+    allow read when (IsAuthenticated || IsShopAuthenticator) && IsShopStaff;
+    allow read when IsShopAuthenticator;
+    allow update, delete when IsShopStaff;
+    allow create when IsShopStaff || IsShopAuthenticator;
+  }
+}
+
+/// A picture a mail carries inside itself: the HTML shows it as `cid:ContentId`, and it is attached from the app's own
+/// file at `Path` when the mail is sent — so it shows where a client blocks remote pictures.
+public entity ShopMailImage {
+  [Required] ShopMail Mail;
+  [Required, MaxLength(127)] string ContentId;
+  /// The file in the app's own store — none for an uploaded picture, which is `Asset`.
+  [MaxLength(300)] string? Path;
+  /// The uploaded picture (pasted into a newsletter), when it is one.
+  FileAsset? Asset;
+  [Required, MaxLength(200)] string FileName;
+  [Required, MaxLength(80)] string ContentType;
+  /// Sent as a file beside the mail (a return label to print) rather than a picture inside it.
+  bool Attachment = false;
+  security {
+    allow read when IsAuthenticated where Mail.To == user.Email;
+    allow read when IsShopStaff;
+    allow create when IsShopStaff || IsShopAuthenticator;
+    allow delete when IsShopStaff;
+  }
+}
+
+public workflow ShopMailDelivery {
+  Tracks    = ShopMail.Status;
+  Autostart = true;
+  Initial   = Queued;
+
+  // ⚑ THE SEND IS A CLOCK DUE AT ONCE, NOT THE `enter`. A mail row is written inside somebody's commit — a checkout,
+  //   a return, the order's own step — and an autostarted run's `enter` is part of that commit: it would wait on the
+  //   provider, and past five seconds the commit stops waiting and the caller reads its rows before the step
+  //   (`workflow-first-step-waits-on-a-slow-call`). So `enter` decides only what it can decide here — is there a
+  //   provider at all — and the send runs when the clock fires, after the commit.
+  state Queued {
+    enter {
+      var shop = TheShop();
+      if (!Security.IsSecretSet("ResendApiKey") || shop.MailFrom == null) {
+        this.Item.Problem = "No mail provider is set up — set the ResendApiKey secret and the shop's MailFrom.";
+        goto Held;
+      }
+    }
+    Expire { Within = TimeSpan.Zero; Accrues = false; }
+    on Expire {
+      var shop = TheShop();
+      // Keyed on the row: a retried delivery sends ONE mail, not two. A throw here leaves the mail Queued, and the
+      // delivery is retried later — which is what a provider that is briefly down should get.
+      this.Item.ProviderId = new ResendMailer { ApiKey = Secret.ResendApiKey, From = shop.MailFrom }.Send(
+        new EmailMessage {
+          To = [this.Item.To], Subject = this.Item.Subject, Text = this.Item.Text, Html = this.Item.Html,
+          ReplyTo = shop.ContactEmail == null ? [] : [shop.ContactEmail],
+          Attachments = InlineAttachments(this.Item),
+          Headers = this.Item.ListUnsubscribe == null ? new Dictionary<string, string>() : ListUnsubscribeHeaders(this.Item.ListUnsubscribe!),
+        },
+        "shopmail-" + this.Item.Id.ToString());
+      this.Item.SentAt = DateTime.UtcNow;
+      goto Sent;
+    }
+  }
+
+  terminal success Sent { }
+  terminal cancel Held { }
+}
+
+/// Puts a mail in the outbox — a rendered template (`Mail(to, App.Setting<ShopSetup>().Mails.OrderConfirmation(order))`), its HTML and its
+/// plain-text twin. It is delivered once the caller commits. Public so an add-on's mail goes the same way — sent
+/// through the shop's provider, held without one, readable on the desk, never to an erased customer.
+///
+/// SECURITY-INVARIANT(mail-carries-only-pictures-the-sender-may-open): an uploaded picture goes only when the CALLER
+/// may open it — read here, as them, because the mail is delivered later by the shop itself, which reads anything.
+/// Otherwise pasting another person's file id into a newsletter would mail their private file out. Guarded by
+/// campaign.test.osy a_pasted_picture_travels_inside_the_mail_and_only_one_the_writer_may_open.
+///
+/// `listUnsubscribe`: for a mail a reader signed up to, the one-click address that stops it (`Osysharp.MailingLists`).
+/// `order`: the order a mail to the customer is about — what the order's timeline lists.
+public void Mail(string to, RenderedEmail mail, string? listUnsubscribe = null, string? sendKey = null, Order? order = null,
+                 List<MailFile>? files = null) {
+  // SECURITY-INVARIANT(blocks-preview-never-sent): a mail rendered while a member of staff PREVIEWS the site (a draft,
+  // another version, another date — `RenderedEmail.IsPreview`) is never queued: what it says is not what the customer
+  // should be sent, and a draft is not published. Refused here, where every shop mail enters the outbox, so an action
+  // taken mid-preview (marking an order sent) cannot mail the preview out. Guarded by
+  // mail.test.osy a_mail_rendered_while_staff_preview_is_never_sent.
+  if (mail.IsPreview) {
+    throw new ValidationException("You are previewing the site, so no mail is sent — a mail now would say what the preview shows. Stop previewing, then try again.");
+  }
+  var row = new ShopMail { To = to, Subject = mail.Subject, Text = mail.Text, Html = mail.Html == "" ? null : mail.Html,
+                           ListUnsubscribe = listUnsubscribe == "" ? null : listUnsubscribe, SendKey = sendKey, Order = order };
+  if (files != null) {
+    foreach (var f in files) {
+      new ShopMailImage { Mail = row, ContentId = f.FileName, Path = f.Path, FileName = f.FileName, ContentType = f.ContentType,
+                          Attachment = true };
+    }
+  }
+  foreach (var image in mail.Inline) {
+    if (image.Asset == null) {
+      new ShopMailImage { Mail = row, ContentId = image.ContentId, Path = image.Path, FileName = image.FileName,
+                          ContentType = image.ContentType };
+      continue;
+    }
+    var asset = FileAsset.FirstOrDefault(a => a.Id == image.Asset);
+    if (asset == null) { throw new Exception("A picture in this mail is not one you can open, so the mail was not sent."); }
+    new ShopMailImage { Mail = row, ContentId = image.ContentId, Asset = asset, FileName = asset.Name,
+                        ContentType = asset.MimeType ?? "application/octet-stream" };
+  }
+}
+
+/// A file of the app's own that goes with a mail — a return label to print. Only the shop's own workflows attach one:
+/// a mail row is written by staff or the shop itself, never by a customer.
+public class MailFile {
+  /// Where it is in the app's file store.
+  public string Path = "";
+  public string FileName = "";
+  public string ContentType = "application/octet-stream";
+}
+
+/// The pictures a mail carries inside itself, as the attachments its `cid:` references resolve to. A picture whose file
+/// has gone is left out rather than stopping the mail — the reader loses one picture, not the whole message.
+public List<EmailAttachment> InlineAttachments(ShopMail mail) {
+  List<EmailAttachment> files = [];
+  foreach (var image in mail.Images) {
+    try {
+      var content = image.Asset != null ? File.ReadAllBytes(image.Asset) : File.ReadAllBytes(image.Path ?? "");
+      files.Add(new EmailAttachment { Filename = image.FileName, Content = content,
+                                      ContentType = image.ContentType, ContentId = image.Attachment ? "" : image.ContentId });
+    }
+    catch (Exception ex) { Log.Warning($"Mail {mail.Id}: the picture {image.Path} could not be read, so it is sent without it: {ex.Message}"); }
+  }
+  return files;
+}
+
+/// The shop's mail, one method per kind (D-EMAILTEMPLATES1). Each answers the kit's own template; a store that wants
+/// its own derives from this, overrides the ones it writes, and lists it in `app.Shop`:
+///
+///     public class GroundsMails : ShopMails {
+///       public override RenderedEmail OrderConfirmation(Order order, string? language = null) {
+///         return GroundsConfirmation(order, language: language);
+///       }
+///     }
+///     app.Shop = new ShopSetup { …, Mails = new GroundsMails() };
+///
+/// Every mail the shop sends is asked for HERE — never by a template's name — so an override reaches every place
+/// that mail goes out from.
+///
+/// The three the desk previews take `language`: null — every real send — is the order's own language (the one the
+/// customer shopped in); the desk passes the language whose words staff are editing, and an override passes it on
+/// (`language: language`) so its preview is in that language too.
+public class ShopMails {
+  public virtual RenderedEmail OrderConfirmation(Order order, string? language = null) {
+    return ShopOrderConfirmation(order, language: language);
+  }
+  /// Sent — or collected, for an order picked up at the counter.
+  public virtual RenderedEmail Shipped(Order order, string? language = null) { return ShopShipped(order, language: language); }
+  public virtual RenderedEmail Refunded(Order order, string? language = null) { return ShopRefunded(order, language: language); }
+  /// How to hand a return in: the carrier's code, its QR code and the label.
+  public virtual RenderedEmail ReturnCode(ReturnRequest ret) { return ShopReturnCode(ret); }
+  /// Where to post a return when no carrier label can be had — the shop's address and what to put in the parcel.
+  public virtual RenderedEmail ReturnInstructions(ReturnRequest ret) { return ShopReturnInstructions(ret); }
+  /// `language`: the language of the accounts it goes to (null: the sender's) — the alerts are rendered once per language.
+  public virtual RenderedEmail BackInStock(Variant variant, string? language = null) { return ShopBackInStock(variant, language: language); }
+  /// A code of the customer's own, from an add-on — `Osysharp.Shop.Discounts` gives one to put something right.
+  public virtual RenderedEmail GiftCode(string code, string gives, DateOnly until) { return ShopGiftCode(code, gives, until); }
+  /// A newsletter staff wrote on the desk, for one reader — see `CampaignFor` in mail/Campaigns.osy.
+  /// `language`: the reader's — the frame around staff's words (the footer, the way out) is in it.
+  public virtual RenderedEmail Campaign(ShopCampaign campaign, string recipientName, string? unsubscribe = null, string? language = null) {
+    return ShopCampaignMail(campaign, recipientName, unsubscribe, language: language);
+  }
+  /// The one reminder about a bag left with things in it — see mail/Lists.osy.
+  /// `resume` is the link that opens this bag on any device (a `ResumeBag` grant) — "" sends the reader to the bag page.
+  public virtual RenderedEmail BagReminder(Bag bag, string? unsubscribe = null, string resume = "") { return ShopBagReminder(bag, unsubscribe, resume); }
+  /// Staff's message to the customer about their order, written on the desk (`MessageCustomer`).
+  public virtual RenderedEmail OrderMessage(Order order, string text) { return ShopOrderMessage(order, text); }
+  /// A link to pay an order the shop placed for the customer — a phone sale (`SendPayLink`).
+  public virtual RenderedEmail PayLink(Order order, string link) { return ShopPayLinkMail(order, link); }
+  /// A gift card for whoever it is for — the one place its code is ever written (GiftCards.osy).
+  public virtual RenderedEmail GiftCard(GiftCard card, string code) { return ShopGiftCardMail(card, code); }
+  /// The files a paid order bought, each with its link (Downloads.osy).
+  public virtual RenderedEmail Downloads(Order order, List<DownloadMailLine> links) { return ShopDownloadsMail(order, links); }
+  /// A link to choose a new password (`ShopRequestPasswordReset`) — in the account's language.
+  public virtual RenderedEmail PasswordReset(ShopAccount account, string token, string link) {
+    return ShopPasswordResetMail(account, token, link);
+  }
+  /// A sign-up for an address that already has an account (`ShopSignup`) — to that address, in the account's language:
+  /// the page said only that a message is on its way, so this is where its owner learns which.
+  public virtual RenderedEmail AccountExists(ShopAccount account, string signIn, string reset) {
+    return ShopAccountExistsMail(account, signIn, reset);
+  }
+  /// What proves the account's address — a six-digit code and a link (`ShopSetup.RequireConfirmedEmail`).
+  public virtual RenderedEmail ConfirmAddress(ShopAccount account, string code, string link) {
+    return ShopConfirmAddressMail(account, code, link);
+  }
+  /// The account's address changed — to the old address and to the new one (`ShopChangeEmail`).
+  public virtual RenderedEmail AddressChanged(ShopAccount account, string address, bool toTheOldAddress) {
+    return ShopAddressChangedMail(account, address, toTheOldAddress);
+  }
+  /// Store credit the shop gave (StoreCredit.osy).
+  public virtual RenderedEmail StoreCredit(ShopAccount account, decimal amount, string reason) {
+    return ShopStoreCreditMail(account, amount, reason);
+  }
+  /// Everything else — paid, ready to collect — in the shop's frame. ⚠ Its words are written by the CALLER, so they
+  /// are in the caller's language: a mail a customer reads in their own language is a template of its own.
+  public virtual RenderedEmail Notice(string subject, string heading, string text, string? action = null, string? href = null) {
+    return ShopNotice(subject, heading, text, action, href);
+  }
+}
+
+/// A kind of mail the desk can preview for an order.
+public class MailPreviewKind {
+  public string Key = "";
+  public string Label = "";
+}
+
+/// The mails the desk previews for a real order — the ones a template fills from the order alone.
+public List<MailPreviewKind> ShopMailPreviewKinds() {
+  return [
+    new MailPreviewKind { Key = "confirmation", Label = "Order confirmation" },
+    new MailPreviewKind { Key = "shipped", Label = "On its way" },
+    new MailPreviewKind { Key = "refunded", Label = "Refunded" },
+  ];
+}
+
+/// One mail rendered for a real order, exactly as the customer would get it — through the store's own `ShopMails`, so
+/// an overridden template previews as itself. Nothing is sent. Staff only: a mail carries the order's contact.
+/// `language` renders it in that language instead of the order's — the desk previews each language's words on any
+/// order; null is the order's own, what the customer got.
+[Authorize(IsShopStaff)]
+public RenderedEmail ShopMailPreview(string kind, Guid orderId, string? language = null) {
+  var order = Order.Single(o => o.Id == orderId);
+  var mails = App.Setting<ShopSetup>().Mails;
+  if (kind == "shipped") { return mails.Shipped(order, language); }
+  if (kind == "refunded") { return mails.Refunded(order, language); }
+  return mails.OrderConfirmation(order, language);
+}

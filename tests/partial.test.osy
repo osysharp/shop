@@ -1,0 +1,67 @@
+// Part of an order refunded: a return of one of several, and a piece that turned out not to be in stock.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+string ThreeThings(string visit) {
+  runas (new Visitor { Id = visit }) {
+    Bag(visit, "Loafer", "38", 2);
+    Bag(visit, "Chelsea", "38", 1);
+    return PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                      "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+  }
+}
+
+[Test(Floor)]
+void one_of_three_comes_back_and_only_that_is_refunded() {
+  var reference = ThreeThings("v-part-1");
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    MarkPaid(order, ""); Workflow.Settle(order);
+    MarkSent(order, ""); Workflow.Settle(order);
+    var loafer = order.Lines.Single(l => l.ProductName == "Loafer");
+    var ret = RefundPart(loafer, 1, "Too small", true);
+    Workflow.Settle(ret);
+    Assert.Equal(ReturnStatus.Refunded, ret.Status);
+    Assert.Equal(120m, ret.Amount);
+    Assert.Equal(120m, CreditNote.Single(c => c.Return == ret).Total);
+    Assert.Equal(1, RefundableOf(loafer));
+    Assert.Contains("1 more", Assert.Throws<Exception>(() => RefundPart(loafer, 2, "", true)).Message);
+    Assert.True(IsSent(Order.Single(o => o.Reference == reference)));        // the rest of the order stands
+    Assert.Equal(1, Pick("Loafer", "38").Stock);                              // the one back is on sale again
+  }
+}
+
+[Test(Floor)]
+void a_piece_not_in_stock_after_all_is_refunded_before_sending_and_left_out_of_the_parcel() {
+  var reference = ThreeThings("v-part-2");
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    MarkPaid(order, ""); Workflow.Settle(order);
+    var chelsea = order.Lines.Single(l => l.ProductName == "Chelsea");
+    var ret = RefundPart(chelsea, 1, "Not on the shelf", true);
+    Workflow.Settle(ret);
+    Assert.True(ret.NotSent);
+    Assert.Equal(190m, ret.Amount);
+    Assert.Equal(0, Pick("Chelsea", "38").Stock);                             // never there: not restocked
+    Assert.Equal(["Loafer"], PackingList(order).Select(l => l.Name).ToList()); // the parcel holds the rest
+    Assert.Equal(2, PackingList(order).Single().Quantity);
+    Assert.True(ShopMail.Any(m => m.Subject.StartsWith($"Part of order {reference} could not be sent") && m.Text.Contains("1 × Chelsea")));
+    Assert.Equal(OrderStatus.Paid, Order.Single(o => o.Reference == reference).Status);
+  }
+}
+
+[Test(Floor)]
+void the_orders_list_is_filtered_by_stage() {
+  var waiting = Buy("v-stage-1", "Loafer", "38", 1);
+  var paid = Buy("v-stage-2", "Loafer", "39", 1);
+  runas (Desk) {
+    var p = Order.Single(o => o.Reference == paid);
+    MarkPaid(p, ""); Workflow.Settle(p);
+    var all = Order.ToList();
+    Assert.Equal([waiting], all.Where(o => InOrderStage(o, "waiting")).Select(o => o.Reference).ToList());
+    Assert.Equal([paid], all.Where(o => InOrderStage(o, "paid")).Select(o => o.Reference).ToList());
+    Assert.Equal(2, all.Count(o => InOrderStage(o, "all")));
+    Assert.Empty(all.Where(o => InOrderStage(o, "sent")).ToList());
+  }
+}

@@ -1,0 +1,248 @@
+// An order is read through its link, never by its reference (D-ORDERLINK1): by the account it was placed from, the
+// visit that placed it, staff and packers, and whoever holds a signed `OrderLink` to it — and by nobody else.
+// SECURITY-INVARIANT(an-order-reads-through-its-link).
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// What a function holding an order's link reads — orders, their lines, and who they are for.
+[AllowAnonymous] int OrdersSeenWith(OrderLink link) { return Order.Count(); }
+[AllowAnonymous] int LinesSeenWith(OrderLink link) { return OrderLine.Count(); }
+[AllowAnonymous] int PeopleSeenWith(OrderLink link) { return OrderContact.Count() + ShopAccount.Count(); }
+
+/// The order link a mail carries — the `g1.…` after `/order/`.
+string OrderLinkIn(string text) {
+  var m = Regex.Match(text, "/order/(g1\\.[A-Za-z0-9_\\-]+)");
+  Assert.True(m.Success);
+  return m.Groups[1].Value;
+}
+
+[Test(Floor)]
+void a_stranger_with_the_reference_reads_nothing_and_lists_no_orders() {
+  var ana = Buy("v-ana", "Loafer", "38", 1);
+  var bo = Buy("v-bo", "Chelsea", "38", 1);
+  // Control: the rows are there, with lines and VAT, for the shop to read.
+  runas (Desk) {
+    Assert.Equal(2, Order.Count());
+    Assert.Equal(2, OrderLine.Count());
+    Assert.True(OrderVat.Count() > 0);
+  }
+  // A stranger who knows the reference — it is printed on the parcel, and counts up by one — reads nothing.
+  runas (new Visitor { Id = "v-stranger" }) {
+    Assert.Equal(0, Order.Count());
+    Assert.Null(Order.SingleOrDefault(o => o.Reference == ana));
+    Assert.Equal(0, OrderLine.Count());
+    Assert.Equal(0, OrderVat.Count());
+    Assert.Equal(0, OrderAdjustment.Count());
+    Assert.Equal(0, OrderGiftCard.Count());
+  }
+  // Another guest reads their own order and not the first guest's.
+  runas (new Visitor { Id = "v-bo" }) {
+    Assert.Equal(1, Order.Count());
+    Assert.Null(Order.SingleOrDefault(o => o.Reference == ana));
+    Assert.NotNull(Order.SingleOrDefault(o => o.Reference == bo));
+  }
+  // Signed in is not enough either: a customer lists only what is theirs, which here is nothing.
+  runas (Olle) { Assert.Equal(0, Order.Count()); }
+}
+
+[Test(Floor)]
+void the_visit_that_placed_an_order_reads_it_without_a_link() {
+  var ana = Buy("v-ana", "Loafer", "38", 1);
+  runas (new Visitor { Id = "v-ana" }) {
+    var order = Order.Single(o => o.Reference == ana);
+    Assert.Equal(1, order.Lines.Count());
+    Assert.Equal(1, OrderLine.Count());
+    Assert.Equal(0, OrderContact.Count());      // who it is for stays the shop's
+  }
+}
+
+[Test(Floor)]
+void the_account_reads_its_own_orders_from_any_browser() {
+  var mine = "";
+  runas (Maja) { mine = Buy("v-maja-laptop", "Loafer", "38", 1); }
+  runas (new Visitor { Id = "v-maja-phone" }) {
+    runas (Maja) { Assert.NotNull(Order.SingleOrDefault(o => o.Reference == mine)); }
+    runas (Olle) { Assert.Equal(0, Order.Count()); }
+  }
+}
+
+[Test(Floor)]
+void the_link_reads_its_own_order_and_no_other() {
+  var ana = Buy("v-ana", "Loafer", "38", 1);
+  Buy("v-bo", "Chelsea", "38", 1);
+  var link = LinkOf(ana);
+  runas (new Visitor { Id = "v-stranger" }) {
+    var view = OrderByLink(link);
+    Assert.Equal(ana, view.Reference);
+    Assert.Equal(1, view.Lines.Count);
+    Assert.Equal(1, OrdersSeenWith(link));        // its order, and not the other
+    Assert.Equal(1, LinesSeenWith(link));
+    Assert.Equal(0, PeopleSeenWith(link));        // never who it is for
+    Assert.Equal(0, Order.Count());               // the link counts for the call that takes it, and no longer
+  }
+}
+
+[Test(Floor)]
+void an_altered_or_expired_link_opens_nothing() {
+  var ana = Buy("v-ana", "Loafer", "38", 1);
+  var token = $"{LinkOf(ana)}";
+  runas (new Visitor { Id = "v-stranger" }) {
+    Assert.Equal(ana, OrderByLink(OrderLink.From(token)).Reference);      // control: the link as it was made
+    Assert.Throws<NotAuthorized>(() => OrderLink.From(Altered(token)));
+    Assert.Throws<NotAuthorized>(() => OrderLink.From("g1.not-a-link"));
+    Assert.Throws<NotAuthorized>(() => OrderByLink(OrderLink.From(ana)));  // the reference is not a link
+  }
+  TestClock.Advance(TimeSpan.FromDays(366));
+  runas (new Visitor { Id = "v-stranger" }) { Assert.Throws<NotAuthorized>(() => OrderLink.From(token)); }
+}
+
+[Test(Floor)]
+void every_mail_about_an_order_links_to_it_and_the_link_outlives_the_orders_payment_link() {
+  var reference = "";
+  var pay = "";
+  runas (Desk) {
+    var bag = StartDeskOrder();
+    AddToDeskOrder(bag, Pick("Chelsea", "38"), 1);
+    reference = PlaceDeskOrder(bag, new DeskCustomer { Name = "Kim", Email = "kim@example.test" }, "collect", "banktransfer", false).Reference;
+    pay = SendPayLink(Order.Single(o => o.Reference == reference), false);
+  }
+  var confirmation = "";
+  runas (Desk) {
+    var mail = ShopMail.Single(m => m.Subject.StartsWith($"Your order {reference}"));
+    confirmation = OrderLinkIn(mail.Html ?? "");
+    Assert.DoesNotContain("/account", mail.Html ?? "");                    // "See your order" opens the order itself
+  }
+  Assert.Equal("Reserved", OrderByLink(OrderLink.From(confirmation)).StatusText);
+
+  // Paid: the payment link has done its job and is taken back; the link to the order is not.
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    MarkPaid(order, "");
+    Workflow.Settle(order);
+    var paidMail = ShopMail.Single(m => m.Subject.StartsWith($"Paid — order {reference}"));
+    Assert.Equal(reference, OrderByLink(OrderLink.From(OrderLinkIn(paidMail.Html ?? ""))).Reference);
+  }
+  Assert.Throws<NotAuthorized>(() => Pay.From(TokenOf(pay)));
+  var view = OrderByLink(OrderLink.From(confirmation));
+  Assert.Equal(reference, view.Reference);
+  Assert.NotEqual("", view.PaidOn);
+}
+
+// ── returns and the receipt through the link (D-ORDERLINK1's owed items) ─────────────────────────────────────────
+// SECURITY-INVARIANT(a-link-opens-only-its-own-orders-return-and-receipt).
+
+[AllowAnonymous] int ReturnsSeenWith(OrderLink link) { return ReturnRequest.Count() + ReturnLine.Count(); }
+[AllowAnonymous] int InvoicesSeenWith(OrderLink link) { return Invoice.Count(); }
+/// The receipt as the link's holder gets it — the same document `ReceiptLinkWith` writes.
+[AllowAnonymous] byte[] ReceiptSeenWith(OrderLink link) { return ReceiptPdf(link.Row); }
+
+/// An order line's id, as staff read it — what a return names.
+Guid LineOf(string reference) {
+  runas (Desk) { return OrderLine.Single(l => l.Order.Reference == reference).Id; }
+}
+
+string Hex(string text) { return Crypto.ToHex(Text.ToBytes(text)).ToUpper(); }
+
+[Test(Floor)]
+void a_guest_sends_something_back_from_the_orders_page_through_its_link() {
+  var ana = Buy("v-ana", "Loafer", "38", 1);
+  var link = LinkOf(ana);
+  runas (new Visitor { Id = "v-ana-phone" }) {
+    // Not sent yet: nothing to send back.
+    Assert.False(OrderByLink(link).CanReturn);
+    Assert.Contains("nothing in it can be returned", ReturnWithLink(link, LineOf(ana), 1, ""));
+  }
+  runas (Desk) { PayAndSend(ana); }
+  runas (new Visitor { Id = "v-ana-phone" }) {
+    var view = OrderByLink(link);
+    Assert.True(view.CanReturn);
+    Assert.NotEqual("", view.ReturnsUntil);
+    var line = view.Returnable.Single();
+    Assert.Equal(1, line.Left);
+    Assert.Equal("", ReturnWithLink(link, line.LineId, 1, "Too small"));
+    // Started — the order's page follows it, and the line is not offered again.
+    view = OrderByLink(link);
+    Assert.False(view.CanReturn);
+    Assert.Equal("Waiting for the parcel", view.Returns.Single().StatusText);
+    Assert.Equal(["1 × Loafer (38): Too small"], view.Returns.Single().Lines);
+    // The same rules as an account's return: never more than was bought.
+    Assert.Contains("already on its way back", ReturnWithLink(link, line.LineId, 1, ""));
+  }
+  // The desk takes it in as any return; the money goes back the way it was paid, and the page says so.
+  runas (Desk) {
+    var ret = ReturnRequest.Single();
+    Assert.Equal(ana, ret.Order.Reference);
+    Assert.False(ret.AsCredit);
+    ReceiveReturn(ret, true);
+    Workflow.Settle(ret);
+    Assert.Equal(ReturnStatus.Refunded, ret.Status);
+    Assert.True(ShopMail.Any(m => m.To == "maja@example.test" && m.Subject.StartsWith("Refunded — your return")));
+  }
+  runas (new Visitor { Id = "v-ana-phone" }) {
+    Assert.Equal("Refunded €120", OrderByLink(link).Returns.Single().Outcome);
+  }
+}
+
+// The guard: a link opens a return on its own order's lines and reads its own order's returns — nothing of another.
+[Test(Floor)]
+void a_link_returns_only_its_own_orders_lines() {
+  var ana = Buy("v-ana", "Loafer", "38", 1);
+  var bo = Buy("v-bo", "Chelsea", "38", 1);
+  runas (Desk) { PayAndSend(ana); PayAndSend(bo); }
+  var anas = LinkOf(ana);
+  var bos = LinkOf(bo);
+  runas (new Visitor { Id = "v-stranger" }) {
+    // Ana's link naming Bo's line: refused, and no return is started on either order.
+    Assert.Equal("That is not part of this order.", ReturnWithLink(anas, LineOf(bo), 1, ""));
+    // A question written by hand: a made-up link, or Ana's link with Bo's line — the shop starts nothing.
+    var forged = new ReturnAsk { Link = "g1.not-a-link", LineId = LineOf(bo), Quantity = 1, VisitId = "v-stranger" };
+    var crossed = new ReturnAsk { Link = $"{anas}", LineId = LineOf(bo), Quantity = 1, VisitId = "v-stranger" };
+    UnitOfWork.Commit();
+    Assert.Equal("This link has expired or is not valid.", forged.Problem);
+    Assert.Equal("That is not part of this order.", crossed.Problem);
+    Assert.Null(crossed.Return);
+  }
+  runas (Desk) { Assert.Equal(0, ReturnRequest.Count()); }
+  // Bo starts one with his own link: Ana's link reads none of it, and nobody without a link reads any.
+  runas (new Visitor { Id = "v-bo-phone" }) { Assert.Equal("", ReturnWithLink(bos, LineOf(bo), 1, "")); }
+  runas (new Visitor { Id = "v-stranger" }) {
+    Assert.Equal(0, ReturnsSeenWith(anas));
+    Assert.Equal(0, OrderByLink(anas).Returns.Count);
+    Assert.Equal(2, ReturnsSeenWith(bos));                                       // his return and its line
+    Assert.Equal(0, ReturnRequest.Count());
+    Assert.Equal(0, ReturnLine.Count());
+  }
+}
+
+[Test(Floor)]
+void a_link_fetches_its_orders_receipt_and_no_one_elses() {
+  runas (Desk) { var shop = TheShop(); shop.VatPercent = 25m; UnitOfWork.Commit(); }
+  var ana = Buy("v-ana", "Loafer", "38", 1);
+  var bo = Buy("v-bo", "Chelsea", "38", 1);
+  runas (Desk) { PayAndSend(ana); PayAndSend(bo); }
+  var anas = LinkOf(ana);
+  var anaId = Guid.Empty;
+  var boId = Guid.Empty;
+  runas (Desk) {
+    anaId = Order.Single(o => o.Reference == ana).Id;
+    boId = Order.Single(o => o.Reference == bo).Id;
+  }
+  runas (new Visitor { Id = "v-stranger" }) {
+    var url = ReceiptLinkWith(anas);
+    Assert.Contains($"link-{anaId}", url);
+    Assert.DoesNotContain($"{boId}", url);
+    // The receipt is the order's — its reference, its invoice, its VAT — and never who it is for.
+    var pdf = Crypto.ToHex(ReceiptSeenWith(anas)).ToUpper();
+    Assert.StartsWith("255044462D312E34", pdf);                                   // %PDF-1.4
+    Assert.Contains(Hex(ana), pdf);
+    Assert.Contains(Hex("Receipt / invoice"), pdf);
+    Assert.Contains(Hex("of which VAT"), pdf);
+    Assert.DoesNotContain(Hex(bo), pdf);
+    Assert.DoesNotContain(Hex("maja@example.test"), pdf);
+    Assert.DoesNotContain(Hex("Maja Berg"), pdf);
+    // Its invoice, and no other; without a link, none.
+    Assert.Equal(1, InvoicesSeenWith(anas));
+    Assert.Equal(0, Invoice.Count());
+  }
+}

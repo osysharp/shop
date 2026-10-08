@@ -1,0 +1,42 @@
+// The catalogue as staff keep it: new products, their sizes, their photographs — and a visitor kept out of all of it.
+
+using Osysharp.Shop;
+using Osysharp.Storage;
+
+[Test(Floor)]
+void a_new_product_is_a_draft_until_it_has_a_size_and_is_listed() {
+  runas (Desk) {
+    var shoes = Category.Single(c => c.Slug == "womens-shoes");
+    var p = CreateProduct("Suede Derby", shoes, 150m);
+    Assert.Equal("suede-derby", p.Slug);
+    Assert.Equal(ProductStatus.Draft, p.Status);
+    Assert.Throws<Exception>(() => UpdateProduct(p, "Suede Derby", "", "", "", 150m, ProductStatus.Listed, shoes));
+    AddVariant(p, "40", "", 3);
+    UpdateProduct(p, "Suede Derby", "Vall", "A soft derby.", "", 145m, ProductStatus.Listed, shoes);
+    Assert.Equal(1, StockMove.Count(m => m.Variant.Product == p && m.Change == 3));
+  }
+  Assert.Equal(145m, Product.Single(x => x.Slug == "suede-derby").Price);   // a visitor sees it now
+}
+
+[Test(Floor)]
+void a_photograph_is_copied_into_the_public_store_and_ordered() {
+  runas (Desk) {
+    var p = Product.Single(x => x.Name == "Loafer");
+    File.WriteAllBytes("uploads/first.jpg", Convert.FromBase64String("YWJj"));
+    File.WriteAllBytes("uploads/second.jpg", Convert.FromBase64String("ZGVm"));
+    var a = AddProductPhoto(p, "uploads/first.jpg", "");
+    var b = AddProductPhoto(p, "uploads/second.jpg", "The side");
+    Assert.StartsWith("public/products/loafer-", a.Path);
+    Assert.Equal(3, File.ReadAllBytes(a.Path).Length);
+    MovePhoto(b, -1);
+    Assert.Equal("The side", ProductImage.Where(i => i.Product == p).OrderBy(i => i.Rank).First().Alt);
+    RemovePhoto(a);
+    Assert.Equal(1, ProductImage.Count(i => i.Product == p));
+  }
+}
+
+[Test(Floor)]
+void a_visitor_cannot_touch_the_catalogue() {
+  Assert.Throws<Exception>(() => CreateProduct("Nope", null, 1m));
+  Assert.Throws<Exception>(() => ArchiveProduct(Product.Single(p => p.Name == "Loafer")));
+}

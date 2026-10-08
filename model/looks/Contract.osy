@@ -1,0 +1,83 @@
+// Osysharp.Shop.Looks — the SHOP's contract for looks (D-SITEFRAME1 part 2), on top of the general site contract
+// (`Osysharp.Site.Looks`): the block types only a shop has — a row of its products, its shelves as tiles — and the PARTS
+// of a store a look draws: its frame around every page, its front page, a page's content column, a listing, a grid of
+// pieces, a piece's own page, and a "not here". The shape only; a LOOK kit draws each in its own design
+// (`component AtelierFrame() : ShopFrame { … }`), with exactly these parameters.
+//
+// ⚑ It ships INSIDE the shop kit, in a namespace of its own, because its types are the shop's data (a `Product`, a
+// `Category`) — a separate package would have to use the shop, and the shop's own plain design of these types (in
+// model/ui/Blocks.osy) would then need that package: a cycle. A store `use`s the shop and names this namespace.
+//
+// A store's pages keep what is the STORE's — the data they read, the head a search engine reads, the checkout's steps —
+// and hand the look what it draws:
+//
+//     [Layout] [AllowAnonymous] component Shop() { render { ShopFrame { Outlet(retain: 8); } } }
+//     [Page("/")] [Layout(Shop)] [AllowAnonymous] component Home() { render { FrontPage(); } }
+
+namespace Osysharp.Shop.Looks;
+
+using Osysharp.Ui;
+using Osysharp.Blocks;
+using Osysharp.Shop;
+
+// ── block types ──────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A row of the shop's products — from one shelf, or the newest — each with its photograph and price.
+[Block("Product row")]
+public abstract component ProductRow(
+    [Label("Heading"), MaxLength(80)] string title = "New in",
+    [Label("From the shelf"), Hint("Leave it empty for the newest from every shelf.")] Category? shelf = null,
+    [Label("How many"), Range(2, 8)] int count = 4,
+    [Label("Link under it"), MaxLength(40)] string more = "See them all",
+    [Label("The link goes to")] PageLink link = "/search");
+
+/// The shop's shelves as tiles, each with its picture and name — the way into the catalogue.
+[Block("Shelves")]
+public abstract component CategoryTiles([Label("Heading"), MaxLength(80)] string title = "The shelves");
+
+// ── the parts of a store a look draws ────────────────────────────────────────────────────────────────────────────────
+
+/// The frame around every page — the header and its menu, the strip across the top, the footer, the account and the
+/// bag — with the page inside it. A store's layout places it once, with its `Outlet` inside.
+public abstract component ShopFrame();
+
+/// The front page.
+public abstract component FrontPage();
+
+/// A page's content column, with the look's own margins and width.
+public abstract component ShopSection();
+
+/// A listing — a shelf, or everything: its name, a line about it, its sub-shelves as links, and its pieces. An empty
+/// listing shows the store's own `slot empty { … }` under its words (a demo's "restock the shop", say).
+public abstract component ListingPage(string title, string lead, List<Product> products, List<Category> shelves, string current);
+
+/// Pieces in a grid — the front page's new arrivals, a listing's pieces.
+public abstract component ProductGrid(List<Product> products);
+
+/// One piece's page — every photograph, its name and price, its sizes, the way into the bag, its spec sheet — and the
+/// store's own line under it (`note`: its delivery and returns). Handed the piece with its images, variants, specs and
+/// category read; null when there is no such piece.
+public abstract component ProductPage(Product? product, string note = "");
+
+/// Something that is not here — a shelf, a piece — and where to go instead.
+public abstract component NotFound(string message, string linkLabel = "", string to = "");
+
+// ── what a look reads while it draws ─────────────────────────────────────────────────────────────────────────────────
+//
+// Pure, over rows a look already holds, so they run in the browser as a page renders.
+
+/// A price as the store writes it — "1 290 kr", "$1,290" — in the shop's own currency.
+public string LookPrice(decimal price, ShopSettings? shop) {
+  return shop == null ? $"{price:N0}" : Money(price, shop);
+}
+
+/// The second photograph by rank — what a card shows under the pointer — or the cover when there is only one.
+public string LookSecondCover(ProductImage[] images) {
+  return images.OrderBy(i => i.Rank).Skip(1).Select(i => i.Path).FirstOrDefault() ?? CoverPhoto(images);
+}
+
+/// "S", "Black", "Black / S" — a variant as a size chip reads it; "One size" for a piece with no options.
+public string LookSizeName(Variant v) {
+  var label = VariantLabel(v);
+  return label == "" ? "One size" : label;
+}

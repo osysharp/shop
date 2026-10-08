@@ -1,0 +1,81 @@
+// Add-ons: another kit's discount, free delivery and hooks, through the one surface the shop offers (Extend.osy).
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Floor)]
+void an_add_on_takes_its_share_off_and_the_order_keeps_the_line() {
+  runas (new Visitor { Id = "v-promo-1" }) {
+    Bag("v-promo-1", "Loafer", "38", 2);
+    Assert.Equal(24m, BagAdjustments("SE").Single().Amount);
+    var receipt = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                             "Storgatan 1", "11122", "Stockholm", "SE");
+    Assert.Equal(24m, receipt.Discount);
+    Assert.Equal(240m - 24m + 50m, receipt.Total);
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == receipt.Reference);
+      var line = order.Adjustments.Single();
+      Assert.Equal("promo", line.Source);
+      Assert.Equal("PROMO10 — 10% off", line.Label);
+      Assert.Equal("promo10", line.Reference);
+      Assert.True(ShopMail.Any(m => m.Subject.StartsWith("Your order") && m.Text.Contains("PROMO10 — 10% off")));
+    }
+  }
+}
+
+[Test(Floor)]
+void an_add_on_can_make_delivery_free() {
+  runas (new Visitor { Id = "v-freeship-1" }) {
+    Bag("v-freeship-1", "Loafer", "38", 1);
+    Assert.True(DeliveryChoices("SE").All(d => d.Price == 0m));
+    var receipt = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                             "Storgatan 1", "11122", "Stockholm", "SE");
+    Assert.Equal(120m, receipt.Total);
+  }
+}
+
+[Test(Floor)]
+void an_add_on_hears_the_order_placed_paid_and_sent_and_a_cancellation() {
+  var sent = Buy("v-hear-1", "Loafer", "38", 1);
+  var called = Buy("v-hear-2", "Loafer", "39", 1);
+  runas (Desk) {
+    PayAndSend(sent);
+    var order = Order.Single(o => o.Reference == called);
+    CancelOrder(order, "Changed their mind");
+    Workflow.Settle(order);
+    // A collection is sent and delivered in one step, so what is compared is WHAT was heard, not its row order.
+    Assert.Equal(["delivered " + sent, "paid " + sent, "placed " + sent, "sent " + sent],
+                 AddOnHeard.Where(h => h.What.EndsWith(sent)).Select(h => h.What).OrderBy(w => w).ToList());
+    Assert.Equal(["cancelled " + called, "placed " + called],
+                 AddOnHeard.Where(h => h.What.EndsWith(called)).Select(h => h.What).OrderBy(w => w).ToList());
+  }
+}
+
+[Test(Floor)]
+void a_failing_add_on_takes_nothing_off_and_does_not_stop_the_order() {
+  runas (new Visitor { Id = "v-broken-1" }) {
+    Bag("v-broken-1", "Loafer", "38", 1);
+    Assert.Empty(BagAdjustments("SE"));
+    var receipt = Checkout("v-broken-1");
+    Assert.Equal(0m, receipt.Discount);
+    Assert.Equal(OrderStatus.Reserved, receipt.Status);
+  }
+}
+
+[Test(Floor)]
+void a_return_from_a_discounted_order_refunds_what_was_paid_for_those_lines() {
+  var reference = "";
+  runas (Maja) {
+    Bag("v-promo-ret", "Loafer", "38", 2);
+    reference = Checkout("v-promo-ret").Reference;
+  }
+  runas (Desk) { PayAndSend(reference); }
+  runas (Maja) { ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, ""); }
+  runas (Desk) {
+    var ret = ReturnRequest.Single();
+    ReceiveReturn(ret, true);
+    Workflow.Settle(ret);
+    Assert.Equal(108m, ret.Amount);                 // 120 less its 10%
+    Assert.True(AddOnHeard.Any(h => h.What == "return " + reference));
+  }
+}

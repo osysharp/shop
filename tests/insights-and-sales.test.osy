@@ -1,0 +1,144 @@
+// What sells, what is looked at, what sits — and marking things down to clear them.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Floor)]
+void views_and_sales_become_the_desks_figures() {
+  var loafer = Product.Single(p => p.Name == "Loafer");
+  ViewedProduct(loafer); ViewedProduct(loafer); ViewedProduct(loafer); ViewedProduct(loafer);
+  ViewedProduct(Product.Single(p => p.Name == "Chelsea"));
+  var reference = Buy("v-fig", "Loafer", "38", 2);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    MarkPaid(order, "");
+    Workflow.Settle(order);
+
+    var top = TopSellers(30, 5);
+    Assert.Equal("Loafer", top[0].Product.Name);
+    Assert.Equal(2, top[0].Units);
+    Assert.Equal(240m, top[0].Revenue);
+    Assert.Equal(50m, top[0].Conversion);            // 2 sold from 4 views
+
+    var viewed = MostViewed(30, 5);
+    Assert.Equal(4, viewed[0].Views);
+    Assert.Equal(2, viewed.Count);
+
+    var totals = TotalsFor(30);
+    Assert.Equal(1, totals.Orders);
+    Assert.Equal(240m, totals.Revenue);
+
+  }
+  Assert.Throws<Exception>(() => TopSellers(30, 5));  // not a visitor's to read
+}
+
+[Test(Floor)]
+void what_has_sat_unsold_is_named_and_what_sold_is_not() {
+  TestClock.Advance(TimeSpan.FromDays(40));          // the floor's products have been on the shelf a while
+  var reference = Buy("v-slow", "Loafer", "38", 1);
+  runas (Desk) {
+    MarkPaid(Order.Single(o => o.Reference == reference), "");
+    var slow = SlowMovers(30, 10);
+    Assert.False(slow.Any(p => p.Name == "Loafer"));  // sold this month
+    Assert.True(slow.Any(p => p.Name == "Chelsea"));  // in stock, not sold
+    Assert.False(slow.Any(p => p.Name == "Secret"));  // a draft is not on the shelf
+  }
+}
+
+[Test(Floor)]
+void a_markdown_drops_the_price_everywhere_and_ends_on_its_date() {
+  runas (Desk) {
+    var loafer = Product.Single(p => p.Name == "Loafer");
+    var sale = MarkDown(loafer, 25, 7);
+    Workflow.Settle(sale);
+    Assert.Equal(90m, Product.Single(p => p.Name == "Loafer").Price);
+    Assert.Equal(120m, Product.Single(p => p.Name == "Loafer").WasPrice);
+    Assert.Throws<Exception>(() => MarkDown(loafer, 10, 3));   // one sale at a time
+  }
+  Assert.Equal(1, OnSale().Count);
+  Assert.Equal(90m, Checkout2("v-sale"));
+
+  TestClock.Advance(TimeSpan.FromDays(8));
+  runas (Desk) {
+    Workflow.Settle(Sale.Single());
+    Assert.Equal(SaleState.Ended, Sale.Single().State);
+    Assert.Equal(120m, Product.Single(p => p.Name == "Loafer").Price);
+    Assert.Null(Product.Single(p => p.Name == "Loafer").WasPrice);
+  }
+  Assert.Equal(0, OnSale().Count);
+}
+
+[Test(Floor)]
+void a_size_with_its_own_price_is_marked_down_and_restored_with_it() {
+  runas (Desk) {
+    var chelsea = Product.Single(p => p.Name == "Chelsea");
+    var sale = MarkDown(chelsea, 50, 3);
+    Workflow.Settle(sale);
+    Assert.Equal(95m, Pick("Chelsea", "38").Price);    // its own 190, halved
+    EndMarkdown(chelsea);
+    Workflow.Settle(sale);
+    Assert.Equal(190m, Pick("Chelsea", "38").Price);
+    Assert.Equal(180m, Product.Single(p => p.Name == "Chelsea").Price);
+  }
+}
+
+[Test(Floor)]
+void a_scheduled_sale_is_dated_content_on_only_between_its_dates() {
+  var start = DateTime.UtcNow.AddDays(3);
+  var end = DateTime.UtcNow.AddDays(10);
+  runas (Desk) {
+    var loafer = Product.Single(p => p.Name == "Loafer");
+    var sale = ScheduleMarkDown(loafer, 25, start, end);
+    Workflow.Settle(sale);
+    Assert.Equal(SaleState.Scheduled, Sale.Single().State);
+    Assert.Equal(120m, Product.Single(p => p.Name == "Loafer").Price);     // nothing marked down yet
+    // The price on a date — what a staff preview of the site as of that date shows (ShowsAt, the one dated rule).
+    var sales = Sale.ToList();
+    var during = PriceAt(loafer, sales, start.AddDays(1));
+    Assert.Equal(90m, during.Price);
+    Assert.Equal(120m, during.WasPrice);
+    Assert.Equal(120m, PriceAt(loafer, sales, DateTime.UtcNow).Price);
+    Assert.Null(PriceAt(loafer, sales, DateTime.UtcNow).WasPrice);
+    Assert.Equal(120m, PriceAt(loafer, sales, end.AddDays(1)).Price);
+    Assert.True(SaleOn(Sale.Single(), start));
+    Assert.False(SaleOn(Sale.Single(), end));                              // gone from the morning of its end
+    // Two sales of one product may not overlap.
+    Assert.Throws<Exception>(() => ScheduleMarkDown(loafer, 10, start.AddDays(2), end.AddDays(2)));
+  }
+  // A customer never sees a sale before it starts — not on the shelf, not in the price.
+  Assert.Equal(0, Sale.Count());
+  Assert.Equal(0, OnSale().Count);
+  Assert.Equal(120m, Product.Single(p => p.Name == "Loafer").Price);
+
+  TestClock.Advance(TimeSpan.FromDays(4));
+  runas (Desk) {
+    Workflow.Settle(Sale.Single());
+    Assert.Equal(SaleState.Live, Sale.Single().State);
+    Assert.Equal(90m, Product.Single(p => p.Name == "Loafer").Price);
+  }
+  Assert.Equal(1, OnSale().Count);
+  Assert.Equal(90m, Checkout2("v-during"));
+}
+
+[Test(Floor)]
+void a_scheduled_sale_called_off_before_it_starts_changes_no_price() {
+  runas (Desk) {
+    var loafer = Product.Single(p => p.Name == "Loafer");
+    var sale = ScheduleMarkDown(loafer, 25, DateTime.UtcNow.AddDays(3), DateTime.UtcNow.AddDays(10));
+    Workflow.Settle(sale);
+    // The price moves while the sale waits — calling it off must not put back the price it was scheduled at.
+    loafer.Price = 130m;
+    UnitOfWork.Commit();
+    EndMarkdown(loafer);
+    Workflow.Settle(sale);
+    Assert.Equal(SaleState.Ended, Sale.Single().State);
+    Assert.Equal(130m, Product.Single(p => p.Name == "Loafer").Price);
+    Assert.Null(Product.Single(p => p.Name == "Loafer").WasPrice);
+  }
+}
+
+/// The total a one-loafer checkout charges.
+decimal Checkout2(string visitId) {
+  Bag(visitId, "Loafer", "39", 1);
+  return Checkout(visitId).Total;
+}

@@ -1,0 +1,76 @@
+// What the checkout must say before the customer commits: the whole price, the terms, the right of withdrawal.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Floor)]
+void the_checkout_quote_is_what_the_order_charges() {
+  runas (new Visitor { Id = "v-promo-quote" }) {
+    runas (Desk) { var shop = TheShop(); shop.VatPercent = 25m; UnitOfWork.Commit(); }
+    Bag("v-promo-quote", "Loafer", "38", 2);          // the test add-on takes 10 % off a v-promo visit
+    var quote = CheckoutQuote("courier", "SE");
+    Assert.Equal(240m, quote.Goods);
+    Assert.Equal(24m, quote.Discount);
+    Assert.Equal(50m, quote.Delivery);
+    Assert.Equal(266m, quote.Total);
+    var receipt = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                             "Storgatan 1", "11122", "Stockholm", "SE");
+    Assert.Equal(quote.Total, receipt.Total);
+    runas (Desk) { Assert.Equal(quote.Vat, Order.Single(o => o.Reference == receipt.Reference).Vat); }
+  }
+}
+
+[Test(Floor)]
+void a_shop_with_terms_takes_no_order_until_they_are_accepted_and_keeps_which_ones() {
+  runas (new Visitor { Id = "v-terms" }) {
+    runas (Desk) { var shop = TheShop(); shop.Terms = "Goods are sold as described."; UnitOfWork.Commit(); }
+    Bag("v-terms", "Loafer", "38", 1);
+    var refused = Assert.Throws<Exception>(() => Checkout("v-terms"));
+    Assert.Contains("Accept the terms", refused.Message);
+    AcceptTerms(true);
+    var reference = Checkout("v-terms").Reference;
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      Assert.NotNull(order.TermsAcceptedAt);
+      Assert.Equal(TermsVersion(TheShop()), order.TermsVersion);
+    }
+  }
+}
+
+[Test(Floor)]
+void the_confirmation_hands_over_the_right_of_withdrawal_and_its_form() {
+  var reference = Buy("v-withdraw", "Loafer", "38", 1);
+  runas (Desk) {
+    var mail = ShopMail.Single(m => m.Subject.StartsWith($"Your order {reference}"));
+    Assert.Contains("right of withdrawal", mail.Text);
+    Assert.Contains($"withdraw from my contract of sale of the following goods: order {reference}", mail.Text);
+  }
+}
+
+/// The model form is addressed to the seller ONCE. A collection address that already starts with the shop's name
+/// ("Kit Test Shop, Storgatan 1") is written as it is — measured on a real confirmation, the form read "To: Grounds &
+/// Grapes, Grounds & Grapes, Hornsgatan 64" — and the company's registered address, when the shop has one, is the one
+/// the form names.
+[Test(Floor)]
+void the_withdrawal_form_names_the_seller_once() {
+  runas (Desk) {
+    var shop = TheShop();
+    shop.CompanyAddress = null;
+    shop.CollectionAddress = "Kit Test Shop, Storgatan 1, Stockholm";
+    UnitOfWork.Commit();
+  }
+  var first = Buy("v-withdraw-to", "Loafer", "38", 1);
+  runas (Desk) {
+    var text = ShopMail.Single(m => m.Subject.StartsWith($"Your order {first}")).Text;
+    Assert.Contains("To: Kit Test Shop, Storgatan 1, Stockholm", text);
+    Assert.DoesNotContain("Kit Test Shop, Kit Test Shop", text);
+    var shop = TheShop();
+    shop.CompanyAddress = "Kit Test Shop AB, Box 12, 111 22 Stockholm";
+    UnitOfWork.Commit();
+  }
+  var second = Buy("v-withdraw-to-2", "Loafer", "39", 1);
+  runas (Desk) {
+    Assert.Contains("To: Kit Test Shop AB, Box 12, 111 22 Stockholm",
+                    ShopMail.Single(m => m.Subject.StartsWith($"Your order {second}")).Text);
+  }
+}

@@ -1,0 +1,129 @@
+// What a shopping channel reads: the Google Merchant and Meta product feeds the store serves, one item per variant.
+
+using Osysharp.Shop;
+
+/// Photographs for the products the feed tests list — both channels leave out a product without one.
+void Photograph() {
+  runas (Desk) {
+    var loafer = Product.Single(p => p.Slug == "loafer");
+    new ProductImage { Product = loafer, Path = "products/loafer-1.jpg", Rank = 0 };
+    new ProductImage { Product = loafer, Path = "products/loafer-2.jpg", Rank = 1 };
+    new ProductImage { Product = Product.Single(p => p.Slug == "super"), Path = "products/super.jpg", Rank = 0 };
+    new ProductImage { Product = Product.Single(p => p.Slug == "secret"), Path = "products/secret.jpg", Rank = 0 };
+    UnitOfWork.Commit();
+  }
+}
+
+[Test(Floor)]
+void the_google_feed_is_rss_in_googles_namespace_with_one_item_per_size() {
+  Photograph();
+  var xml = GoogleProductFeed();
+  Assert.StartsWith("<?xml version=\"1.0\" encoding=\"UTF-8\"?><rss version=\"2.0\" xmlns:g=\"http://base.google.com/ns/1.0\"><channel>", xml);
+  Assert.Contains("<title>Kit Test Shop</title>", xml);
+  // The loafer comes in two sizes: two items, one group.
+  Assert.Contains("<g:title>Loafer (38)</g:title>", xml);
+  Assert.Contains("<g:title>Loafer (39)</g:title>", xml);
+  var group = "<g:item_group_id>" + Product.Single(p => p.Slug == "loafer").Id.ToString().Replace("-", "") + "</g:item_group_id>";
+  Assert.Equal(3, xml.Split(group).Length);                                   // exactly two items carry it
+  Assert.Contains("<g:size>38</g:size>", xml);
+  Assert.Contains("<g:price>120.00 EUR</g:price>", xml);
+  Assert.Contains("<g:availability>in_stock</g:availability>", xml);
+  Assert.Contains("<g:condition>new</g:condition>", xml);
+  Assert.Contains("/p/loafer</g:link>", xml);
+  Assert.Contains("/products/loafer-1.jpg</g:image_link>", xml);
+  Assert.Contains("/products/loafer-2.jpg</g:additional_image_link>", xml);
+  Assert.Contains("<g:product_type>Women &gt; Shoes</g:product_type>", xml);
+  // A single-variant product is a plain item: no group. It has a brand; no SKU, so no identifier either way.
+  Assert.Contains("<g:title>Super</g:title>", xml);
+  Assert.Contains("<g:brand>Colnago</g:brand>", xml);
+  Assert.Contains("<g:identifier_exists>no</g:identifier_exists>", xml);
+  Assert.EndsWith("</channel></rss>", xml);
+}
+
+[Test(Floor)]
+void a_draft_and_a_product_without_a_photograph_are_never_in_a_feed() {
+  Photograph();
+  var xml = GoogleProductFeed();
+  Assert.DoesNotContain("Secret", xml);                                       // a draft, photographed or not
+  Assert.DoesNotContain("Chelsea", xml);                                      // listed, but nothing to show
+  Assert.DoesNotContain("Secret", MetaProductFeed());
+}
+
+[Test(Floor)]
+void a_marked_down_size_carries_its_regular_price_and_its_sale_price() {
+  Photograph();
+  runas (Desk) {
+    var loafer = Product.Single(p => p.Slug == "loafer");
+    loafer.WasPrice = 120m;
+    loafer.Price = 90m;
+    UnitOfWork.Commit();
+  }
+  var xml = GoogleProductFeed();
+  Assert.Contains("<g:price>120.00 EUR</g:price><g:sale_price>90.00 EUR</g:sale_price>", xml);
+  Assert.DoesNotContain("<g:price>90.00 EUR</g:price>", xml);
+}
+
+[Test(Floor)]
+void a_sku_is_the_items_id_and_part_number_and_a_sold_out_size_says_so() {
+  Photograph();
+  runas (Desk) {
+    var small = Variant.Single(v => v.Product.Slug == "loafer" && v.Size == "38");
+    small.Sku = "LOAF-38";
+    small.Barcode = "4006381333931";
+    small.WeightGrams = 850;
+    Variant.Single(v => v.Product.Slug == "loafer" && v.Size == "39").Stock = 0;
+    UnitOfWork.Commit();
+  }
+  var xml = GoogleProductFeed();
+  Assert.Contains("<g:id>LOAF-38</g:id>", xml);
+  Assert.Contains("<g:mpn>LOAF-38</g:mpn>", xml);
+  // A barcode is a GTIN — and with one, the item has an identifier, brand or not.
+  Assert.Contains("<g:gtin>4006381333931</g:gtin>", xml);
+  Assert.Contains("<g:shipping_weight>850 g</g:shipping_weight>", xml);
+  Assert.Contains("<g:availability>out_of_stock</g:availability>", xml);
+}
+
+[Test(Floor)]
+void words_that_are_markup_arrive_as_text() {
+  Photograph();
+  runas (Desk) {
+    var loafer = Product.Single(p => p.Slug == "loafer");
+    loafer.Name = "Loafer <Tan> & Co";
+    loafer.Summary = "Leather & suede, \"hand-stitched\" <b>now</b>";
+    UnitOfWork.Commit();
+  }
+  var xml = GoogleProductFeed();
+  Assert.Contains("<g:title>Loafer &lt;Tan&gt; &amp; Co (38)</g:title>", xml);
+  Assert.Contains("<g:description>Leather &amp; suede, \"hand-stitched\" &lt;b&gt;now&lt;/b&gt;</g:description>", xml);
+  Assert.DoesNotContain("<b>", xml);
+}
+
+[Test(Floor)]
+void a_shelf_places_its_products_in_googles_taxonomy_and_its_children_inherit_it() {
+  Photograph();
+  runas (Desk) {
+    Category.Single(c => c.Slug == "women").GoogleCategory = "Apparel & Accessories > Shoes";
+    UnitOfWork.Commit();
+  }
+  Assert.Contains("<g:google_product_category>Apparel &amp; Accessories &gt; Shoes</g:google_product_category>", GoogleProductFeed());
+}
+
+[Test(Floor)]
+void the_meta_feed_speaks_metas_words_and_always_names_a_brand() {
+  Photograph();
+  var xml = MetaProductFeed();
+  Assert.Contains("xmlns:g=\"http://base.google.com/ns/1.0\"", xml);
+  Assert.Contains("<g:availability>in stock</g:availability>", xml);
+  Assert.DoesNotContain("in_stock", xml);
+  Assert.Contains("<g:brand>Kit Test Shop</g:brand>", xml);                  // the loafer names none: the shop's own
+  Assert.Contains("<g:brand>Colnago</g:brand>", xml);
+  Assert.DoesNotContain("identifier_exists", xml);
+}
+
+[Test(Floor)]
+void a_price_is_written_the_way_the_channels_read_it() {
+  Assert.Equal("165.00 SEK", FeedPrice(165m, "SEK"));
+  Assert.Equal("24.50 EUR", FeedPrice(24.5m, "EUR"));
+  Assert.Equal("0.05 EUR", FeedPrice(0.05m, "EUR"));
+  Assert.Equal("1200.99 USD", FeedPrice(1200.99m, "USD"));
+}

@@ -1,0 +1,542 @@
+// Gift cards: sold as a product and paid like any order, issued and mailed on payment (at once or on the buyer's day),
+// found by the fingerprint of their code and never listed, spent at the checkout before store credit and beside any
+// way to pay, given back on a refund, voided or adjusted by staff with a ledger, written off when they expire — and in
+// the books a liability, never a sale with VAT.
+
+using Osysharp.Shop;
+using Osysharp.Storage;
+using Osysharp.Workflow;
+
+/// The shop's gift card: €50 and €100, and one of the buyer's own amount from €10 to €500.
+void GiftShelf() {
+  runas (Desk) {
+    var shop = TheShop();
+    shop.GiftCardMin = 10m;
+    shop.GiftCardMax = 500m;
+    var card = new Product { Name = "Gift card", Slug = "gift-card", Price = 50m, IsGiftCard = true };
+    new Variant { Product = card, Size = "€50", Unlimited = true };
+    new Variant { Product = card, Size = "€100", Price = 100m, Unlimited = true };
+    new Variant { Product = card, Size = "Your amount", AnyAmount = true, Unlimited = true };
+    UnitOfWork.Commit();
+  }
+}
+
+Variant CardOf(string size) { return Variant.Single(v => v.Product.Slug == "gift-card" && v.Size == size); }
+
+/// Every gift card code mailed to `email` — read off the mails, as whoever got them would.
+List<string> CodesMailedTo(string email) {
+  List<string> codes = [];
+  runas (Desk) {
+    foreach (var m in ShopMail.Where(m => m.To == email && m.Subject.Contains("gift card")).ToList()) {
+      if (CodeIn(m.Text) != "") { codes.Add(CodeIn(m.Text)); }
+    }
+  }
+  return codes;
+}
+
+/// The one gift card code mailed to `email` that still pays.
+string CodeMailedTo(string email) {
+  return CodesMailedTo(email).Single(c => GiftCardBalance(c).Problem == "");
+}
+
+/// The first gift card code in a text — four groups of four, joined by dashes — or "".
+string CodeIn(string text) {
+  for (var i = 0; i + 19 <= text.Length; i = i + 1) {
+    var s = text.Substring(i, 19);
+    if (s.Substring(4, 1) == "-" && s.Substring(9, 1) == "-" && s.Substring(14, 1) == "-" && s.Replace("-", "").ToUpper() == s.Replace("-", "")
+        && !s.Replace("-", "").Contains(" ")) {
+      return s;
+    }
+  }
+  return "";
+}
+
+/// Staff issue a card of `amount` to `email`, and it is mailed. Answers its code, read off the mail.
+string IssueTo(string email, decimal amount) {
+  runas (Desk) {
+    IssueGiftCard(amount, email, "", "", "A thank-you");
+    Workflow.Settle(GiftCard.OrderByDescending(c => c.IssuedAt).First());
+  }
+  return CodeMailedTo(email);
+}
+
+/// Maja buys `variant` for `to` and it is paid by transfer. Answers the order's reference.
+string MajaBuysACard(string visitId, Variant variant, decimal amount, string to, string message, DateOnly? sendOn) {
+  runas (new Visitor { Id = visitId }) {
+    var reference = "";
+    runas (Maja) {
+      Assert.Equal("", AddGiftCardToBag(variant, amount, "Maja", "Anna", to, message, sendOn));
+      reference = PlaceOrder("Maja Berg", "maja@example.test", "", NothingToShipId(), "banktransfer", "", "", "", "").Reference;
+    }
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      MarkPaid(order, "");
+      Workflow.Settle(order);
+      foreach (var c in GiftCard.Where(c => c.SoldWith == order).ToList()) { Workflow.Settle(c); }
+    }
+    return reference;
+  }
+}
+
+[Test(Floor)]
+void a_gift_card_is_sold_paid_and_mailed_to_its_recipient_with_the_code() {
+  GiftShelf();
+  var reference = MajaBuysACard("v-gift", CardOf("€50"), 0m, "anna@example.test", "Happy birthday!", null);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    // Nothing to ship: delivered by mail, the moment it is paid.
+    Assert.Equal(Fulfilment.Digital, order.Fulfilment);
+    Assert.Equal(OrderStatus.Delivered, order.Status);
+    Assert.Equal(0m, order.Delivery);
+    // A voucher: none of it is VAT, and it is kept apart from the goods.
+    Assert.Equal(50m, order.Total);
+    Assert.Equal(50m, order.GiftCardsSold);
+    Assert.Equal(0m, order.Vat);
+    Assert.Equal(0, order.VatRates.Count());
+    Assert.Equal(LineKind.GiftCard, order.Lines.Single().Kind);
+    Assert.Equal(50m, Invoice.Single(i => i.Order == order).Total);
+    var card = GiftCard.Single(c => c.SoldWith == order);
+    Assert.Equal(GiftCardStatus.Active, card.Status);
+    Assert.Equal(50m, card.Balance);
+    Assert.Equal("anna@example.test", card.SendTo);
+    Assert.Equal(GiftCardEntryKind.Sold, GiftCardEntry.Single(e => e.Card == card).Kind);
+    // Valid for the shop's months (24 by default) — never under the year the law asks.
+    Assert.True(card.ExpiresAt > DateTime.UtcNow.AddMonths(23));
+    var mail = ShopMail.Single(m => m.To == "anna@example.test");
+    Assert.Contains("Happy birthday!", mail.Text);
+    Assert.Contains("Maja", mail.Subject);
+    // The buyer is told it went.
+    Assert.True(ShopMail.Any(m => m.To == "maja@example.test" && m.Subject.Contains("Your gift card is on its way")));
+  }
+  var code = CodeMailedTo("anna@example.test");
+  Assert.Equal(19, code.Length);
+  // Anyone holding the code sees what is on it — and nothing else.
+  var balance = GiftCardBalance(code);
+  Assert.True(balance.Found);
+  Assert.Equal(50m, balance.Balance);
+  Assert.Equal(code.Substring(15, 4), balance.Ending);
+  Assert.Equal("", balance.Problem);
+  // Case, spaces and dashes do not matter; a wrong code finds nothing.
+  Assert.Equal(50m, GiftCardBalance(" " + code.Replace("-", " ").ToLower() + " ").Balance);
+  Assert.False(GiftCardBalance("AAAA-BBBB-CCCC-DDDD").Found);
+  // The question is taken away once it is answered.
+  runas (Desk) { Assert.Equal(0, GiftCardCheck.Count()); }
+}
+
+[Test(Floor)]
+void a_card_with_a_send_date_waits_for_its_day() {
+  GiftShelf();
+  var today = DateOnly.FromDateTime(DateTime.UtcNow);
+  MajaBuysACard("v-later", CardOf("Your amount"), 75m, "erik@example.test", "", today.AddDays(5));
+  runas (Desk) {
+    var card = GiftCard.Single();
+    Assert.Equal(75m, card.Amount);
+    Assert.Equal(GiftCardStatus.Waiting, card.Status);
+    Assert.False(ShopMail.Any(m => m.To == "erik@example.test"));
+  }
+  runas (Maja) { Assert.Contains("Goes on", MyGiftCards().Single().State); }
+  TestClock.Advance(TimeSpan.FromDays(6));
+  runas (Desk) {
+    var card = GiftCard.Single();
+    Workflow.Settle(card);
+    Assert.Equal(GiftCardStatus.Active, card.Status);
+    Assert.True(ShopMail.Any(m => m.To == "erik@example.test"));
+  }
+  Assert.Equal(75m, GiftCardBalance(CodeMailedTo("erik@example.test")).Balance);
+}
+
+[Test(Floor)]
+void the_checkout_pays_with_a_gift_card_first_then_store_credit_then_the_rest() {
+  runas (new Visitor { Id = "v-pay" }) {
+    GiftShelf();
+    var code = IssueTo("maja@example.test", 50m);
+    runas (Desk) {
+      GrantCredit(ShopAccount.Single(a => a.Email == "maja@example.test"), 30m, "A welcome back.");
+      Workflow.Settle(StoreCreditGrant.First());
+    }
+    var reference = "";
+    runas (Maja) {
+      Bag("v-pay", "Loafer", "38", 1);
+      Assert.Contains("€50 to spend", ApplyGiftCard(code));
+      UseStoreCredit(true);
+      var quote = CheckoutQuote("collect", "");
+      Assert.Equal(120m, quote.Total);
+      Assert.Equal(50m, quote.GiftCards);
+      Assert.Equal(30m, quote.Credit);
+      Assert.Equal(40m, quote.ToPay);
+      var receipt = Checkout("v-pay");
+      reference = receipt.Reference;
+      Assert.Equal(50m, receipt.GiftCard);
+      Assert.Equal(30m, receipt.Credit);
+      Assert.Equal(40m, receipt.ToPay);
+      Assert.Equal(0m, MyCreditBalance());
+      // Spent: the card holds nothing now, and it is off the bag.
+      Assert.Equal(0m, GiftCardBalance(code).Balance);
+      Assert.Equal(0, BagGiftCards().Count);
+    }
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      Assert.Equal(50m, order.GiftCardUsed);
+      Assert.Equal(40m, AmountDue(order));
+      // A means of payment, not money off: the VAT is on the whole price, and the invoice is the whole price.
+      Assert.Equal(0m, order.Discount);
+      Assert.Equal(120m, order.VatRates.Sum(r => r.Gross));
+      MarkPaid(order, "");
+      Workflow.Settle(order);
+      Assert.Equal(120m, Invoice.Single(i => i.Order == order).Total);
+      var used = OrderGiftCard.Single(u => u.Order == order);
+      Assert.Equal(50m, used.Amount);
+      Assert.Equal(code.Substring(15, 4), used.Last4);
+    }
+  }
+}
+
+[Test(Floor)]
+void a_card_that_covers_it_all_pays_the_order_there_and_then() {
+  runas (new Visitor { Id = "v-all" }) {
+    GiftShelf();
+    var code = IssueTo("olle@example.test", 200m);
+    var reference = "";
+    runas (Olle) {
+      Bag("v-all", "Loafer", "39", 1);
+      ApplyGiftCard(code);
+      reference = CheckoutWith("v-all", GiftCardKey()).Reference;
+    }
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      Workflow.Settle(order);
+      Assert.Equal(OrderStatus.Paid, order.Status);
+      Assert.Equal("Gift card", order.PaidWith);
+      Assert.Equal(GiftCardKey(), order.PaymentMethod);
+      Assert.Equal(0m, AmountDue(order));
+    }
+    Assert.Equal(80m, GiftCardBalance(code).Balance);
+    // Not enough on it for all of it: paying "by gift card" alone is refused before anything is placed.
+    runas (Olle) {
+      Bag("v-short", "Chelsea", "38", 1);
+      runas (new Visitor { Id = "v-short" }) { ApplyGiftCard(code); }
+      Assert.Throws<Exception>(() => CheckoutWith("v-short", GiftCardKey()));
+    }
+    Assert.Equal(80m, GiftCardBalance(code).Balance);
+  }
+}
+
+[Test(Floor)]
+void a_discount_comes_off_first_and_nothing_prepaid_pays_for_a_gift_card() {
+  runas (new Visitor { Id = "v-promo-mix" }) {
+    GiftShelf();
+    var code = IssueTo("maja@example.test", 300m);
+    runas (Maja) {
+      // The promo takes 10% off the goods — never off the gift card in the same bag.
+      Bag("v-promo-mix", "Loafer", "38", 1);
+      Assert.Equal("", AddGiftCardToBag(CardOf("€100"), 0m, "", "", "", "", null));
+      ApplyGiftCard(code);
+      var quote = CheckoutQuote("collect", "");
+      Assert.Equal(12m, quote.Discount);                               // 10% of the Loafer's 120, not of 220
+      Assert.Equal(208m, quote.Total);
+      Assert.Equal(100m, quote.GiftCardsSold);
+      // The card pays the goods (108) — not the gift card being bought, which is paid in money.
+      Assert.Equal(108m, quote.GiftCards);
+      Assert.Equal(100m, quote.ToPay);
+      // VAT only on the goods.
+      Assert.Equal(108m, RateShares(BagFor(false)!, 0m, 12m, TheShop(), "").Sum(r => r.Gross));
+      var receipt = Checkout("v-promo-mix");
+      Assert.Equal(100m, receipt.ToPay);
+    }
+    Assert.Equal(192m, GiftCardBalance(code).Balance);
+  }
+}
+
+[Test(Floor)]
+void a_chosen_amount_lies_within_the_shops_bounds_and_a_fixed_card_costs_its_price() {
+  runas (new Visitor { Id = "v-amount" }) {
+    GiftShelf();
+    runas (Maja) {
+      Assert.Contains("Choose an amount from", AddGiftCardToBag(CardOf("Your amount"), 5m, "", "", "", "", null));
+      Assert.Contains("Choose an amount from", AddGiftCardToBag(CardOf("Your amount"), 5000m, "", "", "", "", null));
+      Assert.Equal("", AddGiftCardToBag(CardOf("Your amount"), 75m, "", "", "", "", null));
+      Assert.Equal(75m, CheckoutQuote(NothingToShipId(), "").Total);
+      // Written to 1 by hand on the bag, a chosen amount is refused when the order is priced…
+      var choice = GiftCardChoice.Single();
+      choice.Amount = 1m;
+      UnitOfWork.Commit();
+      Assert.Throws<Exception>(() => PlaceOrder("Maja Berg", "maja@example.test", "", NothingToShipId(), "banktransfer", "", "", "", ""));
+      RemoveFromBag(BagLine.Single());
+      // …and a card of a fixed amount costs its price, whatever its choice row says.
+      Assert.Equal("", AddGiftCardToBag(CardOf("€100"), 1m, "", "", "", "", null));
+      var fixedChoice = GiftCardChoice.Single();
+      fixedChoice.Amount = 1m;
+      UnitOfWork.Commit();
+      Assert.Equal(100m, CheckoutQuote(NothingToShipId(), "").Total);
+      // A gift card is bought for somebody — not by the plain "add to bag".
+      Assert.Contains("gift card", AddToBag(CardOf("€50"), 1));
+    }
+  }
+}
+
+[Test(Floor)]
+void nobody_lists_gift_cards_and_a_buyer_never_reads_a_balance() {
+  GiftShelf();
+  MajaBuysACard("v-list", CardOf("€50"), 0m, "anna@example.test", "", null);
+  runas (Olle) {
+    Assert.Equal(0, GiftCard.Count());
+    Assert.Equal(0, GiftCardEntry.Count());
+    Assert.Equal(0, OrderGiftCard.Count());
+    Assert.Equal(0, MyGiftCards().Count);
+  }
+  runas (Maja) {
+    // Her own card, as she bought it: to whom, how much, when — not what is left on it, which is Anna's.
+    var mine = MyGiftCards().Single();
+    Assert.Equal(50m, mine.Amount);
+    Assert.Equal("Anna", mine.To);
+    Assert.Contains("Sent", mine.State);
+    var row = GiftCard.Single();
+    Assert.Null(row.Balance);                                        // masked
+    Assert.Null(row.CodeHash);
+    Assert.Null(row.SealedCode);
+    Assert.Equal(0, GiftCardEntry.Count());
+  }
+  // Nor staff read a code: the one place it is, is the mail.
+  runas (Desk) {
+    Assert.Equal(50m, GiftCard.Single().Balance);
+    Assert.Null(GiftCard.Single().SealedCode);
+    Assert.Equal(1, DeskGiftCardRows("").Count);
+  }
+}
+
+[Test(Floor)]
+void a_customer_cannot_mint_or_top_up_a_gift_card() {
+  GiftShelf();
+  var code = IssueTo("maja@example.test", 20m);
+  runas (Maja) {
+    // The desk's verbs are the desk's.
+    Assert.Throws<Exception>(() => IssueGiftCard(1000m, "maja@example.test", "", "", "Because"));
+    // A desk change written by hand is refused — only staff may ask for one.
+    Assert.Throws<Exception>(() => {
+      new GiftCardChange { Kind = GiftCardChangeKind.Issue, Amount = 1000m, ToEmail = "maja@example.test", Reason = "Because",
+                           At = DateTime.UtcNow };
+      UnitOfWork.Commit();
+    });
+    // A question she writes herself, answered "found, 1000" in advance, is answered by the shop instead.
+    var forged = new GiftCardCheck { CodeHash = "0000000000000000000000000000000000000000000000000000000000000000", Found = true, Balance = 1000m,
+                                     Owner = Me() };
+    UnitOfWork.Commit();
+    Assert.False(forged.Found);
+    Assert.Equal(0m, forged.Balance);
+    // An order that says its gift card was already taken, or has 1000 to give back, is refused.
+    Bag("v-forge", "Loafer", "38", 1);
+    Assert.Throws<Exception>(() => {
+      new Order { Fulfilment = Fulfilment.Collect, DeliveryMethod = "collect", PaymentMethod = "banktransfer",
+                  Subtotal = 120m, Total = 120m, Account = Me(), PlacedAt = DateTime.UtcNow, Reference = "KT-CARD",
+                  GiftCardUsed = 50m, GiftCardTaken = true, GiftCardReturned = -1000m };
+      UnitOfWork.Commit();
+    });
+  }
+  // Still what the desk issued.
+  Assert.Equal(20m, GiftCardBalance(code).Balance);
+}
+
+// Maja bought Anna's card, so she can read its row — and its id. She writes an order herself, priced EXACTLY as the shop
+// prices her bag (so the price check lets it through), saying a gift card pays 50 of it. The order spends only the
+// cards the SHOP put on the bag it came from — she has none — so it is refused for want of one, and Anna's card is
+// untouched.
+[Test(Floor)]
+void a_buyer_cannot_spend_a_card_they_gave_away_by_its_id() {
+  runas (new Visitor { Id = "v-steal" }) {
+    GiftShelf();
+    MajaBuysACard("v-gave", CardOf("€50"), 0m, "anna@example.test", "", null);
+    runas (Maja) {
+      Bag("v-steal", "Loafer", "38", 1);
+      var bag = BagFor(false)!;
+      var way = DeliveryChoices("").Single(w => w.Id == "collect");
+      var pay = PaymentChoices(true).Single(p => p.Key == "banktransfer");
+      var priced = PriceBag(bag, new Placement { Name = "Maja Berg", Email = "maja@example.test", Way = way, Pay = pay,
+                                                 Fulfilment = Fulfilment.Collect }, Me());
+      var order = new Order { Fulfilment = Fulfilment.Collect, DeliveryMethod = way.Id, DeliveryLabel = way.Label,
+                              PaymentMethod = pay.Key, PaymentLabel = pay.Label, PayInstructions = TheShop().BankDetails,
+                              Subtotal = priced.Subtotal, Discount = priced.Discount, Delivery = priced.Delivery, Total = priced.Total,
+                              Vat = priced.Vat, GiftCardsSold = priced.GiftCardsSold, HoldDays = priced.HoldDays,
+                              Account = Me(), PlacedAt = DateTime.UtcNow, Reference = "KT-STEAL", GiftCardUsed = 50m, PlacedFrom = bag };
+      new OrderContact { Order = order, Name = "Maja Berg", Email = "maja@example.test" };
+      foreach (var l in priced.Lines) {
+        new OrderLine { Order = order, Variant = l.Variant!, Quantity = l.Quantity, Price = l.Price, VatPercent = l.VatPercent,
+                        ProductName = l.ProductName, VariantLabel = l.Label == "" ? null : l.Label, Kind = KindOf(l.Variant!) };
+      }
+      foreach (var r in priced.VatRates) { new OrderVat { Order = order, Percent = r.Percent, Gross = r.Gross, Vat = r.Vat, Country = r.Country }; }
+      UnitOfWork.Commit();
+      // Priced right — refused only for the gift card it does not have.
+      Assert.Equal(OrderStatus.Unavailable, order.Status);
+      Assert.False(order.Mispriced);
+      Assert.True(order.GiftCardShort);
+    }
+    runas (Desk) { Assert.Equal(50m, GiftCard.Single().Balance); }
+  }
+}
+
+[Test(Floor)]
+void two_checkouts_cannot_spend_one_card_twice() {
+  runas (new Visitor { Id = "v-one" }) {
+    GiftShelf();
+    var code = IssueTo("olle@example.test", 100m);
+    // Two visits (two browsers, nobody signed in), each with the card on its bag.
+    Bag("v-one", "Loafer", "38", 1);
+    Bag("v-two", "Loafer", "39", 1);
+    ApplyGiftCard(code);
+    runas (new Visitor { Id = "v-two" }) { ApplyGiftCard(code); }
+    CheckoutWith("v-one", "banktransfer");
+    // The second found the card spent a moment ago: nothing is placed, nothing held.
+    var refused = Assert.Throws<Exception>(() => CheckoutWith("v-two", "banktransfer"));
+    Assert.Contains("look at the checkout again", refused.Message);
+    runas (Desk) {
+      Assert.Equal(0m, GiftCard.Single().Balance);
+      Assert.Equal(1, OrderGiftCard.Count());
+      Assert.Equal(1, Pick("Loafer", "39").Stock);
+    }
+  }
+}
+
+[Test(Floor)]
+void a_refund_puts_it_back_on_the_card_and_a_return_in_the_part_it_paid() {
+  runas (new Visitor { Id = "v-back" }) {
+    GiftShelf();
+    var code = IssueTo("maja@example.test", 60m);
+    var whole = "";
+    runas (Maja) {
+      Bag("v-back", "Loafer", "38", 1);
+      ApplyGiftCard(code);
+      whole = Checkout("v-back").Reference;
+    }
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == whole);
+      MarkPaid(order, "");
+      Workflow.Settle(order);
+      RefundOrder(order, "Changed her mind", true);
+      Workflow.Settle(order);
+      Assert.Equal(OrderStatus.Refunded, order.Status);
+      var note = CreditNote.Single(c => c.Invoice.Order == order);
+      Assert.Equal(60m, note.ToGiftCards);
+    }
+    Assert.Equal(60m, GiftCardBalance(code).Balance);
+    // A return of an order paid half with the card: half of what came back goes onto the card.
+    var part = "";
+    runas (Maja) {
+      Bag("v-part", "Loafer", "38", 1);
+      runas (new Visitor { Id = "v-part" }) { ApplyGiftCard(code); }
+      part = Checkout("v-part").Reference;
+    }
+    runas (Desk) { PayAndSend(part); }
+    runas (Maja) {
+      var line = Order.Single(o => o.Reference == part).Lines.Single();
+      ReturnItem(line, 1, "Too small");
+    }
+    runas (Desk) {
+      var ret = ReturnRequest.Single(r => r.Order.Reference == part);
+      ReceiveReturn(ret, true);
+      Workflow.Settle(ret);
+      Assert.Equal(ReturnStatus.Refunded, ret.Status);
+      Assert.Equal(60m, ret.GiftCardAmount);
+      Assert.Equal(60m, CreditNote.Single(c => c.Return == ret).ToGiftCards);
+    }
+    Assert.Equal(60m, GiftCardBalance(code).Balance);
+  }
+}
+
+[Test(Floor)]
+void a_card_expires_after_its_months_and_what_is_left_is_written_off() {
+  runas (new Visitor { Id = "v-late" }) {
+    GiftShelf();
+    runas (Desk) {
+      // The shop may not sell a card valid for less than a year.
+      Assert.Throws<Exception>(() => { TheShop().GiftCardMonths = 6; UnitOfWork.Commit(); });
+    }
+    var code = IssueTo("olle@example.test", 40m);
+    TestClock.Advance(TimeSpan.FromDays(24 * 31 + 2));
+    runas (Desk) {
+      var card = GiftCard.Single();
+      Workflow.Settle(card);
+      Assert.Equal(GiftCardStatus.Expired, card.Status);
+      Assert.Equal(0m, card.Balance);
+      var off = GiftCardEntry.Where(e => e.Card == card).ToList().Single(e => e.Kind == GiftCardEntryKind.Expired);
+      Assert.Equal(-40m, off.Amount);
+    }
+    var check = GiftCardBalance(code);
+    Assert.Contains("expired", check.Problem);
+    runas (Olle) {
+      Bag("v-late", "Loafer", "38", 1);
+      Assert.Throws<Exception>(() => ApplyGiftCard(code));
+    }
+  }
+}
+
+[Test(Floor)]
+void staff_issue_adjust_void_and_replace_with_a_ledger() {
+  GiftShelf();
+  var code = IssueTo("olle@example.test", 25m);
+  runas (Desk) {
+    var card = GiftCard.Single();
+    Assert.Equal("A thank-you", card.Reason);
+    AdjustGiftCard(card, 15m, "Made up for a late parcel");
+    Workflow.Settle(GiftCardChange.OrderByDescending(c => c.At).First());
+    Assert.Equal(40m, card.Balance);
+    Assert.Throws<Exception>(() => AdjustGiftCard(card, -100m, "Too much"));
+    Assert.Throws<Exception>(() => AdjustGiftCard(card, 5m, " "));
+    // A lost mail: a new code, sent again — the old one stops working.
+    ReplaceGiftCardCode(card, "The mail never came");
+    Workflow.Settle(GiftCardChange.OrderByDescending(c => c.At).First());
+  }
+  Assert.False(GiftCardBalance(code).Found);
+  Assert.Equal(2, CodesMailedTo("olle@example.test").Count);
+  var fresh = CodeMailedTo("olle@example.test");
+  Assert.NotEqual(code, fresh);
+  Assert.Equal(40m, GiftCardBalance(fresh).Balance);
+  runas (Desk) {
+    var card = GiftCard.Single();
+    VoidGiftCard(card, "Reported stolen");
+    Workflow.Settle(card);
+    Assert.Equal(GiftCardStatus.Voided, card.Status);
+    Assert.Equal(0m, card.Balance);
+    // Every change is in the ledger, with who made it.
+    var ledger = GiftCardLedger(card);
+    Assert.Equal(new List<string> { "Voided", "Adjusted", "Adjusted", "From the shop" }, ledger.Select(l => l.What).ToList());
+    Assert.Equal("anna@shop.test|anna@shop.test|anna@shop.test|anna@shop.test", string.Join("|", ledger.Select(l => l.Who)));
+    Assert.True(ledger.Where(l => l.What != "Voided").All(l => l.Who != ""));
+    Assert.True(ledger.All(l => l.Who != ""));
+  }
+  Assert.Contains("cancelled", GiftCardBalance(fresh).Problem);
+}
+
+[Test(Floor)]
+void an_unused_gift_card_is_refunded_and_voided_and_a_used_one_is_not() {
+  runas (new Visitor { Id = "v-spend" }) {
+    GiftShelf();
+    var reference = MajaBuysACard("v-undo", CardOf("€50"), 0m, "", "", null);
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      // Bought for herself: the card was mailed to her.
+      Assert.Equal("maja@example.test", GiftCard.Single().SendTo);
+      var ret = RefundPart(order.Lines.Single(), 1, "Bought by mistake", false);
+      Workflow.Settle(ret);
+      Assert.Equal(ReturnStatus.Refunded, ret.Status);
+      var card = GiftCard.Single();
+      Workflow.Settle(card);
+      Assert.Equal(GiftCardStatus.Voided, card.Status);
+      // The credit note takes back a voucher — no VAT in it.
+      var note = CreditNote.Single(c => c.Return == ret);
+      Assert.Equal(50m, note.GiftCardsSold);
+      Assert.Equal(0, note.VatRates.Count(r => r.Gross != 0));
+    }
+    // A card that has been spent from is not refunded — neither in part nor with the whole order.
+    var second = MajaBuysACard("v-used", CardOf("€50"), 0m, "", "", null);
+    var code = CodeMailedTo("maja@example.test");
+    runas (Maja) {
+      Bag("v-spend", "Loafer", "38", 1);
+      ApplyGiftCard(code);
+      Checkout("v-spend");
+    }
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == second);
+      Assert.Throws<Exception>(() => RefundPart(order.Lines.Single(), 1, "Changed her mind", false));
+      Assert.Throws<Exception>(() => RefundOrder(order, "Changed her mind", false));
+    }
+  }
+}

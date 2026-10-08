@@ -1,0 +1,249 @@
+// Invoices and credit notes — what the bookkeeping law asks of a sale and of money given back.
+//
+// ⚑ AN INVOICE IS ISSUED WHEN AN ORDER IS PAID, inside the order's workflow, numbered from its own gap-free series.
+//   A refund never edits it: money given back — the whole order, or a return — is a CREDIT NOTE, numbered from a
+//   second series and pointing at the invoice it corrects. So the sales ledger is a sequence of documents that only
+//   ever grows, which is what an auditor, the accounting export and the 7 years of retention all rely on.
+//
+// ⚑ EACH STATES ITS VAT PER RATE — a credit note for a return carries the returned lines at the rates they were sold
+//   at, less their share of any discount, exactly as the invoice carried them.
+
+namespace Osysharp.Shop;
+
+using Osysharp.PdfWriter;
+using Osysharp.Storage;
+
+Counter InvoiceNumber = new() { Start = 1 };
+Counter CreditNoteNumber = new() { Start = 1 };
+
+public entity Invoice {
+  [Counter(InvoiceNumber)] int Number;
+  [Required, Unique] Order Order;
+  DateTime IssuedAt;
+  decimal Total;
+  decimal Vat;
+  /// For an order in another currency than the shop's: how many of it one unit of the shop's own bought the day the
+  /// invoice was issued (the VAT fell due — it is paid), whose rate, and the day it is for. The VAT is stated in the
+  /// shop's own currency at it (EU VAT Directive 2006/112/EC art. 230, with art. 91(2) allowing the ECB's rate), and
+  /// the books convert the sale at it. 1 for an order in the shop's own currency.
+  [Precision(18, 8)] decimal Rate = 1;
+  DateTime? RateDate;
+  [MaxLength(80)] string? RateSource;
+  /// On invoice terms (Wholesale.osy): the days to pay, and the day it is due — null for an invoice issued as it is paid.
+  int TermsDays = 0;
+  DateTime? DueAt;
+  security {
+    // SECURITY-INVARIANT(a-link-opens-only-its-own-orders-return-and-receipt): besides the account and staff, the order's link
+    //   reads its invoice — for the receipt a guest fetches from the order's page — and no other. An invoice names
+    //   nobody (the buyer is the order's contact, which no link reads).
+    allow read when IsAnonymous || IsAuthenticated where Order.Account == user || Order == OrderLink.Row;
+    allow read when IsShopStaff;
+    allow create, update when IsShopStaff;
+  }
+}
+
+public entity CreditNote {
+  [Counter(CreditNoteNumber)] int Number;
+  [Required] Invoice Invoice;
+  /// The return it gives money back for — null when it is the whole order.
+  ReturnRequest? Return;
+  DateTime IssuedAt;
+  /// What is given back, VAT included — a positive amount.
+  decimal Total;
+  decimal Vat;
+  [MaxLength(300)] string? Reason;
+  /// Of `Total`, what went back to the customer's store credit and onto gift cards — the rest went back as money.
+  decimal ToStoreCredit = 0;
+  decimal ToGiftCards = 0;
+  /// Of `Total`, gift cards SOLD that it takes back — vouchers: a multi-purpose card with no VAT, so not in `VatRates`;
+  /// a single-purpose one (`GiftCardsSinglePurpose`) with its VAT, `GiftCardsSoldVat`, given back in `VatRates`.
+  decimal GiftCardsSold = 0;
+  bool GiftCardsSinglePurpose = false;
+  decimal GiftCardsSoldVat = 0;
+  /// Of `ToGiftCards`, what went back onto single-purpose cards, and the VAT paid inside it when they were sold — goods
+  /// that carried no VAT on the order, so none is given back for them.
+  decimal SinglePurposeBack = 0;
+  decimal VoucherVat = 0;
+  [ForeignKey(CreditNote)] CreditNoteVat[] VatRates;
+  security {
+    allow read when IsAuthenticated where Invoice.Order.Account == user;
+    allow read when IsShopStaff;
+    allow create, update when IsShopStaff;
+  }
+}
+
+public entity CreditNoteVat {
+  [Required] CreditNote CreditNote;
+  decimal Percent;
+  decimal Gross;
+  decimal Vat;
+  security {
+    allow read when IsAuthenticated where CreditNote.Invoice.Order.Account == user;
+    allow read when IsShopStaff;
+    allow create, update when IsShopStaff;
+  }
+}
+
+/// How an invoice's number reads — "INV-1042"'s own series, prefixed like the order's.
+public string InvoiceCode(Invoice invoice) { return $"{TheShop().OrderPrefix}INV-{invoice.Number}"; }
+public string CreditNoteCode(CreditNote note) { return $"{TheShop().OrderPrefix}CN-{note.Number}"; }
+
+/// Issues the order's invoice — once. Called by the order's workflow when it is paid.
+void IssueInvoice(Order order) {
+  if (Invoice.Any(i => i.Order == order)) { return; }
+  var invoice = new Invoice { Order = order, IssuedAt = DateTime.UtcNow, Total = order.Total, Vat = order.Vat,
+                              Rate = order.Rate, RateDate = order.RateDate, RateSource = order.RateSource,
+                              TermsDays = order.PaymentTermsDays, DueAt = order.InvoiceDueAt };
+  // In another currency: the rate of the day it is paid, when the shop has a fresh one — the order's own otherwise
+  // (the rate job has not reached today yet, or the source is closed).
+  if (order.Currency != null && order.Currency != "") {
+    var code = order.Currency!;
+    var today = ExchangeRate.FirstOrDefault(r => r.Currency == code);
+    if (RateUsable(today)) {
+      invoice.Rate = today!.PerUnit;
+      invoice.RateDate = today!.RateDate;
+      invoice.RateSource = today!.Source;
+    }
+  }
+}
+
+/// An amount of an invoiced order in the shop's own currency, at the invoice's rate — its VAT as art. 230 wants it
+/// stated, and a sale as the books take it.
+public decimal InvoiceShopMoney(decimal amount, Invoice invoice) {
+  if (invoice.Rate <= 0 || invoice.Rate == 1m) { return amount; }
+  return Math.Round(amount / invoice.Rate, 2, MidpointRounding.AwayFromZero);
+}
+
+/// The lines a foreign-currency document adds under its VAT: the rate, and the VAT per rate in the shop's own
+/// currency. None for a document in the shop's own currency.
+public List<string> VatInShopCurrency(Invoice invoice, List<decimal> percents, List<decimal> vats) {
+  var order = invoice.Order;
+  var shop = TheShop();
+  if (order.Currency == null || order.Currency == "" || order.Currency == shop.Currency) { return []; }
+  var date = invoice.RateDate == null ? invoice.IssuedAt : invoice.RateDate!.Value;
+  var perOne = invoice.Rate <= 0 ? 0m : Math.Round(1m / invoice.Rate, 4);
+  List<string> lines = [ $"Prices in {order.Currency}. VAT in {shop.Currency} at the {invoice.RateSource ?? "day's"} rate of {date.ToString("d MMMM yyyy")}: 1 {order.Currency} = {perOne:0.0000} {shop.Currency} (article 230, Council Directive 2006/112/EC)." ];
+  for (var i = 0; i < percents.Count; i = i + 1) {
+    if (vats[i] == 0) { continue; }
+    lines.Add($"VAT {percents[i]:0.##} % in {shop.Currency}: {Money(InvoiceShopMoney(vats[i], invoice), shop)}");
+  }
+  return lines;
+}
+
+/// A credit note for all of an order — its refund. Its VAT is the invoice's, rate by rate. `credit` and `cards` are what
+/// went back to store credit and onto gift cards.
+void CreditWholeOrder(Order order, decimal credit, decimal cards) {
+  var invoice = Invoice.SingleOrDefault(i => i.Order == order);
+  if (invoice == null) { return; }                                     // never paid, so never invoiced
+  var note = new CreditNote { Invoice = invoice, IssuedAt = DateTime.UtcNow, Total = order.Total, Vat = order.Vat,
+                              Reason = order.RefundReason, ToStoreCredit = credit, ToGiftCards = cards,
+                              GiftCardsSold = order.GiftCardsSold, GiftCardsSinglePurpose = order.GiftCardsSinglePurpose,
+                              GiftCardsSoldVat = order.GiftCardsSoldVat, SinglePurposeBack = order.SinglePurposeUsed,
+                              VoucherVat = order.VoucherVat };
+  foreach (var v in order.VatRates) { new CreditNoteVat { CreditNote = note, Percent = v.Percent, Gross = v.Gross, Vat = v.Vat }; }
+}
+
+/// A credit note for a return: its lines at the rates they were sold at, less their share of the order's discount.
+void CreditReturn(ReturnRequest ret) {
+  var order = ret.Order;
+  var invoice = Invoice.SingleOrDefault(i => i.Order == order);
+  if (invoice == null) { return; }
+  // A discount came off the goods only — never off a gift card.
+  var goods = order.Subtotal - order.GiftCardsSold;
+  var keep = goods <= 0 ? 1m : (goods - order.Discount) / goods;
+  var cardLines = ret.Lines.ToList().Where(l => l.Line.Kind == LineKind.GiftCard).ToList();
+  var vouchers = cardLines.Sum(l => l.Line.Price * l.Quantity);
+  // Single-purpose cards sold carried VAT on the sale (their line's rate): taking them back gives that VAT back.
+  var soldVat = cardLines.Sum(l => VatIn(l.Line.Price * l.Quantity, l.Line.VatPercent));
+  var singleBack = ret.GiftCardAmount > 0 ? ret.SinglePurposeBack : 0m;
+  var note = new CreditNote { Invoice = invoice, Return = ret, IssuedAt = DateTime.UtcNow, Total = ret.Amount,
+                              Reason = "Return", ToStoreCredit = ret.CreditAmount, ToGiftCards = ret.GiftCardAmount,
+                              GiftCardsSold = vouchers, GiftCardsSinglePurpose = soldVat > 0, GiftCardsSoldVat = soldVat,
+                              SinglePurposeBack = singleBack, VoucherVat = ret.GiftCardAmount > 0 ? ret.VoucherVatBack : 0m };
+  List<decimal> rates = [];
+  List<decimal> gross = [];
+  foreach (var l in ret.Lines.Where(x => x.Line.Kind != LineKind.GiftCard)) {
+    var at = rates.IndexOf(l.Line.VatPercent);
+    if (at < 0) { rates.Add(l.Line.VatPercent); gross.Add(0m); at = rates.Count - 1; }
+    gross[at] = gross[at] + l.Line.Price * l.Quantity * keep;
+  }
+  // The parts add up to what was refunded for goods, to the cent — less what went back onto single-purpose cards,
+  // whose VAT was paid when they were sold and was never on this order.
+  var parts = Share(ret.Amount - vouchers, gross);
+  var voucherParts = Share(singleBack, parts);
+  for (var i = 0; i < rates.Count; i = i + 1) { parts[i] = parts[i] - voucherParts[i]; }
+  foreach (var l in cardLines.Where(x => x.Line.VatPercent > 0)) {
+    var at = rates.IndexOf(l.Line.VatPercent);
+    if (at < 0) { rates.Add(l.Line.VatPercent); parts.Add(0m); at = rates.Count - 1; }
+    parts[at] = parts[at] + l.Line.Price * l.Quantity;
+  }
+  for (var i = 0; i < rates.Count; i = i + 1) {
+    var vat = VatIn(parts[i], rates[i]);
+    new CreditNoteVat { CreditNote = note, Percent = rates[i], Gross = parts[i], Vat = vat };
+    note.Vat = note.Vat + vat;
+  }
+}
+
+/// A credit note as a PDF — for the customer whose order it corrects, or for staff.
+public string CreditNoteLink(CreditNote note) {
+  var me = Session.CurrentUser;
+  if (me == null) { throw new Exception("Sign in to fetch a credit note."); }
+  if (note.Invoice.Order.Account != me && !ShopRoleGrant.Any(g => g.Member == me && g.Role == ShopRole.Staff)) {
+    throw new Exception("That credit note is not on your account.");
+  }
+  var path = $"credit-notes/{note.Id}.pdf";
+  File.WriteAllBytes(path, CreditNotePdf(note));
+  return File.SignedUrl(path);
+}
+
+/// The seller's lines every sales document carries: name, company number, VAT number, address.
+double SellerBlock(PdfDocument doc, double left, double right, double y, ShopSettings shop) {
+  doc.Text(left, y, shop.Name, 20, true);
+  if (shop.ContactEmail != null) { doc.TextRight(right, y, shop.ContactEmail, 9); }
+  List<string> facts = [];
+  if (shop.CompanyNumber != null) { facts.Add($"Company no. {shop.CompanyNumber}"); }
+  if (shop.VatNumber != null) { facts.Add($"VAT no. {shop.VatNumber}"); }
+  if (shop.CompanyAddress != null) { facts.Add(shop.CompanyAddress); }
+  foreach (var f in facts) { y = y - 12; doc.Text(left, y, f, 8); }
+  return y;
+}
+
+public byte[] CreditNotePdf(CreditNote note) {
+  var shop = TheShop();
+  var order = note.Invoice.Order;
+  var doc = new PdfDocument { Title = $"Credit note {CreditNoteCode(note)} — {shop.Name}" };
+  var left = 56.0;
+  var right = 539.0;
+  var y = SellerBlock(doc, left, right, 780.0, shop) - 36;
+  doc.Text(left, y, "Credit note", 14, true);
+  doc.TextRight(right, y, CreditNoteCode(note), 14, true);
+  y = y - 18;
+  doc.Text(left, y, $"Issued {note.IssuedAt.ToString("d MMMM yyyy")} · corrects invoice {InvoiceCode(note.Invoice)} for order {order.Reference}", 10);
+  if (note.Return != null) {
+    y = y - 30;
+    doc.Text(left, y, "Returned", 9, true);
+    y = y - 8;
+    doc.Line(left, y, right, y, 0.5, 0.6);
+    foreach (var l in note.Return.Lines.ToList()) {
+      y = y - 18;
+      doc.Text(left, y, l.Line.VariantLabel == null ? l.Line.ProductName : $"{l.Line.ProductName} ({l.Line.VariantLabel})", 10);
+      doc.TextRight(right - 90, y, $"{l.Quantity}", 10);
+      doc.TextRight(right, y, "−" + OrderMoney(l.Line.Price * l.Quantity, order), 10);
+    }
+  }
+  y = y - 26;
+  doc.Text(left, y, "Credited", 12, true);
+  doc.TextRight(right, y, "−" + OrderMoney(note.Total, order), 12, true);
+  var noteRates = note.VatRates.ToList().Where(r => r.Vat > 0).OrderByDescending(r => r.Percent).ToList();
+  foreach (var v in noteRates) {
+    y = y - 14;
+    doc.TextRight(right, y, $"of which VAT {v.Percent:0.##} % −{OrderMoney(v.Vat, order)} (on {OrderMoney(v.Gross, order)})", 9);
+  }
+  // A credit note corrects its invoice at the invoice's rate, so the VAT it gives back is the VAT that was declared.
+  foreach (var line in VatInShopCurrency(note.Invoice, noteRates.Select(r => r.Percent).ToList(), noteRates.Select(r => -r.Vat).ToList())) {
+    y = y - 12;
+    foreach (var part in doc.Wrap(line, right - left, 9)) { doc.Text(left, y, part, 9); y = y - 12; }
+  }
+  if (note.Reason != null) { y = y - 24; doc.Text(left, y, note.Reason, 9); }
+  return doc.ToBytes();
+}

@@ -1,0 +1,96 @@
+// Customer accounts: signing up and in, a reset by mail, and what a customer may and may not see and change.
+
+using Osysharp.Shop;
+
+[Test(Floor)]
+void a_visitor_signs_up_as_a_customer_and_signs_in_again() {
+  Assert.NotEqual("", ShopSignup("New@Example.test ", "long-enough-1", "Nils"));
+  Assert.NotEqual("", ShopLogin("new@example.test", "long-enough-1").Ticket);   // one account, however the address was typed
+  runas (Desk) {
+    var nils = ShopAccount.Single(a => a.Email == "new@example.test");
+    Assert.Equal("Nils", nils.Name);
+    Assert.True(ShopRoleGrant.Any(g => g.Member == nils && g.Role == ShopRole.Customer));
+    Assert.False(ShopRoleGrant.Any(g => g.Member == nils && g.Role == ShopRole.Staff));
+  }
+}
+
+[Test(Floor)]
+void signup_refuses_a_short_password_and_something_that_is_not_an_address() {
+  Assert.Throws<Exception>(() => ShopSignup("short@example.test", "short", ""));
+  Assert.Throws<Exception>(() => ShopSignup("no-at-sign", "long-enough-1", ""));
+}
+
+// SECURITY-INVARIANT(shop-sign-up-does-not-say-who-has-an-account): a taken address is never answered with a sentence
+// saying so. The page says a message is on its way; the MAIL tells the address's owner, at most once a minute.
+[Test(Floor)]
+void signup_for_a_taken_address_says_nothing_and_the_mail_tells_its_owner() {
+  string answer = "x";
+  answer = ShopSignup("Maja@Example.test", "not-majas-password", "Somebody");
+  Assert.Equal("", answer);
+  ShopSignup("maja@example.test", "not-majas-password", "Somebody");
+  runas (Desk) {
+    // Told once — a second try within the minute mails nothing more — and nothing about her account changed.
+    Assert.Equal(1, ShopMail.Count(m => m.To == "maja@example.test" && m.Subject.StartsWith("You already have an account")));
+    Assert.Equal(1, ShopAccount.Count(a => a.Email == "maja@example.test"));
+  }
+  Assert.NotEqual("", ShopLogin("maja@example.test", "maja-pass-1").Ticket);
+}
+
+[Test(Floor)]
+void signup_with_the_owners_own_password_signs_the_owner_in() {
+  Assert.NotEqual("", ShopSignup("maja@example.test", "maja-pass-1", "Maja"));
+  runas (Desk) { Assert.Equal(0, ShopMail.Count(m => m.To == "maja@example.test" && m.Subject.StartsWith("You already have an account"))); }
+}
+
+[Test(Floor)]
+void a_customer_sees_and_edits_only_their_own_account() {
+  runas (Maja) {
+    Assert.Equal(1, ShopAccount.Count());
+    SaveMyDetails("Maja B", "070", "Storgatan 1", "11122", "Stockholm", "Sweden");
+    Assert.Equal("Stockholm", Me().City);
+    var olle = ShopAccount.FirstOrDefault(a => a.Email == "olle@example.test");
+    Assert.Null(olle);                               // not a row she can see at all
+  }
+  runas (Desk) { Assert.Equal(5, ShopAccount.Count()); }   // staff, a packer, a counter clerk, two customers
+}
+
+[Test(Floor)]
+void a_customer_cannot_make_themselves_staff_or_set_their_own_hash() {
+  runas (Maja) {
+    var me = Me();
+    Assert.Denied(() => new ShopRoleGrant { Member = me, Role = ShopRole.Staff });
+    Assert.Denied(() => { me.PasswordHash = Security.HashPassword("mine-now"); UnitOfWork.Commit(); });
+    Assert.False(AmStaff());
+  }
+  runas (Desk) { Assert.True(AmStaff()); }
+}
+
+[Test(Floor)]
+void a_reset_mail_sets_a_new_password_once() {
+  Assert.Equal("", ShopRequestPasswordReset("maja@example.test"));
+  Assert.Equal("", ShopRequestPasswordReset("nobody@example.test"));   // the same answer, and no mail
+  var code = "";
+  runas (Desk) {
+    Assert.Equal(1, ShopMail.Count());
+    var mail = ShopMail.Single();
+    Assert.Equal("maja@example.test", mail.To);
+    // A LINK to choose the new password, always — whether or not the desk filled in the shop's Web address.
+    Assert.Contains("Choose a new password here: http", mail.Text);
+    code = mail.Text.Substring(mail.Text.IndexOf("/account/reset/") + 15, 32);
+  }
+  Assert.NotEqual("", ShopResetPassword(code, "brand-new-pass"));
+  Assert.NotEqual("", ShopLogin("maja@example.test", "brand-new-pass").Ticket);
+  Assert.Equal("", ShopLogin("maja@example.test", "maja-pass-1").Ticket);
+  Assert.Throws<Exception>(() => ShopResetPassword(code, "another-pass-1"));   // once
+}
+
+[Test(Floor)]
+void with_no_mail_provider_a_mail_waits_in_the_outbox() {
+  ShopRequestPasswordReset("olle@example.test");
+  runas (Desk) {
+    var mail = ShopMail.Single();
+    Workflow.Settle(mail);
+    Assert.Equal(MailStatus.Held, mail.Status);
+    Assert.Contains("ResendApiKey", mail.Problem);
+  }
+}

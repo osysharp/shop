@@ -1,0 +1,166 @@
+// Newsletters staff write on the desk (D-EMAILTEMPLATES1 f): the whole body in Markdown, inside the shop's own mail,
+// previewed live and sent to ONE address as a test. The list, consent and sending to everyone are not built — the seam
+// is `CampaignFor`, one reader at a time.
+
+using Osysharp.Shop;
+using Osysharp.Storage;
+
+/// The seam: a campaign rendered for one reader — subject, HTML and text — in the shop's frame, its placeholders filled
+/// for that reader, with the link that stops it when the caller has one.
+[Test(Floor)]
+void a_campaign_renders_for_one_reader_in_the_shops_frame() {
+  runas (Desk) {
+    var id = NewShopCampaign("Autumn at the shop");
+    var campaign = ShopCampaign.Single(c => c.Id == id);
+    Assert.Equal(ShopCampaignState.Draft, campaign.State);
+    campaign.Body = "Hello {subscriber.firstname},\n\n**New boots** are in at {shop.name}.";
+    UnitOfWork.Commit();
+    var mail = CampaignFor(campaign, "Maja Berg", "https://shop.example/unsubscribe/abc");
+    Assert.Equal("Autumn at the shop", mail.Subject);
+    Assert.Contains("Hello Maja,", mail.Text);
+    Assert.Contains("New boots are in at Kit Test Shop.", mail.Text);
+    Assert.Contains("<strong>New boots</strong>", mail.Html);
+    Assert.Contains("href=\"https://shop.example/unsubscribe/abc\"", mail.Html);
+    Assert.Contains("role=\"presentation\"", mail.Html);
+  }
+}
+
+/// ⛔ NOTHING STAFF WRITE, AND NOTHING A READER IS CALLED, BECOMES MARKUP — AND NO READER IS SENT A TOKEN NOBODY FILLED.
+/// Raw HTML in the body is shown as text, a `javascript:` link is not a link, a reader's name is escaped, and a body or
+/// subject naming a placeholder the campaign does not fill is refused — by the seam and by the test send — by name.
+/// SECURITY-INVARIANT(email-words-cannot-inject).
+[Test(Floor)]
+void a_campaign_cannot_carry_markup_or_an_unknown_placeholder_to_a_reader() {
+  runas (Desk) {
+    var campaign = ShopCampaign.Single(c => c.Id == NewShopCampaign("Hello"));
+    campaign.Body = "Hi {subscriber.name}. <script>alert(1)</script> <b>bold</b> [prize](javascript:alert(1))";
+    UnitOfWork.Commit();
+    var html = CampaignFor(campaign, "[Win](https://evil.example) **now**").Html;
+    Assert.DoesNotContain("<script", html);
+    Assert.DoesNotContain("<b>bold</b>", html);
+    Assert.DoesNotContain("javascript:", html);
+    Assert.DoesNotContain("href=\"https://evil.example\"", html);
+    Assert.DoesNotContain("<strong>now</strong>", html);
+    Assert.Contains("&lt;script&gt;", html);
+
+    campaign.Body = "Hello {subscriber.nmae}";
+    UnitOfWork.Commit();
+    var refused = Assert.Throws<Exception>(() => CampaignFor(campaign, "Maja Berg"));
+    Assert.Contains("{subscriber.nmae} is not a placeholder this mail fills", refused.Message);
+    Assert.Contains("{subscriber.nmae}", SendShopCampaignTest(campaign.Id, "maja@example.test"));
+
+    campaign.Body = "Hello {subscriber.name}";
+    campaign.Subject = "For {subscriber.name}";
+    UnitOfWork.Commit();
+    Assert.Contains("cannot use {placeholders}", SendShopCampaignTest(campaign.Id, "maja@example.test"));
+    Assert.False(ShopMail.Any(m => m.To == "maja@example.test" && m.Subject.StartsWith("[Test]")));   // nothing went out
+  }
+}
+
+/// ⭐ ON THE DESK: staff start a newsletter, write it in the Markdown editor beside a live preview in the shop's own mail,
+/// and send one test through the outbox — the same outbox every shop mail leaves by.
+[Test(Floor)]
+void staff_write_a_newsletter_see_it_and_send_a_test() {
+  SignInAsStaff();
+  Ui.Click("Newsletters");
+  Ui.Fill("Subject of a new newsletter", "The winter boots are in");
+  Ui.Click("New newsletter");
+  Assert.Visible("The newsletter — written in Markdown");
+  Assert.Visible("{subscriber.firstname}");
+  // The editor itself STARTED — it loaded the newsletter's document (a package type named by its simple name used to
+  // answer 404 here, which no text on the page shows).
+  Assert.Probe("MarkdownEditor", "dirty", false);
+  // What staff type in the editor lands in the campaign's body — written here as the editor writes it.
+  runas (Desk) {
+    var campaign = ShopCampaign.Single(c => c.Subject == "The winter boots are in");
+    campaign.Body = "Hello {subscriber.firstname},\n\nThe **Chelsea** is back in every size.";
+    UnitOfWork.Commit();
+  }
+  Ui.Fill("Send a test to", "anna@shop.test");
+  Ui.Click("Send a test");
+  Assert.Visible("A test is on its way to anna@shop.test");
+  runas (Desk) {
+    var test = ShopMail.Single(m => m.To == "anna@shop.test" && m.Subject == "[Test] The winter boots are in");
+    Assert.Contains("The Chelsea is back in every size.", test.Text);
+    Assert.Contains("<strong>Chelsea</strong>", test.Html ?? "");
+  }
+  Ui.Shot("desk-newsletter");
+}
+
+/// ⭐ A NEWSLETTER IS WRITTEN IN A UNIT OF WORK OF ITS OWN (D-GHOSTFILTER1). Close throws away what was typed since the
+/// last Save — it does not linger in the desk's unit of work, where the next Save anywhere on the desk used to commit a
+/// subject nobody meant to keep. Measured before the editor moved onto `Dialog.Open(…, unitOfWork: Root)`: the Settings
+/// tab's "Save settings" renamed the newsletter.
+[Test(Floor)]
+void a_newsletter_closed_without_saving_is_not_saved_by_the_desks_next_save() {
+  SignInAsStaff();
+  Ui.Click("Newsletters");
+  Ui.Fill("Subject of a new newsletter", "Spring boots");
+  Ui.Click("New newsletter");
+  Ui.Fill("Subject", "Spring boots, a draft I did not keep", within: "Newsletter");
+  Ui.Click("Close", within: "Newsletter");
+  Ui.Click("Settings");
+  Ui.Click("Save settings");
+  runas (Desk) {
+    Assert.Equal(1, ShopCampaign.Count(c => c.Subject == "Spring boots"));
+    Assert.Equal(0, ShopCampaign.Count(c => c.Subject == "Spring boots, a draft I did not keep"));
+  }
+}
+
+/// A newsletter's words rewritten after a refused call still save. `Assert.Throws` discards the unit of work, and the
+/// next rewrite used to read the sections it had just replaced and fail its own commit with "Entity is deleted." —
+/// about half the time, so the sequence runs six times to make a regression unmissable.
+[Test(Floor)]
+void a_newsletter_rewritten_after_a_refused_send_still_saves() {
+  runas (Desk) {
+    for (var i = 0; i < 6; i++) {
+      var campaign = ShopCampaign.Single(c => c.Id == NewShopCampaign($"Round {i}"));
+      campaign.Body = "Hello {subscriber.nmae}";
+      UnitOfWork.Commit();
+      Assert.Throws<Exception>(() => CampaignFor(campaign, "Maja Berg"));
+      campaign.Body = "Hello {subscriber.name}, round " + i;
+      campaign.Subject = $"Round {i}, again";
+      UnitOfWork.Commit();
+      Assert.Contains($"round {i}", CampaignFor(campaign, "Maja Berg").Text);
+    }
+  }
+}
+
+/// A picture pasted into the newsletter is an UPLOADED file, private to whoever uploaded it — so it cannot go out as an
+/// address (a reader's client would get a 404). It travels INSIDE the mail, attached under the `cid:` the HTML names,
+/// read from the upload itself. And only a picture the writer may open goes: pasting another person's file id is
+/// refused before anything is sent, so a newsletter cannot mail out somebody's private file.
+[Test(Floor)]
+void a_pasted_picture_travels_inside_the_mail_and_only_one_the_writer_may_open() {
+  var png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==");
+  var theirs = Guid.Empty;
+  runas (Maja) { theirs = File.Create("maja-passport.png", "image/png", png).Id; }
+  runas (Desk) {
+    var ours = File.Create("autumn-beans.png", "image/png", png);
+    var id = NewShopCampaign("The autumn beans");
+    var campaign = ShopCampaign.Single(c => c.Id == id);
+    campaign.Body = $"Hello {{subscriber.firstname}},\n\n![The autumn beans](/api/files/{ours.Id})\n\nFresh this week.";
+    UnitOfWork.Commit();
+    var mail = CampaignFor(campaign, "Maja Berg");
+    Assert.Contains($"cid:upload-{ours.Id.ToString("N")}", mail.Html);
+    Assert.DoesNotContain("/api/files/", mail.Html);
+    Assert.Equal("", SendShopCampaignTest(id, "anna@shop.test"));
+    var sent = ShopMail.Include(m => m.Images).Single(m => m.Subject == "[Test] The autumn beans");
+    var image = sent.Images.Single();
+    Assert.Equal("autumn-beans.png", image.FileName);
+    Assert.Equal("image/png", image.ContentType);
+    var attached = InlineAttachments(sent).Single();
+    Assert.Equal(png.Length, attached.Content.Length);
+    Assert.Equal($"upload-{ours.Id.ToString("N")}", attached.ContentId);
+
+    campaign.Body = $"Hello,\n\n![A picture](/api/files/{theirs})";
+    UnitOfWork.Commit();
+    Assert.Contains("not one you can open", ShopCampaignRefusal(campaign));
+    Assert.Contains("not one you can open", SendShopCampaignTest(id, "anna@shop.test"));
+    // And the outbox itself refuses it — for any mail, not only a newsletter — because it is read there, as the caller.
+    var borrowed = new RenderedEmail("Look", "Look");
+    borrowed.Inline.Add(new EmailInlineImage { ContentId = "x", FileName = "x.png", ContentType = "image/png", Asset = theirs });
+    var refused = Assert.Throws<Exception>(() => Mail("anna@shop.test", borrowed));
+    Assert.Contains("not one you can open", refused.Message);
+  }
+}

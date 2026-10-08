@@ -1,0 +1,194 @@
+// A proven address (`ShopSetup.RequireConfirmedEmail`): no ticket until the address is proven, by the link or the code
+// its mail carries; sign-up answers a new address and a taken one alike, and the mail says which; the FIRST proof
+// claims the account — with its password, or a new one that signs every other session out.
+
+using Osysharp.Shop;
+
+/// The six-digit code in the newest proof mail to `address`.
+string CodeTo(string address) {
+  var code = "";
+  runas (Desk) {
+    var mail = ShopMail.Where(m => m.To == address && m.Subject.StartsWith("Confirm your address")).OrderByDescending(m => m.CreatedAt).First();
+    var at = mail.Text.IndexOf("where you were asked for it: ") + 29;
+    code = mail.Text.Substring(at, 6);
+  }
+  return code;
+}
+
+/// The link's token in the newest proof mail to `address`.
+string TokenTo(string address) {
+  var token = "";
+  runas (Desk) {
+    var mail = ShopMail.Where(m => m.To == address && m.Subject.StartsWith("Confirm your address")).OrderByDescending(m => m.CreatedAt).First();
+    token = mail.Text.Substring(mail.Text.IndexOf("/account/confirm/") + 17, 32);
+  }
+  return token;
+}
+
+// SECURITY-INVARIANT(shop-no-ticket-before-the-address-is-proven)
+[Test(Floor)]
+void a_new_account_is_not_signed_in_until_its_address_is_proven_and_the_code_signs_it_in() {
+  AddressProofRequired.Stub(() => true);
+  Assert.Equal("", ShopSignup("nils@example.test", "long-enough-1", "Nils"));
+  // Neither the sign-up nor a sign-in answers a ticket — the right password learns the address must be proven.
+  Assert.Equal("", ShopLogin("nils@example.test", "long-enough-1").Ticket);
+  var step = ShopLogin("nils@example.test", "long-enough-1");
+  Assert.True(step.MustConfirm);
+  Assert.Equal("", step.Ticket);
+  // A wrong password learns nothing.
+  Assert.False(ShopLogin("nils@example.test", "not-the-password").MustConfirm);
+  var code = CodeTo("nils@example.test");
+  Assert.Equal(6, code.Length);
+  Assert.NotEqual("", ShopConfirmEmailCode("Nils@Example.test ", code, "long-enough-1"));
+  Assert.NotEqual("", ShopLogin("nils@example.test", "long-enough-1").Ticket);
+  runas (Desk) { Assert.NotNull(ShopAccount.Single(a => a.Email == "nils@example.test").EmailConfirmedAt); }
+}
+
+[Test(Floor)]
+void with_the_setting_off_a_new_account_is_signed_in_at_once_and_nothing_is_mailed() {
+  Assert.NotEqual("", ShopSignup("nils@example.test", "long-enough-1", "Nils"));
+  runas (Desk) { Assert.Equal(0, ShopMail.Count(m => m.To == "nils@example.test")); }
+}
+
+// SECURITY-INVARIANT(shop-sign-up-does-not-say-who-has-an-account), with the setting on: nothing differs at all.
+[Test(Floor)]
+void sign_up_answers_a_taken_address_as_a_new_one_and_the_mail_says_which() {
+  AddressProofRequired.Stub(() => true);
+  Assert.Equal("", ShopSignup("nils@example.test", "long-enough-1", "Nils"));
+  // Maja's own address with her own password: not signed in either — the same answer a stranger gets.
+  Assert.Equal("", ShopSignup("maja@example.test", "maja-pass-1", "Maja"));
+  runas (Desk) {
+    Assert.Equal(1, ShopMail.Count(m => m.To == "nils@example.test" && m.Subject.StartsWith("Confirm your address")));
+    Assert.Equal(1, ShopMail.Count(m => m.To == "maja@example.test" && m.Subject.StartsWith("You already have an account")));
+    Assert.Equal(0, ShopMail.Count(m => m.To == "maja@example.test" && m.Subject.StartsWith("Confirm your address")));
+  }
+}
+
+// SECURITY-INVARIANT(shop-address-proof-is-hashed-short-lived-and-limited)
+[Test(Floor)]
+void a_code_dies_at_its_fifth_wrong_try_and_a_newer_mail_spends_the_older() {
+  AddressProofRequired.Stub(() => true);
+  ShopSignup("nils@example.test", "long-enough-1", "Nils");
+  var code = CodeTo("nils@example.test");
+  var wrong = code == "000000" ? "111111" : "000000";
+  for (var i = 0; i < 5; i++) {
+    Assert.Throws<Exception>(() => ShopConfirmEmailCode("nils@example.test", wrong, "long-enough-1"));
+  }
+  // Dead: the right code no longer works.
+  Assert.Throws<Exception>(() => ShopConfirmEmailCode("nils@example.test", code, "long-enough-1"));
+  runas (AuthBootstrap) {   // only the sign-in flow reads a proof
+    var proof = ShopAddressProof.Single(p => p.Email == "nils@example.test");
+    Assert.NotEqual(code, proof.CodeHash);   // kept only as a fingerprint
+    Assert.NotNull(proof.UsedAt);
+  }
+  // Signing in again sends a fresh one — which works.
+  Assert.True(ShopLogin("nils@example.test", "long-enough-1").MustConfirm);
+  Assert.NotEqual("", ShopConfirmEmailCode("nils@example.test", CodeTo("nils@example.test"), "long-enough-1"));
+}
+
+[Test(Floor)]
+void the_link_proves_the_address_with_the_accounts_password_and_spends_the_code() {
+  AddressProofRequired.Stub(() => true);
+  ShopSignup("nils@example.test", "long-enough-1", "Nils");
+  var code = CodeTo("nils@example.test");
+  var token = TokenTo("nils@example.test");
+  // The mailbox alone proves nothing on a first proof: it asks for the password.
+  var asked = ShopConfirmEmail(token);
+  Assert.True(asked.MustConfirmPassword);
+  Assert.Equal("", asked.Ticket);
+  Assert.Throws<Exception>(() => ShopConfirmEmail(token, password: "not-the-password"));
+  Assert.NotEqual("", ShopConfirmEmail(token, password: "long-enough-1").Ticket);
+  // Either half spends both.
+  Assert.Throws<Exception>(() => ShopConfirmEmailCode("nils@example.test", code, "long-enough-1"));
+  Assert.Throws<Exception>(() => ShopConfirmEmail(token, password: "long-enough-1"));
+}
+
+// SECURITY-INVARIANT(shop-first-proof-claims-the-account): a stranger signs up first with Nina's address; Nina proves it
+// with a new password, and the stranger's password — and session — stop working.
+[Test(Floor)]
+void the_owner_who_proves_the_address_with_a_new_password_takes_the_account_from_a_stranger() {
+  AddressProofRequired.Stub(() => true);
+  ShopSignup("nina@example.test", "strangers-pass-1", "Not Nina");
+  var token = TokenTo("nina@example.test");
+  Assert.NotEqual("", ShopConfirmEmail(token, newPassword: "ninas-own-pass-1").Ticket);
+  Assert.Equal("", ShopLogin("nina@example.test", "strangers-pass-1").Ticket);
+  Assert.NotEqual("", ShopLogin("nina@example.test", "ninas-own-pass-1").Ticket);
+}
+
+// A reset link proves the address too — and is the same claim.
+[Test(Floor)]
+void a_reset_proves_the_address_and_claims_the_account() {
+  AddressProofRequired.Stub(() => true);
+  ShopSignup("nina@example.test", "strangers-pass-1", "Not Nina");
+  ShopRequestPasswordReset("nina@example.test");
+  var token = "";
+  runas (Desk) {
+    var mail = ShopMail.Single(m => m.To == "nina@example.test" && m.Subject.StartsWith("Reset"));
+    token = mail.Text.Substring(mail.Text.IndexOf("/account/reset/") + 15, 32);
+  }
+  Assert.NotEqual("", ShopResetPassword(token, "ninas-own-pass-1"));
+  Assert.Equal("", ShopLogin("nina@example.test", "strangers-pass-1").Ticket);
+  Assert.NotEqual("", ShopLogin("nina@example.test", "ninas-own-pass-1").Ticket);
+}
+
+[Test(Floor)]
+void an_account_made_before_the_setting_was_turned_on_proves_its_address_at_its_next_sign_in() {
+  AddressProofRequired.Stub(() => true);
+  Assert.True(ShopLogin("maja@example.test", "maja-pass-1").MustConfirm);
+  Assert.NotEqual("", ShopConfirmEmailCode("maja@example.test", CodeTo("maja@example.test"), "maja-pass-1"));
+  Assert.NotEqual("", ShopLogin("maja@example.test", "maja-pass-1").Ticket);
+}
+
+[Test(Floor)]
+void a_customer_cannot_mark_their_own_address_proven() {
+  runas (Maja) {
+    var me = Me();
+    Assert.Denied(() => { me.EmailConfirmedAt = DateTime.UtcNow; UnitOfWork.Commit(); });
+  }
+}
+
+// ── through the screen ────────────────────────────────────────────────────────────────────────────────────────────
+
+[Test(Floor)]
+void signing_up_asks_for_the_code_and_the_code_signs_the_new_customer_in() {
+  AddressProofRequired.Stub(() => true);
+  Ui.Visit("/account/new");
+  Ui.Fill("Your name", "Nils");
+  Ui.Fill("Email", "nils@example.test");
+  Ui.Fill("Password", "long-enough-1");
+  Ui.Click("Create account");
+  Assert.Visible("We have sent a message to nils@example.test. Type the code it gives you — or open its link.");
+  Ui.Fill("Code", CodeTo("nils@example.test"));
+  Ui.Click("Confirm");
+  Assert.Visible("Your account");
+  Assert.Visible("nils@example.test");
+}
+
+[Test(Floor)]
+void signing_in_to_an_unproven_account_asks_for_the_code_the_mail_just_carried() {
+  AddressProofRequired.Stub(() => true);
+  Ui.Visit("/account/sign-in");
+  Ui.Fill("Email", "maja@example.test");
+  Ui.Fill("Password", "maja-pass-1");
+  Ui.Click("Sign in");
+  Assert.Visible("Confirm your address first — we have mailed a code to maja@example.test.");
+  var code = CodeTo("maja@example.test");
+  Ui.Fill("Code", code == "000000" ? "111111" : "000000");
+  Ui.Click("Confirm");
+  Assert.Visible("That code is not right, or it has expired — check the newest mail, or sign in again for a new code.");
+  Ui.Fill("Code", code);
+  Ui.Click("Confirm");
+  Assert.Visible("Your account");
+}
+
+[Test(Floor)]
+void the_link_page_asks_for_the_password_or_a_new_one() {
+  AddressProofRequired.Stub(() => true);
+  ShopSignup("nina@example.test", "strangers-pass-1", "Not Nina");
+  Ui.Visit("/account/confirm/" + TokenTo("nina@example.test"));
+  Assert.Visible("Confirm your address");
+  Ui.Fill("New password", "ninas-own-pass-1");
+  Ui.Click("Choose it and sign in");
+  Assert.Visible("Your account");
+  Assert.Equal("", ShopLogin("nina@example.test", "strangers-pass-1").Ticket);
+}

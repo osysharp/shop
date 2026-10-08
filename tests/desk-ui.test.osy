@@ -1,0 +1,224 @@
+// The kit's desk, driven through the screen as a member of staff.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+void SignInAsStaff() {
+  Ui.Visit("/account/sign-in");
+  Ui.Fill("Email", "anna@shop.test");
+  Ui.Fill("Password", "desk-pass-1");
+  Ui.Click("Sign in");
+  Ui.Visit("/desk");
+}
+
+[Test(Floor)]
+void the_figures_show_what_sells() {
+  var reference = Buy("v-desk-fig", "Loafer", "38", 1);
+  runas (Desk) { MarkPaid(Order.Single(o => o.Reference == reference), ""); }
+  SignInAsStaff();
+  Ui.Click("Figures");
+  Assert.Visible("Best sellers");
+  Assert.Visible("Loafer");
+  Assert.Visible("On sale now");
+}
+
+[Test(Floor)]
+void the_desk_opens_on_the_orders_and_sends_one_with_its_carrier() {
+  runas (new Visitor { Id = "v-desk-send" }) {
+    runas (Desk) { Pick("Loafer", "39").WeightGrams = 900; UnitOfWork.Commit(); }
+    Bag("v-desk-send", "Loafer", "39", 1);
+    var reference = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                               "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+    SignInAsStaff();
+    Assert.Hidden("Payment received");                      // "All" shows each order's Details only
+    Ui.Click("Waiting for payment · 1");
+    Ui.Click("Payment received", within: reference);
+    Ui.Click("To pick · 1");
+    Ui.Click("Send…", within: reference);
+    Ui.Click("Send it");
+    Assert.Visible("Label (PDF)");                          // sent: its details open on the label and tracking
+    Assert.Visible("Track");
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      Workflow.Settle(order);
+      Assert.Equal(OrderStatus.Fulfilled, order.Status);
+      Assert.Equal("TRK-" + reference + "-900", order.Tracking);
+    }
+  }
+}
+
+[Test(Floor)]
+void the_packer_sends_the_packed_parcels_and_prints_the_days_labels_together() {
+  runas (Desk) { Pick("Loafer", "39").Stock = 10; UnitOfWork.Commit(); }
+  var references = new List<string>();
+  foreach (var visit in new List<string> { "v-print-1", "v-print-2" }) {
+    Bag(visit, "Loafer", "39", 1);
+    runas (new Visitor { Id = visit }) {
+      references.Add(PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                                "Storgatan 1", "11122", "Stockholm", "SE").Reference);
+    }
+  }
+  runas (Desk) {
+    foreach (var reference in references) {
+      var order = Order.Single(o => o.Reference == reference);
+      MarkPaid(order, ""); Workflow.Settle(order);
+      MarkPacked(order); Workflow.Settle(order);
+    }
+  }
+  SignInAsStaff();
+  Assert.Visible("2 packed parcel(s) to label");
+  Ui.Click("Print labels…");
+  Assert.Visible("Packed, not yet sent — 2");
+  Assert.Visible("No labels yet today.");
+  Ui.Click("Send all 2 and make the labels");
+  Assert.Visible("Today's labels — 2");
+  Assert.Visible(references[0] + " · Maja Berg");
+  Assert.Visible(references[1] + " · Maja Berg");
+  Assert.Visible("Label (PDF)", within: references[1]);
+  Ui.Shot("the day's labels, sent and listed");
+  runas (Desk) {
+    foreach (var reference in references) {
+      var order = Order.Single(o => o.Reference == reference);
+      Workflow.Settle(order);
+      Assert.Equal(OrderStatus.Fulfilled, order.Status);
+    }
+  }
+}
+
+[Test(Floor)]
+void stock_is_adjusted_with_a_reason() {
+  SignInAsStaff();
+  Ui.Click("Stock");
+  Ui.Click("Adjust…", within: "Chelsea");
+  Ui.Fill("Change by", "4");
+  Ui.Fill("Note (optional)", "Delivery 7");
+  Ui.Click("Save");
+  Assert.Visible("5 on the shelf");
+  runas (Desk) { Assert.Equal(1, StockMove.Count(m => m.Note == "Delivery 7")); }
+}
+
+[Test(Floor)]
+void a_return_is_received_from_the_desk() {
+  var reference = "";
+  runas (Maja) { reference = Buy("v-desk-ret", "Loafer", "39", 1); }
+  runas (Desk) { PayAndSend(reference); }
+  runas (Maja) { ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, "Too big"); }
+  SignInAsStaff();
+  Ui.Click("Returns");
+  Assert.Visible("Too big");
+  Ui.Click("Received — back in stock");
+  runas (Desk) {
+    var r = ReturnRequest.Single();
+    Workflow.Settle(r);
+    Assert.Equal(ReturnStatus.Refunded, r.Status);
+  }
+}
+
+[Test(Floor)]
+void the_customers_and_the_mail_are_on_the_desk() {
+  ShopRequestPasswordReset("olle@example.test");
+  SignInAsStaff();
+  Ui.Click("Customers");
+  Assert.Visible("Maja Berg");
+  Assert.Visible("olle@example.test");
+  Ui.Click("Mail");
+  Assert.Visible("Mail is not being sent");
+  Assert.Visible("Reset your password at Kit Test Shop");
+}
+
+[Test(Floor)]
+void the_shops_settings_are_saved_from_the_desk() {
+  SignInAsStaff();
+  Ui.Click("Settings");
+  Ui.Fill("Shop name", "Kit Shop Renamed");
+  Ui.Fill("Contact email", "hello@kit.test");
+  Ui.Fill("Bank details", "IBAN SE99 1234");
+  Ui.Click("Save settings");
+  Assert.Visible("Saved.");
+  runas (Desk) {
+    Assert.Equal("Kit Shop Renamed", TheShop().Name);
+    Assert.Equal("hello@kit.test", TheShop().ContactEmail);
+    Assert.Equal("IBAN SE99 1234", TheShop().BankDetails);
+  }
+}
+
+[Test(Floor)]
+void a_product_is_created_from_the_desk() {
+  SignInAsStaff();
+  Ui.Click("Products");
+  Ui.Click("New product…");
+  Ui.Fill("Name", "Linen Shirt");
+  Ui.Fill("Price", "95");
+  Ui.Click("Create");
+  Assert.Visible("Sizes and stock");
+  Ui.Fill("Size", "M");
+  Ui.Click("Add size");
+  Assert.Visible("1 in stock");
+  runas (Desk) { Assert.Equal(1, Variant.Count(v => v.Product.Name == "Linen Shirt")); }
+}
+
+[Test(Floor)]
+void a_packer_sees_the_orders_and_nothing_about_money() {
+  runas (new Visitor { Id = "v-pack-ui" }) {
+    Bag("v-pack-ui", "Loafer", "39", 1);
+    var reference = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                               "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+    runas (Desk) { var o = Order.Single(x => x.Reference == reference); MarkPaid(o, ""); Workflow.Settle(o); }
+    Ui.Visit("/account/sign-in");
+    Ui.Fill("Email", "pia@shop.test");
+    Ui.Fill("Password", "pack-pass-1");
+    Ui.Click("Sign in");
+    Ui.Visit("/desk");
+    Assert.Visible(reference);
+    Ui.Click("To pick · 1");
+    Assert.Visible("Start picking", within: reference);
+    Assert.Hidden("Refund…");
+    Assert.Hidden("Figures");
+  }
+}
+
+[Test(Floor)]
+void staff_open_an_order_to_see_what_to_pack_and_filter_by_stage() {
+  runas (new Visitor { Id = "v-pack-list" }) {
+    Bag("v-pack-list", "Loafer", "38", 2);
+    Bag("v-pack-list", "Chelsea", "38", 1);
+    var reference = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                               "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+    runas (Desk) { var o = Order.Single(x => x.Reference == reference); MarkPaid(o, ""); Workflow.Settle(o); }
+    SignInAsStaff();
+    Ui.Click("To pick · 1");
+    Ui.Click("Details", within: reference);
+    Assert.Visible("To pack — 3 item(s)");
+    Assert.Visible("2 × Loafer — 38");
+    Assert.Visible("1 × Chelsea — 38");
+    Assert.Visible("Storgatan 1");
+    Assert.Visible("Refund part of it — not in stock after all");
+    Assert.Visible("What can be done now");
+    Ui.Click("Start picking", within: "What can be done now");
+    runas (Desk) { var o = Order.Single(x => x.Reference == reference); Workflow.Settle(o); Assert.Equal(OrderStatus.Picking, o.Status); }
+  }
+}
+
+[Test(Floor)]
+void staff_book_a_pickup_from_the_orders() {
+  SignInAsStaff();
+  Ui.Click("Book a pickup…");
+  Ui.Fill("Parcels", "2");
+  Ui.Click("Book it");
+  Assert.Visible("Booked for");
+  Ui.Click("Done");
+  Assert.Visible("Courier comes", within: "Pickups");
+  Assert.Visible("for 2 parcel(s)", within: "Pickups");
+  runas (Desk) { Assert.Equal(2, ShopPickup.Single().Parcels); }
+}
+
+[Test(Floor)]
+void the_desk_starts_prices_in_other_currencies_and_shows_the_rates() {
+  SignInAsStaff();
+  Ui.Click("Settings");
+  Assert.Visible("Prices in other currencies");
+  Ui.Click("Show prices in other currencies");
+  Assert.Visible("1 EUR = 11.3205 SEK");
+  Assert.Visible("1 EUR = 1.1378 USD");
+  Assert.Visible("Fetch the rates now");
+}

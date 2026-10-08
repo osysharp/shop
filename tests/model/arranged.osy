@@ -1,0 +1,6 @@
+// What the shop's staff arrange — its mails' regions (and, in a store, its pages') — is theirs to change: the app's one
+// answer to Osysharp.Blocks' question.
+
+using Osysharp.Blocks;
+
+policy ArrangesPages => IsShopStaff;

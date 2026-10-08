@@ -1,0 +1,61 @@
+// ⭐ WHAT A CUSTOMER RECEIVES BY DEFAULT DOES NOT MOVE (D-BLOCKS1 slice 3). The shop's editable mails — the order
+// confirmation, on its way / collected, refunded — were rewritten from `Editable` parts onto REGIONS of blocks. That
+// is a change to how the words are kept, and it must not be a change to what the customer is sent: each mail's HTML
+// and its text twin, rendered with nothing arranged, are held here as fingerprints taken BEFORE the rewrite.
+// ⚑ Re-taken 2026-09-29 after merging with the guest-returns work (D-ORDERLINK1), which changed the withdrawal line
+//   and the shipped mail's return line on purpose ("return it from your order's page" for "sign in and return it from
+//   your orders", in English and Swedish) — the plain text was compared line by line and differed only there.
+// ⚑ Re-taken 2026-10-01 for the HTML alone: Osysharp.Ui 2.7.0 (the Switchboard floor — Mona Sans, new neutrals and ink,
+//   weights 720) and the var() resolution of D-BLOCKS1's paired ink restyled every mail. Every TEXT twin is unchanged,
+//   and the order confirmation's HTML with style/bgcolor/color attributes stripped was compared against a render by the
+//   binary at a0b1ed855 (where these were last taken): identical — only the styling moved.
+//
+// ⚑ Re-taken 2026-10-02 for the SWEDISH HTML alone (D-RTL1): a mail's document now says the language it is written in —
+//   `<html lang="sv">`, where every mail said `lang="en"` whatever its language. The English HTML and every text twin
+//   are unchanged (their fingerprints did not move), so nothing else in what a customer receives moved.
+//
+// Every address is replaced before the fingerprint is taken: a link to an order carries a fresh signature each time
+// it is minted (OrderLink), and the app's own address is the local platform's port — neither is the mail's content.
+
+using Osysharp.Shop;
+
+/// The mail as a fingerprint: its HTML and its text twin, every address replaced.
+string Fingerprint(RenderedEmail mail) {
+  var html = Regex.Replace(mail.Html, "https?://[^\"\\s<)]*", "ADDRESS");
+  var text = Regex.Replace(mail.Text, "https?://[^\"\\s<)]*", "ADDRESS");
+  return Crypto.Sha256Hex(html) + " " + Crypto.Sha256Hex(text);
+}
+
+[Test(Floor)]
+void the_default_order_confirmation_is_what_it_was_in_english_and_in_swedish() {
+  var reference = Buy("v-golden-confirm", "Loafer", "39", 1);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Assert.Equal("8054f35c14532a327d82e251f21261b37dfc23dc28f06dd5ad64804d6347413d 6357985cd798b685b8f66ecd60a8eeb18059dd6c462e9ac434e1b17325fa48db | 45a1f49bf7d73e3d8fe50513f6dd0199f7dc1b01f5ac5feff0db4314ed9b96d7 e718ed199df68da73a8dbd3cce3f0f33d631022d96f503503eb33ffcc525d6cd",
+      Fingerprint(ShopOrderConfirmation(order)) + " | " + Fingerprint(ShopOrderConfirmation(order, language: "sv")));
+  }
+}
+
+[Test(Floor)]
+void the_default_collected_and_refunded_mails_are_what_they_were() {
+  var reference = Buy("v-golden-collected", "Loafer", "38", 1);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Assert.Equal("e79ba6d45907a576ea1602e1021bc83882edb254c2b2d1aedf3c367d557f982e 248bf7186b548bed4a1d5e5dc1a0c648e57dfc40b3920516c6e84cc6b13b3180 | e5dcfe2324ae21e3309859eab9061a81a711b6d4412a900c09b5bb072c3eec2e b2a6d21cb0ff9a29801c0efdaa82eae9bfe8fd6209d2a0e4482afc3807eedd5e | ce725178a59954dc3c4f3d3950f4845ef6bb9fd5286082423a73bda4f8b68050 1e72351d8c527c70b15f1f103db64bbc6b6b77472531efab426d8f026a1c9207 | 1fccf3838dea20cb57b30425b245db230c202b19c01b76f8e64fc358f9154380 31e66ac4ee46160fd028eab83a8f1b6044758c6c2a6d4f9e9bdc9e8e20df89e1",
+      Fingerprint(ShopShipped(order)) + " | " + Fingerprint(ShopShipped(order, language: "sv")) + " | "
+      + Fingerprint(ShopRefunded(order)) + " | " + Fingerprint(ShopRefunded(order, language: "sv")));
+  }
+}
+
+[Test(Floor)]
+void the_default_on_its_way_mail_is_what_it_was() {
+  runas (new Visitor { Id = "v-golden-sent" }) {
+    Bag("v-golden-sent", "Loafer", "39", 1);
+    var reference = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                               "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      Assert.Equal("a60fc4166da6a4fd19c84a0dc6fbf061149b97b3f18e51fe69abf0b1f72a0a0d fef121a4ca41ee244d3a26c22a813450470eb3043e88fc69c7981b4f7b72cf59", Fingerprint(ShopShipped(order)));
+    }
+  }
+}

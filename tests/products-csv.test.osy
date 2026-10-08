@@ -1,0 +1,124 @@
+// The catalogue in and out of a spreadsheet (ProductsCsv.osy), a size's barcode and cost, and the margin they give
+// the figures.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// A file as a Swedish Excel saves it (`;`, decimal commas): a known SKU updates that size — stock counted, a cost and
+/// a barcode added — a row with only its SKU changes nothing, and an unknown product arrives as a draft. CHECKED first:
+/// nothing is written until it is applied, and then every change is.
+[Test(Floor)]
+void a_spreadsheet_is_checked_then_imported_changing_only_what_it_says() {
+  runas (Desk) {
+    SetVariantDetails(Pick("Loafer", "38"), "LOAF-38", "", "");
+    SetVariantDetails(Pick("Loafer", "39"), "LOAF-39", "", "");
+    var file = "SKU;Product;Size;Price;Cost price;Stock;Barcode\r\n"
+             + "LOAF-38;Loafer;38;;60,00;5;4006381333931\r\n"
+             + "LOAF-39;;;;;;\r\n"
+             + "ESP-37;Espadrille;37;89;35;3;\r\n";
+
+    var check = ImportProductsCsv(file, false);
+    Assert.Equal(0, check.Problems.Count);
+    Assert.False(check.Applied);
+    Assert.Equal(1, check.NewProducts);
+    Assert.Equal(1, check.NewSizes);
+    Assert.Equal(1, check.Changed);
+    Assert.Equal(1, check.Unchanged);
+    Assert.Equal(2, Pick("Loafer", "38").Stock);
+    Assert.False(Product.Any(p => p.Name == "Espadrille"));
+
+    var done = ImportProductsCsv(file, true);
+    Assert.True(done.Applied);
+    var l38 = Pick("Loafer", "38");
+    Assert.Equal(5, l38.Stock);
+    Assert.Equal(60m, l38.CostPrice);
+    Assert.Equal("4006381333931", l38.Barcode);
+    Assert.Equal(120m, l38.Product.Price);
+    Assert.Equal(1, Pick("Loafer", "39").Stock);
+    Assert.Equal(3, StockMove.Single(m => m.Variant == l38).Change);
+    var esp = Product.Single(p => p.Name == "Espadrille");
+    Assert.Equal(ProductStatus.Draft, esp.Status);
+    Assert.Equal(89m, esp.Price);
+    var e37 = Variant.Single(v => v.Sku == "ESP-37");
+    Assert.Equal(3, e37.Stock);
+    Assert.Equal(35m, e37.CostPrice);
+  }
+}
+
+/// A mistake anywhere refuses the whole file — each line named with why — and nothing is written, even the good lines.
+[Test(Floor)]
+void a_file_with_a_mistake_names_its_lines_and_writes_nothing() {
+  runas (Desk) {
+    SetVariantDetails(Pick("Loafer", "38"), "LOAF-38", "", "");
+    var file = "SKU,Stock,Barcode,Status,Category\n"
+             + "LOAF-38,9,,,\n"
+             + "LOAF-38,4,,,\n"
+             + ",,,,\n"
+             + "NOPE-1,3,,,\n"
+             + "LOAF-38,x,4006381333932,Sold,Hats\n";
+    var r = ImportProductsCsv(file, true);
+    Assert.False(r.Applied);
+    Assert.Equal(3, r.Problems.Count);
+    Assert.Equal(3, r.Problems[0].Line);
+    Assert.Contains("earlier line", r.Problems[0].Message);
+    Assert.Equal(5, r.Problems[1].Line);
+    Assert.Contains("NOPE-1", r.Problems[1].Message);
+    Assert.Equal(6, r.Problems[2].Line);
+    Assert.Equal(2, Pick("Loafer", "38").Stock);
+  }
+}
+
+/// What the shop exports, imported back unedited, changes nothing — every price, stock and status reads back as it was
+/// written, a size priced apart from its product included.
+[Test(Floor)]
+void an_export_imported_back_unedited_changes_nothing() {
+  runas (Desk) {
+    SetVariantDetails(Pick("Chelsea", "38"), "CH-38", "4006381333931", "95,50");
+    var text = ProductsCsv();
+    Assert.True(text.StartsWith("﻿SKU,Product,Slug,Size,Colour,Barcode,Price,Was price,Cost price,Stock,Weight (g),Status,Category\r\n"));
+    Assert.Contains("CH-38,Chelsea,chelsea,38,,4006381333931,190.00,,95.50,1,0,Listed,Boots", text);
+    var r = ImportProductsCsv(text, true);
+    Assert.Equal(0, r.Problems.Count);
+    Assert.Equal(0, r.Changed);
+    Assert.Equal(0, r.NewSizes);
+    Assert.Equal(Variant.Count(), r.Unchanged);
+    Assert.Equal(190m, Pick("Chelsea", "38").Price);
+  }
+}
+
+/// A barcode is checked by its check digit where staff enter one.
+[Test(Floor)]
+void a_barcode_with_a_wrong_digit_is_refused() {
+  runas (Desk) {
+    var refused = Assert.Throws<Exception>(() => SetVariantDetails(Pick("Loafer", "38"), "", "4006381333932", ""));
+    Assert.Contains("not a valid EAN", refused.Message);
+    SetVariantDetails(Pick("Loafer", "38"), "", "4006381333931", "");
+    Assert.Equal("4006381333931", Pick("Loafer", "38").Barcode);
+  }
+}
+
+/// The margin is what the goods brought in without VAT, less what they cost — the cost as it was when the order was
+/// placed, so changing it afterwards does not rewrite the past. And a customer never sees a cost.
+[Test(Floor)]
+void the_margin_is_net_of_vat_and_a_cost_is_the_desks_alone() {
+  runas (Desk) { SetVariantDetails(Pick("Loafer", "38"), "", "", "50"); }
+  var reference = Buy("v-margin", "Loafer", "38", 2);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    MarkPaid(order, "");
+    Workflow.Settle(order);
+    var line = OrderLine.Single(l => l.Order == order);
+    Assert.Equal(50m, line.UnitCost);
+    SetVariantDetails(Pick("Loafer", "38"), "", "", "70");
+
+    var totals = TotalsFor(30);
+    var net = 240m / (1m + line.VatPercent / 100m);
+    Assert.Equal(Math.Round(net - 100m, 2), totals.Margin);
+    Assert.Equal(100m, totals.CostedPercent);
+  }
+  // The customer who bought it reads their line, and not what it cost the shop.
+  runas (new Visitor { Id = "v-margin" }) {
+    Assert.Null(Pick("Loafer", "38").CostPrice);
+    Assert.Null(OrderLine.Single(l => l.Order.Reference == reference).UnitCost);
+  }
+}

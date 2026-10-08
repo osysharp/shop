@@ -1,0 +1,155 @@
+// A customer's data: a copy of it, and erasure that removes the person and keeps the books.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Floor)]
+void a_customer_downloads_everything_the_shop_holds_about_them() {
+  var reference = "";
+  runas (Maja) {
+    SaveMyDetails("Maja Berg", "070", "Storgatan 1", "11122", "Stockholm", "Sweden");
+    reference = Buy("v-data", "Loafer", "38", 1);
+    var json = PersonalData(Me());
+    Assert.Contains("\"Email\":\"maja@example.test\"", json);
+    Assert.Contains(reference, json);
+    Assert.Contains("Loafer (38)", json);
+    Assert.Contains($"Your order {reference}", json);             // what the shop mailed her
+    Assert.NotEqual("", MyDataLink());
+  }
+  runas (Olle) { Assert.DoesNotContain("maja@example.test", PersonalData(Me())); }
+}
+
+[Test(Floor)]
+void erasure_keeps_what_the_books_must_and_nothing_that_reaches_the_person() {
+  runas (new Visitor { Id = "v-erase" }) {
+    var paid = "";
+    var called = "";
+    runas (Maja) {
+      SaveMyDetails("Maja Berg", "070", "Storgatan 1", "11122", "Stockholm", "Sweden");
+      Bag("v-erase", "Loafer", "38", 1);
+      paid = PlaceOrder("Maja Berg", "maja@example.test", "070", "courier", "banktransfer",
+                        "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+      Bag("v-erase-2", "Loafer", "39", 1);
+      called = Checkout("v-erase-2").Reference;
+    }
+    runas (Desk) {
+      PayAndSend(paid);
+      var p = Order.Single(x => x.Reference == paid); MarkDelivered(p); Workflow.Settle(p);
+      var c = Order.Single(x => x.Reference == called); CancelOrder(c, "Changed her mind"); Workflow.Settle(c);
+    }
+    runas (Maja) { EraseMyAccount(); }
+    runas (Desk) {
+      var erasure = ShopErasure.Single();
+      // The person is gone as soon as the request commits — the next read finds no account to sign in to — while
+      // telling the payment provider waits for the erasure's clock, after that commit (ErasureRun).
+      Assert.False(ShopAccount.Any(a => a.Email == "maja@example.test"));
+      Assert.Equal(ErasureStatus.Requested, erasure.Status);
+      Workflow.Settle(erasure);
+      Assert.Equal(ErasureStatus.Erased, erasure.Status);
+
+      // The invoiced order keeps its buyer, as invoiced, for the bookkeeping period — and nothing that reaches her.
+      var kept = Order.Single(o => o.Reference == paid).Contact.Single();
+      Assert.Equal("Maja Berg", kept.Name);
+      Assert.Equal("Storgatan 1", kept.Street);
+      Assert.Equal("erased", kept.Email);
+      Assert.Null(kept.Phone);
+      var invoice = Invoice.Single(i => i.Order.Reference == paid);
+      Assert.Equal(BooksKeepUntil(invoice.IssuedAt), kept.RetainedUntil!.Value);
+
+      // The order never invoiced keeps nothing of her.
+      var gone = Order.Single(o => o.Reference == called).Contact.Single();
+      Assert.Equal("Erased customer", gone.Name);
+      Assert.Null(gone.Street);
+
+      // She cannot sign in, and is not mailed — not even when the shop refunds the kept order.
+      Assert.False(ShopAccount.Any(a => a.Email == "maja@example.test"));
+      Assert.False(ShopRoleGrant.Any(g => g.Member == erasure.Account));
+      var mailsBefore = ShopMail.Count();
+      var order = Order.Single(o => o.Reference == paid);
+      RefundOrder(order, "Goodwill", false);
+      Workflow.Settle(order);
+      Assert.Equal(mailsBefore, ShopMail.Count());
+      Assert.False(ShopMail.Any(m => m.To == "maja@example.test"));
+      // What was mailed to her before is erased in BOTH halves: the HTML says her name and address as much as the text.
+      Assert.True(ShopMail.Any(m => m.To == "erased"));
+      Assert.False(ShopMail.Any(m => m.To == "erased" && m.Html != null));
+    }
+  }
+}
+
+[Test(Floor)]
+void a_kept_buyer_is_forgotten_once_the_bookkeeping_period_ends() {
+  var paid = "";
+  runas (Maja) { paid = Buy("v-retain", "Loafer", "38", 1); }
+  runas (Desk) { PayAndSend(paid); }
+  runas (Maja) { EraseMyAccount(); }
+  runas (Desk) {
+    Workflow.Settle(ShopErasure.Single());
+    var contact = Order.Single(o => o.Reference == paid).Contact.Single();
+    Assert.NotNull(contact.RetainedUntil);
+    contact.RetainedUntil = DateTime.UtcNow.AddDays(-1);        // the period has ended
+    UnitOfWork.Commit();
+    PurgeExpiredRetention();
+    UnitOfWork.Commit();
+    Assert.Equal("Erased customer", Order.Single(o => o.Reference == paid).Contact.Single().Name);
+  }
+}
+
+[Test(Floor)]
+void an_order_on_its_way_holds_the_erasure_until_it_arrives() {
+  runas (Maja) {
+    var reference = Checkout(BagAnd("v-erase-open")).Reference;
+    var refused = Assert.Throws<Exception>(() => EraseMyAccount());
+    Assert.Contains(reference, refused.Message);
+  }
+}
+
+string BagAnd(string visit) { Bag(visit, "Loafer", "39", 1); return visit; }
+
+[Test(Floor)]
+void a_customer_reads_the_mail_sent_to_them_and_nobody_elses() {
+  var reference = Buy("v-mail-own", "Loafer", "38", 1);        // mailed to maja@example.test
+  runas (Maja) { Assert.True(ShopMail.Any(m => m.Subject.StartsWith($"Your order {reference}"))); }
+  runas (Olle) { Assert.False(ShopMail.Any(m => m.To == "maja@example.test")); }
+  Assert.False(ShopMail.Any(m => m.To == "maja@example.test"));    // nor anybody signed out
+}
+
+[Test(Floor)]
+void the_books_keep_an_invoiced_buyer_to_the_end_of_the_calendar_year_its_fiscal_year_ended_in() {
+  // This shop's fiscal year runs July–June (model/shop.osy). An invoice from August 2025 belongs to the year ending
+  // June 2026: kept through 31 Dec 2033 — not 2032, as counting from the invoice's own year would say.
+  Assert.Equal(new DateTime(2034, 1, 1), BooksKeepUntil(new DateTime(2025, 8, 14, 15, 30, 0)));
+  // One issued on the last day of a fiscal year belongs to THAT year.
+  Assert.Equal(new DateTime(2033, 1, 1), BooksKeepUntil(new DateTime(2025, 6, 30, 23, 0, 0)));
+  // The end is exclusive: the whole of 31 Dec is kept, the first instant of the new year is not.
+  Assert.True(BooksKeepUntil(new DateTime(2025, 6, 30)) > new DateTime(2032, 12, 31, 23, 59, 59));
+}
+
+[Test(Floor)]
+void an_add_on_that_cannot_erase_the_customer_fails_the_erasure_and_says_which() {
+  runas (Maja) {
+    SaveMyDetails("Maja Berg", "000-cannot-erase", "Storgatan 1", "11122", "Stockholm", "Sweden");
+    var refused = Assert.Throws<Exception>(() => EraseMyAccount());
+    Assert.Contains("'promo'", refused.Message);
+    Assert.Contains("Nothing was erased", refused.Message);
+  }
+  runas (Desk) {
+    // Nothing is recorded as erased, and the account is as it was: an erasure that half ran is not an erasure. The
+    // desk sees why.
+    var erasure = ShopErasure.Single();
+    Assert.Equal(ErasureStatus.Failed, erasure.Status);
+    Assert.Contains("'promo'", erasure.Problem);
+    Assert.True(ShopAccount.Any(a => a.Email == "maja@example.test" && a.Name == "Maja Berg"));
+  }
+  // Once the add-on can, asking again runs the SAME erasure to its end.
+  runas (Maja) {
+    SaveMyDetails("Maja Berg", "070", "Storgatan 1", "11122", "Stockholm", "Sweden");
+    EraseMyAccount();
+  }
+  runas (Desk) {
+    var erasure = ShopErasure.Single();
+    Workflow.Settle(erasure);
+    Assert.Equal(ErasureStatus.Erased, erasure.Status);
+    Assert.False(ShopAccount.Any(a => a.Email == "maja@example.test"));
+  }
+}

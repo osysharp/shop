@@ -1,0 +1,9 @@
+// The kit test app speaks Swedish too, so a test can place a Swedish order and read its mail in Swedish: the kit's
+// own words come from kits/shop/locales/sv.osy; this file only makes Swedish one of the app's languages, and says the
+// app's own back-in-stock mail (model/mails.osy) in Swedish for a customer whose account is Swedish.
+translations sv {
+  text "Good news — it is back" => "Goda nyheter — den är tillbaka";
+  mailSubject "Back at Kit Test Shop: {VariantName}" => "Tillbaka hos Kit Test Shop: {VariantName}";
+  mailPreview "{VariantName} is back" => "{VariantName} är tillbaka";
+  text "{VariantName} is on the shelf again." => "{VariantName} finns på hyllan igen.";
+}

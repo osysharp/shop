@@ -1,0 +1,87 @@
+// THE STAFF'S PAGES — the sign-in, the desk, the counter and the returns, as pages of the kit. Each stands in the app's
+// own working shell (`[Layout(WorkspaceFrame)]` — the app's design of `Osysharp.Ui`'s `WorkspaceShell`, its top bar, its
+// navigation, its account menu) and puts itself in the app's navigation (`[Nav]`, which the shell lists with
+// `Nav.Pages()`). A store writes nothing to have them:
+//
+//     component StaffShell() : WorkspaceShell {
+//       render { MyDeskFrame { foreach (var n in Nav.Pages()) { Link(href: n.To, label: n.Label) { Text(n.Label); } } Slot; } }
+//     }
+//
+// The add-on kits put their own desks beside these the same way (`/staff/codes`, `/staff/reviews`, `/staff/books`).
+// To tailor a page, take it over by name; to leave one out, `use Osysharp.Shop@0 { without ShopCounterPage; }`. Its
+// heading is `PageTitle`, which a store's own `PageTitle` dresses everywhere.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Ui;
+
+/// The desk: orders for whoever packs them, and for staff the figures, the products, the stock, the customers, the gift
+/// cards, the mail and the settings.
+[Page("/staff/desk")] [Layout(WorkspaceFrame)] [Authorize(IsShopPacker)] [Render(CSR)] [Title("Desk")]
+[Nav("Desk", Order = 20)]
+public component ShopDeskPage() {
+  render { Stack(gap: 6, w: "100%", maxW: "1200px") { PageTitle("Desk"); ShopDesk(); } }
+}
+
+/// The till: a sale rung up at the counter, paid and handed over, and a bag brought back.
+[Page("/staff/counter")] [Layout(WorkspaceFrame)] [Authorize(IsShopCounter)] [Render(CSR)] [Title("Counter")]
+[Nav("Counter", Order = 10)]
+public component ShopCounterPage() {
+  render { Stack(gap: 6, w: "100%", maxW: "1200px") { PageTitle("Counter"); ShopCounter(); } }
+}
+
+/// Returns and exchanges: accept one, take it in for the money, store credit or the exchange, or decline it.
+[Page("/staff/returns")] [Layout(WorkspaceFrame)] [Authorize(IsShopStaff)] [Render(CSR)] [Title("Returns")]
+[Nav("Returns", Order = 30)]
+public component ShopReturnsPage() {
+  render { Stack(gap: 6, w: "100%", maxW: "1200px") { PageTitle("Returns"); DeskReturns(); } }
+}
+
+/// Where staff sign in — the page they bookmark, in the store's own working shell. Signed in, it lists the staff pages
+/// they may open (`Nav.Pages()`), so a counter clerk is not sent to a desk they cannot open. A desk page opened signed
+/// out goes to the app's login page and back; this one is for coming in the front door. To use a page of your own,
+/// take this one over by name (`component ShopStaffSignInPage()` in the app), or leave it out:
+/// `use Osysharp.Shop@0 { without ShopStaffSignInPage; }`.
+[Page("/staff")] [Layout(WorkspaceFrame)] [AllowAnonymous] [Render(CSR)] [Title("Staff sign-in")]
+public component ShopStaffSignInPage() {
+  string email = "";
+  string password = "";
+  string problem = "";
+  string proving = "";
+  // Who is here, read once as the page opens — signing in opens it again.
+  var me = Session.CurrentUser;
+
+  action Submit() {
+    problem = "";
+    var answer = ShopLogin(email, password);
+    if (answer.MustConfirm) { proving = answer.Email; }
+    else if (answer.Ticket == "") { problem = "That email and password do not match a staff account."; }
+    // On to where they were headed — the desk they were sent here from — else back here, to the list of their pages.
+    else { Session.SignIn(answer.Ticket, "/staff"); }
+  }
+
+  render {
+    Stack(gap: 5, w: "100%", maxW: "420px", py: 16, label: "Staff sign-in") {
+      if (me != null) {
+        PageTitle("Signed in");
+        Stack(gap: 3, role: UiRole.Navigation, label: "Staff pages") {
+          foreach (var n in Nav.Pages()) { Link(href: n.To, label: n.Label) { Text(n.Label, color: Colors.Primary); } }
+        }
+      } else if (proving != "") {
+        ShopAddressCodeStep(proving, password, "Sign in", then: "/staff",
+                            intro: $"Confirm your address first — we have mailed a code to {proving}.");
+      } else {
+        PageTitle("Sign in");
+        Field("Email", value: email, type: "email", onEnter: Submit);
+        Field("Password", value: password, type: "password", onEnter: Submit);
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+        Button("Sign in", onPress: Submit, tone: Tone.Primary, size: Size.Lg);
+      }
+    }
+  }
+}
+
+/// What staff are pointed to before they give a gift card away — "usually simpler" for a sorry or a thank-you. An add-on
+/// that offers something simpler adds a link here (`: GiftCardGoodwill`); the discount codes kit adds its codes page.
+/// e.g. `public component CodesInstead() : GiftCardGoodwill { render { Link(href: "/staff/codes", label: "Discount codes") { Text("Make a discount code"); } } }`
+[Slot] public abstract component GiftCardGoodwill();

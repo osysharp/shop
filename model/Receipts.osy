@@ -1,0 +1,250 @@
+// A receipt as a PDF: what was bought, what it cost, the VAT inside it and how it was paid — the document a customer
+// keeps for their records and a return needs. Written by Osysharp.PdfWriter and kept as a PRIVATE file; the link to
+// it is signed and expires, so a receipt is never a public address.
+
+namespace Osysharp.Shop;
+
+using Osysharp.PdfWriter;
+using Osysharp.Storage;
+
+/// The receipt's link, for the account whose order it is or for staff. Written when asked for, so it always shows
+/// the order as it now stands.
+public string ReceiptLink(Order order) {
+  var me = Session.CurrentUser;
+  if (me == null) { throw new Exception("Sign in to fetch a receipt."); }
+  if (order.Account != me && !ShopRoleGrant.Any(g => g.Member == me && g.Role == ShopRole.Staff)) {
+    throw new Exception("That order is not on your account.");
+  }
+  var path = $"receipts/{order.Id}.pdf";
+  File.WriteAllBytes(path, ReceiptPdf(order));
+  return File.SignedUrl(path);
+}
+
+/// The receipt for whoever holds the order's link — a guest keeps it from the order's page. The same document as the
+/// account's, read under the link: so it carries the order, its invoice and its VAT, and never the block naming who it
+/// is for and where it went (a link can be forwarded, and `OrderContact` names no grant). Written to a path of its own,
+/// so it never overwrites the account's copy that does name them.
+///
+/// SECURITY-INVARIANT(a-link-opens-only-its-own-orders-return-and-receipt): the link fetches ITS order's receipt and no
+///   other — the order is the link's row, never a parameter. Guarded by order-link.test.osy
+///   a_link_fetches_its_orders_receipt_and_no_one_elses.
+[AllowAnonymous]
+public string ReceiptLinkWith(OrderLink link) {
+  var order = link.Row;
+  var path = $"receipts/link-{order.Id}.pdf";
+  File.WriteAllBytes(path, ReceiptPdf(order));
+  return File.SignedUrl(path);
+}
+
+/// The receipt itself.
+public byte[] ReceiptPdf(Order order) {
+  var shop = TheShop();
+  var invoice = Invoice.SingleOrDefault(i => i.Order == order);
+  var doc = new PdfDocument { Title = $"Receipt {order.Reference} — {shop.Name}" };
+  var left = 56.0;
+  var right = 539.0;
+  var y = SellerBlock(doc, left, right, 780.0, shop) - 32;
+
+  // Paid, it is the invoice too — numbered from the invoices' own series. On invoice terms (Wholesale.osy) it is an
+  // invoice, not yet paid, with the day it is due.
+  var onTerms = invoice != null && invoice.DueAt != null && order.PaidAt == null;
+  doc.Text(left, y, invoice == null ? "Receipt" : onTerms ? $"Invoice {InvoiceCode(invoice)}" : $"Receipt / invoice {InvoiceCode(invoice)}", 14, true);
+  doc.TextRight(right, y, order.Reference, 14, true);
+  y = y - 18;
+  doc.Text(left, y, $"Placed {order.PlacedAt.ToString("d MMMM yyyy")} · {order.Status.Label}", 10);
+  if (order.PaidAt != null) { doc.TextRight(right, y, $"Paid {order.PaidAt.Value.ToString("d MMMM yyyy")}" + (order.PaidWith == null ? "" : $" · {order.PaidWith}"), 10); }
+
+  if (invoice != null && invoice.DueAt != null) {
+    y = y - 14;
+    doc.Text(left, y, $"Issued {invoice.IssuedAt.ToString("d MMMM yyyy")} · payment terms {invoice.TermsDays} days net · due {invoice.DueAt!.Value.ToString("d MMMM yyyy")}", 10, true);
+  }
+  var contact = order.Contact.FirstOrDefault();
+  // A business buyer (a wholesale account) is named with its VAT number, as a B2B invoice names its buyer.
+  if (order.BuyerCompany != null && !order.ReverseCharge) {
+    y = y - 30;
+    doc.Text(left, y, order.BuyerCompany!, 10, true);
+    if (order.BuyerVatNumber != null) { y = y - 14; doc.Text(left, y, $"VAT number {order.BuyerVatNumber}", 10); }
+  }
+  if (contact != null) {
+    y = y - (order.BuyerCompany != null && !order.ReverseCharge ? 16 : 30);
+    doc.Text(left, y, contact.Name, 10, true);
+    foreach (var line in new List<string> { contact.Street ?? "", $"{contact.PostCode ?? ""} {contact.City ?? ""}".Trim(), contact.Country ?? "", contact.Email }) {
+      if (line != "") { y = y - 14; doc.Text(left, y, line, 10); }
+    }
+  }
+
+  y = y - 34;
+  doc.Text(left, y, "Item", 9, true);
+  doc.TextRight(right - 90, y, "Qty", 9, true);
+  doc.TextRight(right, y, "Amount", 9, true);
+  y = y - 8;
+  doc.Line(left, y, right, y, 0.5, 0.6);
+  foreach (var l in order.Lines.ToList()) {
+    y = y - 18;
+    doc.Text(left, y, l.VariantLabel == null ? l.ProductName : $"{l.ProductName} ({l.VariantLabel})", 10);
+    doc.TextRight(right - 90, y, $"{l.Quantity}", 10);
+    doc.TextRight(right, y, OrderMoney(l.Price * l.Quantity, order), 10);
+  }
+  y = y - 12;
+  doc.Line(left, y, right, y, 0.5, 0.6);
+  foreach (var a in order.Adjustments.ToList().Where(x => x.Amount > 0)) {
+    y = y - 18;
+    doc.Text(left, y, a.Label, 10);
+    doc.TextRight(right, y, "−" + OrderMoney(a.Amount, order), 10);
+  }
+  if (order.Delivery > 0) {
+    y = y - 18;
+    doc.Text(left, y, "Delivery", 10);
+    doc.TextRight(right, y, OrderMoney(order.Delivery, order), 10);
+  }
+  y = y - 22;
+  doc.Text(left, y, "Total", 12, true);
+  doc.TextRight(right, y, OrderMoney(order.Total, order), 12, true);
+  // How it was paid besides money — means of payment, not money off: the VAT above is on the whole price.
+  foreach (var g in order.GiftCards.ToList()) {
+    y = y - 16;
+    doc.Text(left, y, $"Paid with gift card ending {g.Last4}", 10);
+    doc.TextRight(right, y, "−" + OrderMoney(g.Amount, order), 10);
+  }
+  if (order.CreditUsed > 0) {
+    y = y - 16;
+    doc.Text(left, y, "Paid with store credit", 10);
+    doc.TextRight(right, y, "−" + OrderMoney(order.CreditUsed, order), 10);
+  }
+  foreach (var said in GiftCardVatSentences(order, true)) {
+    y = y - 16;
+    foreach (var line in doc.Wrap(said, right - left, 9)) {
+      doc.Text(left, y, line, 9);
+      y = y - 12;
+    }
+  }
+  if (order.Exported) {
+    y = y - 16;
+    doc.Text(left, y, "Export — no VAT charged: the goods leave the EU (article 146, Council Directive 2006/112/EC).", 9);
+  }
+  if (order.ReverseCharge) {
+    y = y - 16;
+    foreach (var line in doc.Wrap($"Reverse charge — no VAT charged: the buyer{(order.BuyerCompany == null ? "" : ", " + order.BuyerCompany + ",")} "
+        + $"VAT number {order.BuyerVatNumber}, accounts for it (article 138, Council Directive 2006/112/EC).", right - left, 9)) {
+      doc.Text(left, y, line, 9);
+      y = y - 12;
+    }
+  }
+  // VAT per rate, as a receipt must state it when an order mixes rates.
+  var rates = order.VatRates.ToList().Where(r => r.Vat > 0).OrderByDescending(r => r.Percent).ToList();
+  foreach (var v in rates) {
+    y = y - 14;
+    doc.TextRight(right, y, $"of which VAT {v.Percent:0.##} % {OrderMoney(v.Vat, order)} (on {OrderMoney(v.Gross, order)})", 9);
+  }
+  // In another currency: the VAT stated in the shop's own too, at the invoice's rate (article 230).
+  if (invoice != null) {
+    foreach (var line in VatInShopCurrency(invoice, rates.Select(r => r.Percent).ToList(), rates.Select(r => r.Vat).ToList())) {
+      y = y - 12;
+      foreach (var part in doc.Wrap(line, right - left, 9)) { doc.Text(left, y, part, 9); y = y - 12; }
+    }
+  }
+
+  // How to pay an invoice on terms: where, by when, and what to quote.
+  if (onTerms) {
+    y = y - 26;
+    foreach (var line in doc.Wrap($"Please pay {OrderMoney(order.Total, order)} by {invoice!.DueAt!.Value.ToString("d MMMM yyyy")}"
+        + (shop.BankDetails == null ? "" : $" to {shop.BankDetails}") + $", quoting {order.Reference}.", right - left, 10)) {
+      doc.Text(left, y, line, 10, true);
+      y = y - 13;
+    }
+  }
+  y = 90;
+  doc.Line(left, y + 14, right, y + 14, 0.5, 0.8);
+  foreach (var line in doc.Wrap($"Not right? You may return what you bought within {shop.ReturnDays} days of it being sent — from your order's page, or signed in, from your orders.", right - left, 9)) {
+    doc.Text(left, y, line, 9);
+    y = y - 12;
+  }
+  return doc.ToBytes();
+}
+
+// ── packing ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// One line of an order as the packer reads it: what, which size, how many, and its photo.
+public class PackingLine {
+  public string LineId = "";
+  public string Name = "";
+  /// Size or colour — "" for a one-size piece.
+  public string Variant = "";
+  public string Sku = "";
+  public int Quantity = 1;
+  /// The product's first photograph's path, or "".
+  public string Photo = "";
+}
+
+/// What is in an order, to pack it.
+[Authorize(IsShopPacker)]
+public List<PackingLine> PackingList(Order order) {
+  List<PackingLine> lines = [];
+  // A gift card and a file are mailed, not packed.
+  foreach (var l in order.Lines.ToList().Where(x => x.Kind == LineKind.Goods)) {
+    // What was refunded because it could not be sent is not packed.
+    var line = l;
+    var notSent = ReturnLine.Where(r => r.Line == line && r.Return.NotSent && r.Return.Status != ReturnStatus.Declined).Sum(r => r.Quantity);
+    var quantity = l.Quantity - notSent;
+    if (quantity <= 0) { continue; }
+    var product = l.Variant.Product;
+    var photo = ProductImage.Where(i => i.Product == product).OrderBy(i => i.Rank).FirstOrDefault();
+    lines.Add(new PackingLine { LineId = l.Id.ToString(), Name = l.ProductName, Variant = l.VariantLabel ?? "",
+                                Sku = l.Variant.Sku ?? "", Quantity = quantity, Photo = photo == null ? "" : photo.Path });
+  }
+  return lines;
+}
+
+/// A packing slip for the parcel — what is in it and where it goes, no prices — as a link that expires.
+[Authorize(IsShopPacker)]
+public string PackingSlipLink(Order order) {
+  var path = $"packing-slips/{order.Id}.pdf";
+  File.WriteAllBytes(path, PackingSlipPdf(order));
+  return File.SignedUrl(path);
+}
+
+public byte[] PackingSlipPdf(Order order) {
+  var shop = TheShop();
+  var doc = new PdfDocument { Title = $"Packing slip {order.Reference} — {shop.Name}" };
+  var left = 56.0;
+  var right = 539.0;
+  var y = 780.0;
+  doc.Text(left, y, shop.Name, 20, true);
+  y = y - 44;
+  doc.Text(left, y, "Packing slip", 14, true);
+  doc.TextRight(right, y, order.Reference, 14, true);
+  y = y - 18;
+  doc.Text(left, y, $"Placed {order.PlacedAt.ToString("d MMMM yyyy")} · {order.DeliveryLabel ?? order.Fulfilment.Label}", 10);
+  var c = order.Contact.FirstOrDefault();
+  if (c != null) {
+    y = y - 30;
+    doc.Text(left, y, "Deliver to", 9, true);
+    foreach (var line in new List<string> { c.Name, c.Street ?? "", $"{c.PostCode ?? ""} {c.City ?? ""}".Trim(), c.Country ?? "", c.Phone ?? "" }) {
+      if (line != "") { y = y - 14; doc.Text(left, y, line, 11); }
+    }
+  }
+  y = y - 34;
+  doc.Text(left, y, "Item", 9, true);
+  doc.Text(left + 300, y, "Article no.", 9, true);
+  doc.TextRight(right, y, "Qty", 9, true);
+  y = y - 8;
+  doc.Line(left, y, right, y, 0.5, 0.6);
+  foreach (var l in PackingList(order)) {
+    y = y - 20;
+    doc.Text(left, y, l.Variant == "" ? l.Name : $"{l.Name} ({l.Variant})", 11);
+    doc.Text(left + 300, y, l.Sku, 9);
+    doc.TextRight(right, y, $"{l.Quantity}", 11, true);
+  }
+  y = y - 16;
+  doc.Line(left, y, right, y, 0.5, 0.6);
+  y = y - 18;
+  doc.Text(left, y, $"{order.Lines.Where(l => l.Kind == LineKind.Goods).Sum(l => l.Quantity)} item(s)", 10);
+  // The age, where whoever hands the parcel over reads it: proved, or ID to be checked.
+  if (order.AgeChecked > 0) {
+    y = y - 22;
+    doc.Text(left, y, order.AgeVerifiedBy != null
+      ? $"Age {order.AgeChecked}+ verified with {order.AgeVerifiedBy}. No ID to ask for."
+      : $"Age {order.AgeChecked}+ declared, not verified. Check ID when it is handed over.", 11, true);
+  }
+  return doc.ToBytes();
+}

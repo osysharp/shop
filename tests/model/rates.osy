@@ -1,0 +1,17 @@
+using Osysharp.Shop;
+
+/// Exchange rates written in the test app, as `Osysharp.Shop.Ecb` is written: a sheet against the euro. What it
+/// answers is `RatesInTests()`, which a test stubs.
+public class FakeRates : IExchangeRates {
+  public string Source { get; } = "Test Bank";
+  public RateSheet Fetch() { return RatesInTests(); }
+}
+
+/// The ECB's sheet of 2026-09-28, cut to four currencies — dated today, so it is fresh.
+RateSheet RatesInTests() {
+  return new RateSheet {
+    Base = "EUR", Date = DateTime.UtcNow.Date,
+    Quotes = [ new RateQuote { Currency = "USD", Rate = 1.1378m }, new RateQuote { Currency = "JPY", Rate = 178.50m },
+               new RateQuote { Currency = "SEK", Rate = 11.3205m }, new RateQuote { Currency = "NOK", Rate = 10.8170m } ],
+  };
+}

@@ -1,0 +1,160 @@
+// Returns from the order history, and the desk's stock: what came back, what was counted, who is waiting.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Floor)]
+void a_sent_order_is_returned_in_part_and_refunded_for_those_lines() {
+  var reference = "";
+  runas (Maja) {
+    Bag("v-ret", "Loafer", "38", 2);
+    reference = Checkout("v-ret").Reference;
+  }
+  runas (Desk) { PayAndSend(reference); }
+  runas (Maja) {
+    var line = OrderLine.Single(l => l.Order.Reference == reference);
+    var ret = ReturnItem(line, 1, "Too small");
+    Assert.Throws<Exception>(() => ReturnItem(line, 2, ""));   // two bought, one already on its way back
+  }
+  runas (Desk) {
+    var ret = ReturnRequest.Single();
+    ReceiveReturn(ret, true);
+    Workflow.Settle(ret);
+    Assert.Equal(ReturnStatus.Refunded, ret.Status);
+    Assert.Equal(120m, ret.Amount);
+    Assert.Equal(1, StockMove.Count(m => m.Reason == StockReason.Returned));
+    Assert.True(ShopMail.Any(m => m.Subject.StartsWith("Refunded — your return")));
+    Assert.Equal(OrderStatus.Delivered, Order.Single(o => o.Reference == reference).Status);   // collected
+  }
+  Assert.Equal(1, Pick("Loafer", "38").Stock);       // the one that came back is on sale again
+}
+
+// SECURITY-INVARIANT(a-return-refunds-what-was-bought)'s guard: a customer may write a return's lines themselves (the
+// return is theirs), so what they wrote is a claim. Five of a line they bought one of is refunded as none — the desk
+// is told to decline it, and no money moves.
+[Test(Floor)]
+void a_return_written_for_more_than_was_bought_refunds_nothing() {
+  var reference = "";
+  runas (Maja) { reference = Buy("v-ret-more", "Loafer", "38", 1); }
+  runas (Desk) { PayAndSend(reference); }
+  runas (Maja) {
+    var line = OrderLine.Single(l => l.Order.Reference == reference);
+    var ret = new ReturnRequest { Order = line.Order, RequestedAt = DateTime.UtcNow };
+    new ReturnLine { Return = ret, Line = line, Quantity = 5 };
+    UnitOfWork.Commit();
+  }
+  runas (Desk) {
+    var ret = ReturnRequest.Single();
+    Assert.Throws<Exception>(() => ReceiveReturn(ret, true));
+    Workflow.Settle(ret);
+    Assert.Equal(ReturnStatus.Requested, ret.Status);
+    Assert.Equal(0m, ret.Amount);
+    Assert.Equal(0, StockMove.Count(m => m.Reason == StockReason.Returned));
+  }
+}
+
+[Test(Floor)]
+void a_return_goes_back_through_the_carrier_that_brought_it_with_a_code_to_show_at_the_counter() {
+  runas (new Visitor { Id = "v-back" }) {
+    var reference = "";
+    runas (Maja) {
+      Bag("v-back", "Loafer", "39", 1);
+      reference = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                             "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+    }
+    runas (Desk) { PayAndSend(reference); }
+    runas (Maja) {
+      var ret = ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, "Too big");
+      var parcel = SendItBack(ret)!;
+      Assert.Equal("CODE-" + reference + "-R", parcel.Code);
+      Assert.Equal("https://track.example/return/" + reference + "-R", parcel.TrackingUrl);
+      Assert.NotEqual("", parcel.QrLink);
+      Assert.Equal("", parcel.LabelLink);                          // this carrier gives a QR code, not a label
+      Assert.Equal(parcel.Code, SendItBack(ret)!.Code);             // asked again: the same parcel, not a second one
+    }
+    runas (Desk) {
+      var ret = ReturnRequest.Single();
+      Assert.StartsWith("RET-TRK-", ret.ParcelNumber);             // booked from the parcel that went out
+      Assert.Equal(1, ShopMail.Count(m => m.Subject.StartsWith("Sending back your return") && m.Text.Contains("CODE-" + reference)));
+    }
+  }
+}
+
+[Test(Floor)]
+void a_return_from_an_order_that_was_collected_is_posted_back_by_the_customer() {
+  var reference = "";
+  runas (Maja) {
+    Bag("v-self", "Loafer", "38", 1);
+    reference = Checkout("v-self").Reference;
+  }
+  runas (Desk) { PayAndSend(reference); }
+  runas (Maja) {
+    Assert.Null(SendItBack(ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, "")));
+  }
+}
+
+[Test(Floor)]
+void nothing_is_returned_before_it_is_sent_or_after_the_window_or_by_someone_else() {
+  var reference = "";
+  runas (Maja) { reference = Buy("v-early", "Loafer", "39", 1); }
+  runas (Maja) {
+    Assert.Throws<Exception>(() => ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, ""));
+  }
+  runas (Desk) { PayAndSend(reference); }
+  runas (Olle) {
+    Assert.Equal(0, OrderLine.Count(l => l.Order.Reference == reference && l.Order.Account == Me()));
+  }
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    order.FulfilledAt = DateTime.UtcNow.AddDays(-31);
+    order.DeliveredAt = order.FulfilledAt;          // the window runs from delivery — a collection's is its handover
+    UnitOfWork.Commit();
+  }
+  runas (Maja) {
+    Assert.Throws<Exception>(() => ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, ""));
+  }
+}
+
+[Test(Floor)]
+void staff_decline_a_return_and_the_customer_is_told_why() {
+  var reference = "";
+  runas (Maja) { reference = Buy("v-decl", "Chelsea", "38", 1); }
+  runas (Desk) { PayAndSend(reference); }
+  runas (Maja) { ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, ""); }
+  runas (Maja) { Assert.Throws<Exception>(() => DeclineReturn(ReturnRequest.Single(), "no")); }
+  runas (Desk) {
+    var ret = ReturnRequest.Single();
+    DeclineReturn(ret, "It has been worn.");
+    Workflow.Settle(ret);
+    Assert.Equal(ReturnStatus.Declined, ret.Status);
+    Assert.True(ShopMail.Any(m => m.Text.Contains("It has been worn.")));
+  }
+  Assert.Equal(0, Pick("Chelsea", "38").Stock);
+}
+
+[Test(Floor)]
+void a_stock_change_is_recorded_and_whoever_waited_is_mailed_once() {
+  Buy("v-last", "Chelsea", "38", 1);
+  Assert.Equal("We will mail you when it is back.", NotifyMe(Pick("Chelsea", "38"), "wait@example.test"));
+  NotifyMe(Pick("Chelsea", "38"), "wait@example.test");
+  runas (Desk) {
+    Assert.Equal(3, AdjustStock(Pick("Chelsea", "38"), 3, StockReason.Received, "Delivery 12"));
+    Assert.Equal(1, StockMove.Count(m => m.Note == "Delivery 12" && m.Change == 3));
+    Assert.Equal(1, ShopMail.Count(m => m.To == "wait@example.test"));
+    Assert.Throws<Exception>(() => AdjustStock(Pick("Chelsea", "38"), -9, StockReason.Correction, ""));
+    Assert.Equal(1, LowStock(1).Count(v => v.Product.Name == "Loafer" && v.Size == "39"));
+  }
+  Assert.Throws<Exception>(() => AdjustStock(Pick("Chelsea", "38"), 5, StockReason.Received, ""));
+}
+
+[Test(Floor)]
+void a_sold_out_product_waits_for_any_of_its_sizes() {
+  Buy("v-gone-38", "Loafer", "38", 2);
+  Buy("v-gone-39", "Loafer", "39", 1);
+  Assert.Equal("We will mail you when it is back.", NotifyWhenBack(Product.Single(p => p.Name == "Loafer"), "fan@example.test"));
+  runas (Desk) {
+    Assert.Equal(2, StockAlert.Count(a => a.Email == "fan@example.test"));
+    AdjustStock(Pick("Loafer", "39"), 1, StockReason.Received, "");
+    Assert.Equal(1, ShopMail.Count(m => m.To == "fan@example.test" && m.Subject.Contains("Loafer (39)")));
+  }
+}

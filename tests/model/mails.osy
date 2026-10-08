@@ -1,0 +1,21 @@
+// A store's own mail, as an app writes it: one template of its own for one kind of mail, the kit's for the rest.
+
+using Osysharp.EmailTemplates;
+using Osysharp.Shop;
+
+/// The kit's back-in-stock mail, in this store's own words.
+[Email]
+public component KitTestBackInStock(Variant variant) {
+  subject => $"Back at Kit Test Shop: {VariantName(variant)}";
+  render {
+    ShopMailLayout($"{VariantName(variant)} is back") {
+      EmailHeading("Good news — it is back");
+      EmailText($"{VariantName(variant)} is on the shelf again.");
+    }
+  }
+}
+
+/// Only back-in-stock is this store's; every other mail stays the kit's.
+public class KitTestMails : ShopMails {
+  public override RenderedEmail BackInStock(Variant variant, string? language = null) { return KitTestBackInStock(variant, language: language); }
+}

@@ -1,0 +1,202 @@
+// ADD-ONS — how another kit extends the shop without forking it (owner, 2026-09-27: *"if we can provide loyalty and
+// everything else as addon kits thats much cooler"*). Discount codes, loyalty points, gift cards, a referral scheme:
+// each is its own kit that `use`s this one and implements `IShopAddOn`. ⭐ THE APP LISTS NOTHING: the shop finds every
+// add-on in the app (`App.Implementations<IShopAddOn>()`), so `use Osysharp.Shop.Discounts@0;` is the whole of
+// installing one, and `use Osysharp.Shop.Discounts@0 { without DiscountCodes; }` leaves its pricing out. They come in
+// the composition's one order: `[Order(n)]`, then a kit before the kits built on it, the app last, then the name.
+//
+// An add-on does three kinds of thing, and implements only what it needs:
+//   · it PRICES a basket — `Adjust` answers what comes off, or that delivery is free, with a line the customer reads —
+//     and may REFUSE one it would price differently from what the checkout showed;
+//   · it ANSWERS for a product — its rating, which a product page's structured data carries (reviews) — and forgets a
+//     customer who asked to be erased;
+//   · it HEARS what happens to orders — placed, paid, sent, delivered, cancelled, refunded — and that is not this
+//     contract: those are EVENTS (Events.osy), heard with `[On] void X(OrderPlaced e)` in the add-on's kit.
+//
+// ⚑ WHAT IS HERE ANSWERS INSIDE THE SHOP'S OWN WORK, before anything is committed — which is why it is a contract and
+//   not an event: a price, a refusal, an erasure that must not half-happen, a conversion made while the rate stands.
+//   `Adjust` runs as whoever is pricing the basket — the shopper at checkout — so what it reads, they may read.
+//
+// ⚑ AN ADD-ON THAT FAILS DOES NOT STOP THE SHOP. An `Adjust` that throws takes nothing off, a rating that throws gives
+//   none. The one exception is erasing a customer, which fails whole (`TellErased`).
+
+namespace Osysharp.Shop;
+
+using Osysharp.Seo;
+
+/// A basket as an add-on prices it — the bag at checkout.
+public class Basket {
+  /// The bag being priced.
+  public Bag? Bag;
+  /// Who is buying — null for a guest.
+  public ShopAccount? Customer;
+  /// Who is buying, by email: the account's, and at placing the address the order is placed with. "" while nobody
+  /// has said — a guest's checkout until the order is placed.
+  public string Email = "";
+  /// ISO 4217 — the currency the bag is bought in: the shop's own, or one it SELLS in (Currencies.osy). Every amount of
+  /// the basket is in it, and so must every amount an add-on takes off.
+  public string Currency = "";
+  /// How many of `Currency` one unit of the shop's own buys today — 1 in the shop's own. For an add-on whose own
+  /// figures are the shop's money (a minimum spend) to measure a basket in another.
+  public decimal PerShopUnit = 1;
+  /// What the goods cost, before anything comes off.
+  public decimal Subtotal = 0;
+  public List<BasketItem> Items = [];
+  /// ISO 3166 alpha-2 when the customer has said where it goes, else "".
+  public string Country = "";
+}
+
+public class BasketItem {
+  public Variant? Variant;
+  public int Quantity = 1;
+  /// One unit's price.
+  public decimal Price = 0;
+}
+
+/// What an add-on takes off a basket, as the customer reads it.
+public class Adjustment {
+  /// The add-on's `Key` — which one gave it.
+  public string Source = "";
+  /// "SUMMER10 — 10% off", "Free delivery", "250 points".
+  public string Label = "";
+  /// Taken off the goods. Never more than they cost — the shop caps the sum.
+  public decimal Amount = 0;
+  /// True when delivery costs nothing because of this.
+  public bool FreeDelivery = false;
+  /// The add-on's own id for what it applied — a code's id, a voucher's number. Kept on the order.
+  public string Reference = "";
+}
+
+/// An extension of the shop, from its own kit — found by the shop, never listed. Every member but `Key` has a default
+/// that does nothing, so an add-on implements only what it is about.
+/// e.g. `public class DiscountCodes : IShopAddOn { public string Key() { return "discounts"; } public List<Adjustment> Adjust(Basket basket) { … } }`
+public interface IShopAddOn {
+  /// Stable, short, lowercase — "discounts", "loyalty". Stored with every adjustment it makes.
+  string Key();
+  /// What comes off this basket. Empty: nothing.
+  List<Adjustment> Adjust(Basket basket) { return []; }
+  /// Why this basket may not be ordered as it is — the sentence the customer reads — or "" when it may. Asked when the
+  /// order is placed, the first moment a guest's email is known, BEFORE anything is priced: an add-on that would give
+  /// less than the checkout showed refuses here instead, so an order is never placed at a total the customer has not
+  /// seen. A once-per-customer code a guest already used is the case it exists for.
+  string Refuses(Basket basket) { return ""; }
+  /// What customers make of `product` — the average of its reviews and how many — for the product's structured data,
+  /// or null when this add-on has none. The first add-on that answers is the one a search engine reads.
+  SeoRating? Rating(Product product) { return null; }
+  /// The customer asked to be erased: remove what this add-on keeps of them — their words, their name. Inside the
+  /// erasure, before the shop blanks anything: a throw fails the whole erasure, naming this add-on.
+  void CustomerErased(ShopAccount account) { }
+  /// The bag is bought in another currency from now on (`bag.Currency`; null: the shop's own) — an add-on that agreed a
+  /// price on it in the old one agrees it again. Part of the switch the customer made, so it runs as the customer, and
+  /// raises its own workflow for what it may not write itself.
+  void BagCurrencyChanged(Bag bag) { }
+  /// The shop stops SELLING in `rate`'s currency — staff chose "Only show it", stopped the rates, or the app no longer
+  /// offers it. Called while the rate is still there (it may be deleted in the same step), so an add-on holding something
+  /// agreed in that currency (a subscription) can convert it at that day's rate before it goes.
+  void CurrencyNoLongerSold(ExchangeRate rate) { }
+  /// A code typed (or scanned) at a counter for the sale on `bag` (Counter.osy) — a discount code, say. Answers what it
+  /// gives when it is this add-on's and it took it ("10 % off the coffee"), "" when the code is not this add-on's, and
+  /// throws the sentence to show when it is this add-on's and cannot be used. Runs as the clerk, on the counter's bag.
+  string CounterCode(Bag bag, string code) { return ""; }
+}
+
+/// Every add-on in the app — every kit's and the app's own — in the composition's order.
+public List<IShopAddOn> ShopAddOns() { return App.Implementations<IShopAddOn>(); }
+
+/// One adjustment as the order keeps it.
+public entity OrderAdjustment {
+  [Required] Order Order;
+  [Required, MaxLength(40)] string Source;
+  [Required, MaxLength(160)] string Label;
+  decimal Amount;
+  bool FreeDelivery = false;
+  [MaxLength(80)] string? Reference;
+  security {
+    // SECURITY-INVARIANT(an-order-reads-through-its-link): its order's readers, and nobody else.
+    allow read when IsAnonymous || IsAuthenticated
+      where Order.Account == user
+         || Order.VisitId == Visitor.Id
+         || Order == OrderLink.Row
+         || Order == Pay.Row;
+    allow read when IsShopPacker where PacksAt(Order.Location);
+    allow read when IsShopCounter where SellsAt(Order.Location) && Order.Fulfilment == Fulfilment.Collect;
+    allow create when IsAnonymous || IsAuthenticated
+      where Order.Status == OrderStatus.Placed && (Order.Account == null || Order.Account == user);
+    allow create when IsShopStaff;
+    allow update, delete when IsShopStaff;
+  }
+}
+
+/// The basket a bag makes, for `country` ("" when not yet known).
+public Basket BasketOf(Bag bag, string country) {
+  var sale = SaleRate(bag.Currency);
+  var basket = new Basket { Bag = bag, Customer = bag.Owner, Email = bag.Owner == null ? "" : bag.Owner.Email,
+                           Currency = sale == null ? TheShop().Currency : sale.Currency, PerShopUnit = sale == null ? 1m : sale.PerUnit,
+                           Country = country.Trim() == "" ? "" : CountryCode(country) };
+  // A gift card is no goods: nothing comes off it, and it counts toward no discount's spend.
+  foreach (var l in bag.Lines.Where(x => !x.Variant.Product.IsGiftCard)) {
+    basket.Items.Add(new BasketItem { Variant = l.Variant, Quantity = l.Quantity, Price = LinePrice(l) });
+  }
+  basket.Subtotal = BagGoodsSubtotal(bag);
+  return basket;
+}
+
+/// Everything the add-ons take off `basket`: each add-on's lines in the app's order, a line worth nothing dropped, and
+/// the amounts together never more than the goods cost — the last line that would pass it is cut to what is left.
+public List<Adjustment> AdjustmentsFor(Basket basket) {
+  List<Adjustment> all = [];
+  var left = basket.Subtotal;
+  foreach (var a in ShopAddOns()) {
+    List<Adjustment> given = [];
+    try { given = a.Adjust(basket); }
+    catch (Exception ex) { Log.Warning($"The shop add-on '{a.Key()}' could not price a basket: {ex.Message}"); }
+    foreach (var adj in given) {
+      adj.Source = a.Key();
+      adj.Amount = Math.Min(Math.Max(adj.Amount, 0m), left);
+      left = left - adj.Amount;
+      if (adj.Amount > 0 || adj.FreeDelivery) { all.Add(adj); }
+    }
+  }
+  return all;
+}
+
+/// What comes off the caller's bag right now — for the checkout's summary. `country` as in `DeliveryChoices`.
+[AllowAnonymous]
+public List<Adjustment> BagAdjustments(string country) {
+  var bag = BagFor(false);
+  return bag == null ? [] : AdjustmentsFor(BasketOf(bag, country));
+}
+
+// ── the contract's calls, inside the shop's own work ─────────────────────────────────────────────────────────────
+
+void AddOnFailed(IShopAddOn a, string what, Exception ex) {
+  Log.Warning($"The shop add-on '{a.Key()}' failed on {what}: {ex.Message}");
+}
+
+// SECURITY-INVARIANT(shop-an-add-on-that-cannot-erase-fails-the-erasure): an add-on that throws while erasing a customer
+// fails the WHOLE erasure, naming the add-on — it runs FIRST (`Erase`), so the shop has blanked nothing; the erasure is
+// left `Failed` with the sentence, the caller is shown it, and asking again retries it. It is never logged and passed
+// over like the other hooks: a review the Reviews add-on failed to delete would otherwise
+// survive an erasure the shop recorded as done. Guarded by tests/privacy.test.osy
+// `an_add_on_that_cannot_erase_the_customer_fails_the_erasure_and_says_which`.
+void TellErased(ShopAccount account) {
+  foreach (var a in ShopAddOns()) {
+    try { a.CustomerErased(account); }
+    catch (Exception ex) {
+      throw new Exception($"The erasure did not run: the shop add-on '{a.Key()}' could not erase what it keeps of the "
+        + $"customer ({ex.Message}). Nothing was erased — try again once it can.");
+    }
+  }
+}
+
+/// The rating the add-ons give `product` — the first that answers — or null.
+public SeoRating? AddOnRating(Product product) {
+  foreach (var a in ShopAddOns()) {
+    try {
+      var rating = a.Rating(product);
+      if (rating != null) { return rating; }
+    }
+    catch (Exception ex) { AddOnFailed(a, $"the rating of {product.Name}", ex); }
+  }
+  return null;
+}

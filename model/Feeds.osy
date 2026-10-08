@@ -1,0 +1,170 @@
+// What a shopping channel reads: every listed product, one item per size or colour, as a product feed. Google
+// Merchant Center and Meta's catalogue both fetch an RSS 2.0 document whose product fields are in Google's `g:`
+// namespace, on a schedule, from the store's own address — so, like the sitemap, a feed is served from the store's
+// rows (`[Serve]`) and nothing has to be exported or kept in step.
+//
+// The specifications this follows (read 2026-09-28):
+//   Google — product data specification        https://support.google.com/merchants/answer/7052112
+//            RSS 2.0 feed format (xmlns:g)       https://support.google.com/merchants/answer/160589
+//   Meta   — catalog fields and feed formats     https://developers.facebook.com/docs/marketing-api/catalog/reference/
+//            ("RSS XML" and "Atom XML" with the Google Merchant Center namespace; the `g` prefix is required)
+//
+// ⚑ TWO ADDRESSES, BECAUSE THE TWO SPECIFICATIONS DIFFER IN THREE PLACES — and a feed written to one is rejected or
+//   warned about by the other:
+//   · availability — Google's words are `in_stock` / `out_of_stock`, Meta's `in stock` / `out of stock`;
+//   · brand        — optional for Google (without it, `identifier_exists` says there is no identifier), REQUIRED by
+//                    Meta, which gets the shop's own name when the product names none (a shop's own goods are its brand);
+//   · pictures     — Google takes up to 10 `additional_image_link`s, Meta up to 20.
+//   Everything else — `price` as "165.00 SEK" (a number with a point, a space, the ISO 4217 code), `sale_price`,
+//   `item_group_id`, `condition` — both read the same way.
+//
+// ⚑ ONE CURRENCY PER FEED, THE SHOP'S OWN — even when the store shows visitors prices in theirs (Currencies.osy).
+//   Both channels take a feed in one currency and convert for their own shoppers, and the price a feed states must be
+//   the price the checkout charges; an estimate at the day's rate would be neither. A per-currency feed is a separate
+//   channel setup (Google's "feed per country") and is not built.
+//
+// ⚑ ONE ITEM PER VARIANT. A customer buys a size or a colour, not a product, and a channel shows and prices exactly
+//   that; the variants of one product share `item_group_id`. A product with a single variant is a plain item.
+// ⚑ WHAT IS LISTED IS WHAT THE SHOP SELLS: a listed product with a price and a photograph (both channels require an
+//   image). A sold-out size stays in the feed as out of stock — the channels ask for the truth, not an absence.
+
+namespace Osysharp.Shop;
+
+/// The two channels a feed is written for — see the top of this file for how they differ.
+public enum FeedChannel { Google, Meta }
+
+/// Google Merchant Center's product feed. Register `{BaseUrl}/feeds/google.xml` as a scheduled fetch.
+[Serve("/feeds/google.xml")]
+[AllowAnonymous]
+public string GoogleProductFeed() { return ProductFeed(FeedChannel.Google); }
+
+/// Meta's catalogue feed (Facebook and Instagram shops). Register `{BaseUrl}/feeds/meta.xml` as a scheduled feed.
+[Serve("/feeds/meta.xml")]
+[AllowAnonymous]
+public string MetaProductFeed() { return ProductFeed(FeedChannel.Meta); }
+
+/// The whole feed for one channel.
+public string ProductFeed(FeedChannel channel) {
+  var shop = TheShop();
+  var xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><rss version=\"2.0\" xmlns:g=\"http://base.google.com/ns/1.0\"><channel>"
+          + "<title>" + XmlText(shop.Name) + "</title>"
+          + "<link>" + XmlText(App.BaseUrl + "/") + "</link>"
+          + "<description>" + XmlText($"Every product {shop.Name} sells") + "</description>";
+  var products = Product.Include(p => p.Variants).Include(p => p.Images).Include(p => p.Category)
+    .Where(p => p.Status == ProductStatus.Listed).OrderBy(p => p.Slug).ToList();
+  var sales = Sale.Include(s => s.Sizes).Where(s => s.State == SaleState.Live).ToList();
+  foreach (var p in products) {
+    var images = p.Images.OrderBy(i => i.Rank).ToList();
+    var variants = p.Variants.OrderBy(v => v.Rank).ToList();
+    if (images.Count == 0 || variants.Count == 0) { continue; }
+    var sale = sales.FirstOrDefault(s => s.Product.Id == p.Id);
+    foreach (var v in variants) {
+      if (PriceOf(v) <= 0) { continue; }
+      xml = xml + FeedItem(channel, shop, p, v, variants.Count > 1, images, sale);
+    }
+  }
+  return xml + "</channel></rss>";
+}
+
+/// One variant as a feed item.
+string FeedItem(FeedChannel channel, ShopSettings shop, Product p, Variant v, bool grouped, List<ProductImage> images, Sale? sale) {
+  var google = channel == FeedChannel.Google;
+  var inStock = v.Unlimited || v.Stock > 0;
+  var title = FeedTitle(p, v);
+  var about = ProductHeadDescription(p) ?? p.Name;
+  var item = "<item>"
+    + FeedField("id", FeedId(v))
+    + FeedField("title", title.Length <= 150 ? title : title.Substring(0, 149) + "…")
+    + FeedField("description", about)
+    + FeedField("link", ProductUrl(p))
+    + FeedField("image_link", App.BaseUrl + File.Url(images[0].Path));
+  var extra = images.Skip(1).Take(google ? 10 : 20).ToList();
+  foreach (var i in extra) { item = item + FeedField("additional_image_link", App.BaseUrl + File.Url(i.Path)); }
+  item = item
+    + FeedField("availability", google ? (inStock ? "in_stock" : "out_of_stock") : (inStock ? "in stock" : "out of stock"))
+    + FeedField("condition", "new");
+  // A markdown shows its regular price as `price` and what it costs now as `sale_price` — the channels strike through
+  // the first. Without one there is only `price`.
+  var regular = RegularPriceOf(v, sale);
+  if (regular != null && regular > PriceOf(v)) {
+    item = item + FeedField("price", FeedPrice(regular ?? 0m, shop.Currency)) + FeedField("sale_price", FeedPrice(PriceOf(v), shop.Currency));
+  } else {
+    item = item + FeedField("price", FeedPrice(PriceOf(v), shop.Currency));
+  }
+  var brand = p.Brand != null && p.Brand.Trim() != "" ? p.Brand.Trim() : (google ? null : shop.Name);
+  if (brand != null) { item = item + FeedField("brand", brand); }
+  // The barcode (a GTIN) is what both channels match a product on first; the shop's SKU is the part number. An item
+  // has an identifier when it has a GTIN, or a brand AND a part number — with neither, Google asks to be told so
+  // rather than left to guess.
+  if (v.Barcode != null && v.Barcode.Trim() != "") { item = item + FeedField("gtin", v.Barcode.Trim()); }
+  var sku = v.Sku != null && v.Sku.Trim() != "" ? v.Sku.Trim() : null;
+  if (sku != null) { item = item + FeedField("mpn", sku); }
+  var gtin = v.Barcode != null && v.Barcode.Trim() != "";
+  if (google && !gtin && (brand == null || sku == null)) { item = item + FeedField("identifier_exists", "no"); }
+  if (grouped) { item = item + FeedField("item_group_id", p.Id.ToString().Replace("-", "")); }
+  if (v.Size != null && v.Size != "") { item = item + FeedField("size", v.Size); }
+  if (v.Colour != null && v.Colour != "") { item = item + FeedField("color", v.Colour); }
+  if (p.Category != null) {
+    item = item + FeedField("product_type", CategoryPath(p.Category));
+    var taxonomy = GoogleCategoryOf(p.Category);
+    if (taxonomy != null) { item = item + FeedField("google_product_category", taxonomy); }
+  }
+  if (v.WeightGrams > 0) { item = item + FeedField("shipping_weight", $"{v.WeightGrams} g"); }
+  return item + "</item>";
+}
+
+string FeedField(string name, string value) { return $"<g:{name}>" + XmlText(value) + $"</g:{name}>"; }
+
+/// The item's id: its SKU when it has one (what the shop's staff and the channel both recognise), else the variant's
+/// own id — stable across renames, which a channel needs to keep an item's history.
+public string FeedId(Variant v) {
+  if (v.Sku != null && v.Sku.Trim() != "" && v.Sku.Trim().Length <= 50) { return v.Sku.Trim(); }
+  return v.Id.ToString().Replace("-", "");
+}
+
+/// "Loafer (38)", "Merino jumper (Navy, M)" — a variant's name as a channel lists it.
+string FeedTitle(Product p, Variant v) {
+  var parts = new List<string>();
+  if (v.Colour != null && v.Colour != "") { parts.Add(v.Colour); }
+  if (v.Size != null && v.Size != "") { parts.Add(v.Size); }
+  return parts.Count == 0 ? p.Name : $"{p.Name} ({string.Join(", ", parts)})";
+}
+
+/// A price as the channels read it: "165.00 SEK" — two decimals with a point, whatever the shop's own culture writes.
+public string FeedPrice(decimal amount, string currency) {
+  var cents = (long)Math.Round(amount * 100m, MidpointRounding.AwayFromZero);
+  var fraction = (cents % 100).ToString();
+  return $"{cents / 100}.{(fraction.Length == 1 ? "0" + fraction : fraction)} {currency}";
+}
+
+/// What a variant costs when it is not marked down — or null when it is not marked down. A live `Sale` keeps each
+/// price it lowered; a struck-through `WasPrice` set by hand applies to the sizes that take the product's price.
+decimal? RegularPriceOf(Variant v, Sale? sale) {
+  if (sale != null) {
+    var size = sale.Sizes.FirstOrDefault(s => s.Variant.Id == v.Id);
+    if (size != null) { return size.RegularPrice; }
+    return v.Price == null ? sale.RegularPrice : null;
+  }
+  return v.Price == null ? v.Product.WasPrice : null;
+}
+
+/// "Women > Shoes > Boots" — the shop's own shelves, which is what `product_type` is for.
+string CategoryPath(Category c) {
+  var names = new List<string>();
+  var at = c;
+  var depth = 0;
+  while (at != null && depth < 8) { names.Insert(0, at.Name); at = at.Parent; depth = depth + 1; }
+  return string.Join(" > ", names);
+}
+
+/// The shelf's place in Google's product taxonomy — its own `GoogleCategory`, else the nearest parent's.
+string? GoogleCategoryOf(Category c) {
+  var at = c;
+  var depth = 0;
+  while (at != null && depth < 8) {
+    if (at.GoogleCategory != null && at.GoogleCategory.Trim() != "") { return at.GoogleCategory.Trim(); }
+    at = at.Parent;
+    depth = depth + 1;
+  }
+  return null;
+}

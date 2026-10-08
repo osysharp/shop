@@ -1,0 +1,301 @@
+// The catalogue as a spreadsheet: every size of every product one row, out to Excel and back in.
+//
+// ⚑ ONE ROW PER SIZE, matched by SKU. A row whose SKU the shop knows updates that size; a row without one is matched by
+//   its product (the Slug column, or the name made into one) and its size and colour; anything else is new — a new size
+//   of a product the shop has, or a new product, drafted. So a file exported, edited and imported changes exactly the
+//   cells that were edited, and a supplier's list with SKUs and costs can be pasted straight in.
+//
+// ⚑ AN EMPTY CELL CHANGES NOTHING. A spreadsheet with only SKU and Stock columns is a stock count; one with SKU and
+//   Cost price is a supplier's new price list. Only what a row actually says is written.
+//
+// ⚑ A PRICE IN EACH CURRENCY THE SHOP SELLS IN is a column of its own — "Price EUR" — the size's own price there (the
+//   price list, Currencies.osy). An empty cell changes nothing, as everywhere; "-" takes the price off, and the size is
+//   sold at its own price converted and rounded again.
+//
+// ⚑ CHECK, THEN APPLY — AND ALL OR NOTHING. `ImportProductsCsv(text, apply: false)` reads every row and answers what
+//   would change and which lines it refuses, writing nothing. With `apply: true` it writes only when no line is
+//   refused, in one commit, so a file with a mistake on line 212 never leaves the shop half imported.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Csv;
+using Osysharp.Storage;
+
+/// What an import did — or, checked first, would do.
+public class ProductImport {
+  /// New products (drafted — nobody sees them until they are listed).
+  public int NewProducts = 0;
+  /// New sizes, of new products or of ones the shop has.
+  public int NewSizes = 0;
+  /// Sizes a row changed.
+  public int Changed = 0;
+  /// Rows that matched a size and changed nothing.
+  public int Unchanged = 0;
+  /// Lines refused, each with why. Any at all and nothing is written.
+  public List<ImportProblem> Problems = [];
+  /// Whether it was written.
+  public bool Applied = false;
+}
+
+public class ImportProblem {
+  /// The line in the file (the header is line 1).
+  public int Line = 0;
+  public string Message = "";
+}
+
+/// The columns, in the order the export writes them. An import reads any of them, in any order, by name.
+List<string> ProductColumns() {
+  return ["SKU", "Product", "Slug", "Size", "Colour", "Barcode", "Price", "Was price", "Cost price", "Stock", "Weight (g)",
+          "Status", "Category"];
+}
+
+/// The currencies the shop sells in besides its own — one "Price XXX" column each.
+List<string> SoldCurrencyCodes() {
+  return ExchangeRate.Where(r => r.Sold).OrderBy(r => r.Currency).Select(r => r.Currency).ToList();
+}
+
+/// Every size of every product — drafts and archived ones too — as CSV a spreadsheet opens as it is.
+[Authorize(IsShopStaff)]
+public string ProductsCsv() {
+  List<List<string>> rows = [];
+  var sold = SoldCurrencyCodes();
+  var listed = VariantPrice.ToList();
+  var variants = Variant.Include(v => v.Product.Category).ToList()
+    .OrderBy(v => v.Product.Name).ThenBy(v => v.Rank).ToList();
+  foreach (var v in variants) {
+    var p = v.Product;
+    List<string> row = [v.Sku ?? "", p.Name, p.Slug, v.Size ?? "", v.Colour ?? "", v.Barcode ?? "", Amount(PriceOf(v)),
+              p.WasPrice == null ? "" : Amount(p.WasPrice!.Value), v.CostPrice == null ? "" : Amount(v.CostPrice!.Value),
+              Convert.ToString(v.Stock), Convert.ToString(v.WeightGrams), p.Status.ToString(), p.Category?.Name ?? ""];
+    foreach (var code in sold) {
+      var own = listed.FirstOrDefault(x => x.Variant.Id == v.Id && x.Currency == code);
+      row.Add(own == null ? "" : Amount(own.Price));
+    }
+    rows.Add(row);
+  }
+  var columns = ProductColumns();
+  foreach (var code in sold) { columns.Add($"Price {code}"); }
+  return WriteCsv(columns, rows);
+}
+
+/// The export as a file in the app's store, and a link to download it that works for a few minutes.
+[Authorize(IsShopStaff)]
+public string ProductsCsvLink() {
+  var path = $"exports/products-{DateTime.UtcNow.ToString("yyyyMMdd-HHmmss")}.csv";
+  File.WriteAllText(path, ProductsCsv());
+  return File.SignedUrl(path);
+}
+
+/// Reads a spreadsheet of products (see the file's head for how rows match) and answers what it changes — writing it
+/// only when `apply` and no line is refused.
+[Authorize(IsShopStaff)]
+public ProductImport ImportProductsCsv(string text, bool apply) {
+  var report = new ProductImport();
+  var table = ReadCsv(text);
+  if (table.Column("SKU") < 0 && table.Column("Product") < 0 && table.Column("Slug") < 0) {
+    report.Problems.Add(new ImportProblem { Line = 1, Message = "The first line names no SKU, Product or Slug column — is it the header row?" });
+    return report;
+  }
+  // Pass 1 checks every row and counts; pass 2 writes. Two passes so a refusal on the last line stops the first.
+  for (var pass = 1; pass <= 2; pass++) {
+    var writing = pass == 2;
+    if (writing && (!apply || report.Problems.Count > 0)) { break; }
+    if (writing) { report.NewProducts = 0; report.NewSizes = 0; report.Changed = 0; report.Unchanged = 0; }
+    List<string> seenSkus = [];
+    List<string> newSlugs = [];
+    foreach (var row in table.Rows) {
+      var why = ImportRow(table, row, writing, report, seenSkus, newSlugs);
+      if (why != "" && !writing) { report.Problems.Add(new ImportProblem { Line = row.Line, Message = why }); }
+    }
+  }
+  if (apply && report.Problems.Count == 0) {
+    UnitOfWork.Commit();
+    report.Applied = true;
+  }
+  return report;
+}
+
+/// One row: checked, and written when `writing`. Answers why it is refused, or "".
+string ImportRow(CsvTable t, CsvRow row, bool writing, ProductImport report, List<string> seenSkus, List<string> newSlugs) {
+  var sku = t.Get(row, "SKU");
+  var name = t.Get(row, "Product");
+  var size = t.Get(row, "Size");
+  var colour = t.Get(row, "Colour");
+  var slug = t.Get(row, "Slug") != "" ? t.Get(row, "Slug") : (name == "" ? "" : SlugOf(name));
+  if (sku != "") {
+    if (seenSkus.Contains(sku)) { return $"SKU {sku} is on an earlier line too."; }
+    seenSkus.Add(sku);
+  }
+
+  // The values this row states — each null when its cell is empty (and so changes nothing).
+  var price = ParseAmount(t.Get(row, "Price"));
+  var was = ParseAmount(t.Get(row, "Was price"));
+  var cost = ParseAmount(t.Get(row, "Cost price"));
+  var stock = ParseAmount(t.Get(row, "Stock"));
+  var weight = ParseAmount(t.Get(row, "Weight (g)"));
+  var barcode = t.Get(row, "Barcode").Replace(" ", "");
+  // A size's own price in each currency the shop sells in — "Price EUR"; "-" takes it off.
+  var soldPrices = new Dictionary<string, string>();
+  foreach (var code in SoldCurrencyCodes()) {
+    var cell = t.Column($"Price {code}") < 0 ? "" : t.Get(row, $"Price {code}").Trim();
+    if (cell == "") { continue; }
+    if (cell != "-" && (ParseAmount(cell) == null || ParseAmount(cell)!.Value <= 0)) { return $"Price {code} \"{cell}\" is not a price — write one, or \"-\" to take it off."; }
+    soldPrices[code] = cell;
+  }
+  var statusText = t.Get(row, "Status");
+  var categoryName = t.Get(row, "Category");
+  foreach (var col in ["Price", "Was price", "Cost price", "Stock", "Weight (g)"]) {
+    if (t.Get(row, col) != "" && ParseAmount(t.Get(row, col)) == null) { return $"{col} \"{t.Get(row, col)}\" is not a number."; }
+  }
+  if ((price ?? 0m) < 0 || (was ?? 0m) < 0 || (cost ?? 0m) < 0 || (stock ?? 0m) < 0 || (weight ?? 0m) < 0) {
+    return "A price, a cost, a stock count or a weight cannot be negative.";
+  }
+  if (stock != null && stock!.Value != Math.Floor(stock!.Value)) { return $"Stock \"{t.Get(row, "Stock")}\" is not a whole number."; }
+  if (barcode != "" && !IsGtin(barcode)) { return $"Barcode {barcode} is not a valid EAN or UPC — a digit is wrong or missing."; }
+  ProductStatus? status = null;
+  if (statusText != "") {
+    var s = statusText.ToLower();
+    if (s == "draft") { status = ProductStatus.Draft; }
+    else if (s == "listed") { status = ProductStatus.Listed; }
+    else if (s == "archived") { status = ProductStatus.Archived; }
+    else { return $"Status \"{statusText}\" is not Draft, Listed or Archived."; }
+  }
+  Category? category = null;
+  if (categoryName != "") {
+    category = Category.FirstOrDefault(c => c.Name.ToLower() == categoryName.ToLower());
+    if (category == null) { return $"There is no category \"{categoryName}\" — make it on the desk first, or leave the cell empty."; }
+  }
+
+  // Which size this row is.
+  Variant? v = sku == "" ? null : Variant.Include(x => x.Product).FirstOrDefault(x => x.Sku == sku);
+  var product = v != null ? v!.Product : (slug == "" ? null : Product.FirstOrDefault(p => p.Slug == slug));
+  if (v == null && product != null) {
+    var sizeKey = size.ToLower();
+    var colourKey = colour.ToLower();
+    v = product!.Variants.ToList().FirstOrDefault(x => (x.Size ?? "").ToLower() == sizeKey && (x.Colour ?? "").ToLower() == colourKey
+                                                     && (sku == "" || x.Sku == null || x.Sku == ""));
+  }
+  if (barcode != "" && Variant.Any(x => x.Barcode == barcode && (v == null || x.Id != v!.Id))) {
+    return $"Barcode {barcode} is already on another size.";
+  }
+
+  if (v == null) {
+    // A new size — of the product named, or of a new one.
+    if (product == null) {
+      if (name == "") { return sku == "" ? "A new product needs its name in the Product column." : $"There is no size with SKU {sku}, and no Product name to make one."; }
+      if (price == null) { return $"A new product needs a price — \"{name}\" has none."; }
+      if (!newSlugs.Contains(slug)) { newSlugs.Add(slug); report.NewProducts = report.NewProducts + 1; }
+    }
+    report.NewSizes = report.NewSizes + 1;
+    if (!writing) { return ""; }
+    if (product == null) {
+      product = new Product { Name = name, Slug = slug, Price = price!.Value, Status = status ?? ProductStatus.Draft, Category = category,
+                              WasPrice = was };
+    }
+    var created = new Variant { Product = product!, Size = size == "" ? null : size, Colour = colour == "" ? null : colour,
+                                Sku = sku == "" ? null : sku, Barcode = barcode == "" ? null : barcode, CostPrice = cost,
+                                Stock = stock == null ? 0 : (int)stock!.Value, WeightGrams = weight == null ? 0 : (int)weight!.Value,
+                                Rank = product!.Variants.Count() };
+    if (price != null && price!.Value != product!.Price) { created.Price = price; }
+    foreach (var code in soldPrices.Keys) {
+      if (soldPrices[code] != "-") { new VariantPrice { Variant = created, Currency = code, Price = ParseAmount(soldPrices[code])!.Value }; }
+    }
+    if (created.Stock > 0) {
+      new StockMove { Variant = created, Change = created.Stock, Reason = StockReason.Received, Origin = StockOrigin.Spreadsheet, By = Session.CurrentUser };
+    }
+    return "";
+  }
+
+  // An existing size: count what the row would change, and change it when writing.
+  var p = v!.Product;
+  var single = p.Variants.Count() == 1;
+  var changes = 0;
+  if (name != "" && name != p.Name) { changes++; if (writing) { p.Name = name; } }
+  if (price != null && price!.Value != PriceOf(v!)) {
+    changes++;
+    if (writing) {
+      if (single) { p.Price = price!.Value; v!.Price = null; }
+      else { v!.Price = price!.Value == p.Price ? null : price; }
+    }
+  }
+  if (was != null && was != p.WasPrice) { changes++; if (writing) { p.WasPrice = was!.Value == 0m ? null : was; } }
+  if (cost != null && cost != v!.CostPrice) { changes++; if (writing) { v!.CostPrice = cost; } }
+  if (barcode != "" && barcode != v!.Barcode) { changes++; if (writing) { v!.Barcode = barcode; } }
+  if (sku != "" && sku != v!.Sku) { changes++; if (writing) { v!.Sku = sku; } }
+  if (weight != null && (int)weight!.Value != v!.WeightGrams) { changes++; if (writing) { v!.WeightGrams = (int)weight!.Value; } }
+  if (status != null && status != p.Status) {
+    if (status == ProductStatus.Listed && p.Variants.Count() == 0) { return "A product with no sizes cannot be listed."; }
+    changes++; if (writing) { p.Status = status!.Value; }
+  }
+  if (category != null && (p.Category == null || p.Category!.Id != category!.Id)) { changes++; if (writing) { p.Category = category; } }
+  if (stock != null && (int)stock!.Value != v!.Stock) {
+    // The column is what the WHOLE shop holds; with locations, the difference is counted at the default one — which
+    // cannot hold less than nothing (Locations.osy).
+    var change = (int)stock!.Value - v!.Stock;
+    if (change < 0 && StockLocation.Any() && StockAt(DefaultLocation(), v!) + change < 0) {
+      return $"Stock {(int)stock!.Value} is less than the other locations hold. Move it with a transfer, or count it at each location on the desk.";
+    }
+    changes++;
+    if (writing) {
+      MoveStockAt(DefaultLocation(), v!, change, 0);
+      new StockMove { Variant = v!, Location = DefaultLocation(), Change = change, Reason = StockReason.Correction,
+                      Origin = StockOrigin.Spreadsheet, By = Session.CurrentUser };
+    }
+  }
+  foreach (var code in soldPrices.Keys) {
+    var there = v!.Prices.ToList().FirstOrDefault(x => x.Currency == code);
+    if (soldPrices[code] == "-") {
+      if (there != null) { changes++; if (writing) { there.Delete(); } }
+      continue;
+    }
+    var amount = ParseAmount(soldPrices[code])!.Value;
+    if (there == null || there.Price != amount) {
+      changes++;
+      if (writing) {
+        if (there == null) { new VariantPrice { Variant = v!, Currency = code, Price = amount }; }
+        else { there.Price = amount; }
+      }
+    }
+  }
+  if (changes > 0) { report.Changed = report.Changed + 1; } else { report.Unchanged = report.Unchanged + 1; }
+  return "";
+}
+
+/// An amount as the export writes it: a point, two decimals, no thousands separator — "165.00".
+string Amount(decimal value) {
+  return value.ToString("0.00");
+}
+
+/// A number as a spreadsheet may save it — "165", "165.00", a Swedish "165,00", "1 234,50" — or null.
+decimal? ParseAmount(string text) {
+  var s = text.Replace(" ", "").Replace(" ", "").Trim();
+  if (s == "") { return null; }
+  if (s.Contains(",") && !s.Contains(".")) { s = s.Replace(",", "."); }
+  else { s = s.Replace(",", ""); }
+  decimal value;
+  if (!decimal.TryParse(s, out value)) { return null; }
+  return value;
+}
+
+/// A size's SKU, barcode and cost — the barcode checked by its check digit, which the entity's own rule cannot do.
+[Authorize(IsShopStaff)]
+public void SetVariantDetails(Variant variant, string sku, string barcode, string costPrice) {
+  var code = barcode.Replace(" ", "").Trim();
+  if (code != "" && !IsGtin(code)) { throw new Exception("That barcode is not a valid EAN or UPC — a digit is wrong or missing."); }
+  if (code != "" && Variant.Any(x => x.Barcode == code && x.Id != variant.Id)) { throw new Exception("That barcode is already on another size."); }
+  var s = sku.Trim();
+  if (s != "" && Variant.Any(x => x.Sku == s && x.Id != variant.Id)) { throw new Exception($"SKU {s} is already on another size."); }
+  var cost = ParseAmount(costPrice);
+  if (costPrice.Trim() != "" && cost == null) { throw new Exception($"A cost of \"{costPrice.Trim()}\" is not a number."); }
+  if (cost != null && cost!.Value < 0) { throw new Exception("A cost cannot be negative."); }
+  variant.Sku = s == "" ? null : s;
+  variant.Barcode = code == "" ? null : code;
+  variant.CostPrice = cost;
+  UnitOfWork.Commit();
+}
+
+/// `ImportProductsCsv` over a file the desk uploaded — read here, on the server, where the upload is.
+[Authorize(IsShopStaff)]
+public ProductImport ImportProductsFile(string uploadedPath, bool apply) {
+  return ImportProductsCsv(File.ReadAllText(uploadedPath), apply);
+}

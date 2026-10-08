@@ -1,0 +1,245 @@
+// VAT by destination — the EU's One-Stop Shop (OSS). A shop registered for it charges a consumer in another EU country
+// that country's VAT; prices stay what the page shows (VAT included), and the VAT inside them is the destination's.
+//
+// ⚑ THE RATES ARE DATA, NOT CODE. Countries change them (Estonia, Romania, Finland and Slovakia did in 2025–26, and two
+//   published tables disagreed on four of them the day this was written), so each is a row staff can check and edit.
+//   `SeedEuVatRates` fills the 27 from the Tax Foundation's table as of January 2026 — verify before relying on it.
+//   A product's class maps to the destination's rates as: Reduced → its HIGHER reduced rate, Lower → its lowest.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Delivery;
+
+public entity VatCountry {
+  /// ISO 3166 alpha-2 — "DE", "FR".
+  [Required, Unique, MaxLength(2)] string Country;
+  decimal Standard;
+  /// The country's higher reduced rate (a Reduced product), and its lowest (a Lower product). The standard rate where
+  /// it has none.
+  decimal Reduced;
+  decimal Lower;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// The rate a product's price includes when it goes to `country` ("" or a collection: the shop's own).
+public decimal VatRateFor(Product product, ShopSettings shop, string country) {
+  var code = country.Trim().ToUpper();
+  if (product.Vat == VatClass.Exempt || product.IsGiftCard) { return 0m; }
+  if (shop.OssRegistered && code.Length == 2 && code != shop.HomeCountry.ToUpper()) {
+    var destination = VatCountry.FirstOrDefault(v => v.Country == code);
+    if (destination != null) {
+      return product.Vat == VatClass.Reduced ? destination.Reduced
+           : product.Vat == VatClass.Lower ? destination.Lower
+           : destination.Standard;
+    }
+  }
+  return VatRateOf(product, shop);
+}
+
+/// Whose VAT a sale to `country` carries: the destination's under OSS (when its rates are known), else the shop's.
+public string VatCountryOf(ShopSettings shop, string country) {
+  var code = country.Trim().ToUpper();
+  var home = shop.HomeCountry.ToUpper();
+  if (shop.OssRegistered && code.Length == 2 && code != home && VatCountry.Any(v => v.Country == code)) { return code; }
+  return home;
+}
+
+/// Fills the EU's 27 destination rates — the Tax Foundation's table as of January 2026 — adding only countries not
+/// there yet, so a rate staff corrected is kept. Check them against your tax authority's before relying on them.
+[Authorize(IsShopStaff)]
+public int SeedEuVatRates() {
+  var rates = new List<string> {
+    "AT 20 13 10", "BE 21 12 6", "BG 20 9 9", "HR 25 13 5", "CY 19 9 5", "CZ 21 12 12", "DK 25 25 25", "EE 24 13 9",
+    "FI 25.5 13.5 10", "FR 20 10 5.5", "DE 19 7 7", "GR 24 13 6", "HU 27 18 5", "IE 23 13.5 9", "IT 22 10 5",
+    "LV 21 12 5", "LT 21 9 5", "LU 17 8 3", "MT 18 7 5", "NL 21 9 9", "PL 23 8 5", "PT 23 13 6", "RO 21 11 11",
+    "SK 23 19 5", "SI 22 9.5 5", "ES 21 10 4", "SE 25 12 6",
+  };
+  var added = 0;
+  foreach (var line in rates) {
+    var parts = line.Split(' ');
+    var code = parts[0];
+    if (VatCountry.Any(v => v.Country == code)) { continue; }
+    new VatCountry { Country = code, Standard = decimal.Parse(parts[1]), Reduced = decimal.Parse(parts[2]), Lower = decimal.Parse(parts[3]) };
+    added = added + 1;
+  }
+  UnitOfWork.Commit();
+  return added;
+}
+
+// ── business buyers: reverse charge ───────────────────────────────────────────────────────────────────────────────
+//
+// A business in ANOTHER EU country, with a VAT number that checks out and the goods delivered to it there, buys
+// without VAT — it accounts for the VAT itself (reverse charge, art. 138 of the VAT Directive). The check is a
+// provider the app lists (`ShopSetup.VatNumbers`), like payment and delivery — `Osysharp.Shop.Vies` asks the EU's VIES.
+
+/// What a VAT-number check answers.
+public class VatNumberResult {
+  public bool Valid = false;
+  /// The registered name and address, when the register gives them.
+  public string Name = "";
+  public string Address = "";
+}
+
+/// Checks a VAT number against a register. `country` is the two-letter prefix ("DE"; Greece is "EL").
+public interface IVatNumberCheck {
+  VatNumberResult Check(string country, string number);
+}
+
+/// The EU's 27, by the prefix a VAT number carries (Greece's is EL).
+bool IsEuPrefix(string code) {
+  var eu = new List<string> { "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "EL", "HU", "IE", "IT",
+                              "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE" };
+  return eu.Contains(code);
+}
+
+/// A VAT number's prefix as a country code — "EL" is Greece, "GR".
+string PrefixCountry(string prefix) { return prefix == "EL" ? "GR" : prefix; }
+
+/// Whether this shop sells VAT-free to businesses in other EU countries — it lists a VAT-number check.
+[AllowAnonymous]
+public bool SellsToBusinesses() { return App.Setting<ShopSetup>().VatNumbers != null; }
+
+/// The buyer's company VAT number for this bag — checked now. Answers the registered company's name, or throws the
+/// sentence to show. An empty number takes it off.
+[AllowAnonymous]
+public string SetBuyerVatNumber(string vatNumber) {
+  var bag = BagFor(true);
+  var cleaned = vatNumber.Replace(" ", "").Replace("-", "").Replace(".", "").ToUpper();
+  if (cleaned == "") {
+    bag.BuyerVatNumber = null; bag.BuyerCompany = null; bag.BuyerVatValid = false; bag.BuyerVatSeal = null;
+    UnitOfWork.Commit();
+    return "";
+  }
+  var check = App.Setting<ShopSetup>().VatNumbers;
+  if (check == null) { throw new Exception("This shop does not sell VAT-free to businesses."); }
+  if (cleaned.Length < 4 || !IsEuPrefix(cleaned.Substring(0, 2))) {
+    throw new Exception("Write the VAT number with its country prefix — DE123456789.");
+  }
+  var shop = TheShop();
+  if (PrefixCountry(cleaned.Substring(0, 2)) == shop.HomeCountry.ToUpper()) {
+    throw new Exception($"A business in {shop.HomeCountry} pays VAT as everyone here does.");
+  }
+  VatNumberResult result;
+  try { result = check.Check(cleaned.Substring(0, 2), cleaned.Substring(2)); }
+  catch (Exception ex) { throw new Exception("The EU's VAT register cannot be reached just now — try again shortly."); }
+  if (!result.Valid) { throw new Exception($"{cleaned} is not a valid VAT number in the EU's register."); }
+  bag.BuyerVatNumber = cleaned;
+  bag.BuyerCompany = result.Name == "" ? null : result.Name;
+  bag.BuyerVatValid = true;
+  bag.BuyerVatSeal = VatSeal(bag, cleaned, bag.BuyerCompany);
+  UnitOfWork.Commit();
+  return result.Name == "" ? cleaned : result.Name;
+}
+
+// SECURITY-INVARIANT(a-vat-number-is-checked-by-the-register): a sale is VAT-free (reverse charge) only for a number
+//   the REGISTER confirmed for THIS bag. The bag is the customer's to write, so `BuyerVatValid` alone proved nothing: a
+//   visitor wrote a number, a company and `true` onto their own bag and bought without VAT (found 2026-09-29 building
+//   the age check's seal). `SetBuyerVatNumber` seals the number and company it checked with the server's fingerprint
+//   (keyed by the app — no browser holds the key); `ReverseChargeApplies` counts only a bag whose seal is the one the
+//   server computes now, and the order's workflow prices it again the same way. Guarded by vat.test.osy
+//   a_customer_cannot_mark_their_own_vat_number_as_checked.
+string VatSeal(Bag bag, string number, string? company) {
+  return Security.Fingerprint($"vat-number|{bag.Id}|{number}|{company ?? ""}");
+}
+
+/// Whether this bag, delivered to `country`, is a reverse-charge sale: a checked VAT number from that same other EU
+/// country. A collection never is — the goods do not leave the shop's country.
+public bool ReverseChargeApplies(Bag bag, ShopSettings shop, string country) {
+  var code = country.Trim().ToUpper();
+  if (!bag.BuyerVatValid || bag.BuyerVatNumber == null || code.Length != 2 || code == shop.HomeCountry.ToUpper()) { return false; }
+  if (bag.BuyerVatSeal == null || bag.BuyerVatSeal != VatSeal(bag, bag.BuyerVatNumber!, bag.BuyerCompany)) { return false; }
+  return PrefixCountry(bag.BuyerVatNumber.Substring(0, 2)) == code;
+}
+
+/// A price without the VAT the shop's price includes.
+public decimal NetOf(decimal gross, decimal rate) { return rate <= 0 ? gross : Math.Round(gross * 100m / (100m + rate), 2, MidpointRounding.AwayFromZero); }
+
+/// A reverse-charge sale's figures, all without VAT: each unit price net at its own rate, and delivery and discount
+/// net at the rates of the goods they follow. The prices include the SHOP's VAT, so it is the shop's rates that come off.
+public class NetPricing {
+  public decimal Goods = 0;
+  public decimal Delivery = 0;
+  public decimal Discount = 0;
+  public decimal Total = 0;
+}
+
+/// Every figure of a bag without the shop's VAT — for a sale that carries none: reverse charge, or an export.
+public NetPricing ReverseChargePricing(Bag bag, decimal delivery, decimal discount, ShopSettings shop) {
+  var n = new NetPricing();
+  foreach (var l in bag.Lines) { n.Goods = n.Goods + NetOf(LinePrice(l), VatRateOf(l.Variant.Product, shop)) * l.Quantity; }
+  foreach (var r in RateShares(bag, delivery, discount, shop, "")) {
+    n.Delivery = n.Delivery + NetOf(r.Delivery, r.Percent);
+    n.Discount = n.Discount + NetOf(r.Discount, r.Percent);
+  }
+  n.Total = n.Goods - n.Discount + n.Delivery;
+  return n;
+}
+
+// ── showing a price ──────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The shop's own rate for a class — the one its prices include.
+public decimal HomeVatPercent(VatClass vat, ShopSettings shop) {
+  if (vat == VatClass.Exempt) { return 0m; }
+  if (vat == VatClass.Reduced) { return shop.VatReducedPercent; }
+  if (vat == VatClass.Lower) { return shop.VatLowerPercent; }
+  return shop.VatPercent;
+}
+
+/// A price as the shop SHOWS it: `gross` (VAT included, as prices are entered) — or, for a shop that shows prices
+/// without VAT, the same price with its VAT taken out. Pure, so a page may call it while it renders.
+public decimal ShownPrice(decimal gross, VatClass vat, ShopSettings shop) {
+  if (!shop.PricesExcludeVat) { return gross; }
+  return Math.Round(gross / (1m + HomeVatPercent(vat, shop) / 100m), 2, MidpointRounding.AwayFromZero);
+}
+
+/// What to write beside a shown price — "excl. VAT" for a shop that shows prices without it, else "".
+public string PriceNote(ShopSettings shop) { return shop.PricesExcludeVat ? "excl. VAT" : ""; }
+
+// ── customs ──────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Whether goods sent to `country` stay inside the EU's customs union — no declaration needed. ⚠ By country code:
+/// territories of member states outside the customs union (the Canary Islands, the Åland Islands, overseas departments)
+/// share their country's code, so a shop sending there must declare by hand.
+public bool InsideEuCustoms(string country) {
+  var code = country.Trim().ToUpper();
+  return new List<string> { "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE", "IT", "LV",
+                            "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE", "MC" }.Contains(code);
+}
+
+/// Whether goods delivered to `country` are EXPORTED — they leave the customs area the shop sells from — and so carry
+/// no VAT of the shop's (art. 146 of the VAT Directive for an EU shop): the buyer pays the price without it, and any
+/// import VAT and duty at the border. "" (a collection, or no address yet) and the shop's own country are never exports.
+public bool Exported(ShopSettings shop, string country) {
+  var code = country.Trim().ToUpper();
+  var home = shop.HomeCountry.Trim().ToUpper();
+  // Only a known country can be an export: a name the checkout could not read is charged VAT, never let off it.
+  if (code.Length != 2 || code == home) { return false; }
+  return !(InsideEuCustoms(home) && InsideEuCustoms(code));
+}
+
+/// The customs lines for an order going to `country` — empty when it stays inside the EU. Throws the sentence staff
+/// need when a product lacks what customs asks for, before anything is booked.
+public List<CustomsLine> CustomsFor(Order order, string country) {
+  List<CustomsLine> lines = [];
+  if (InsideEuCustoms(country)) { return lines; }
+  var shop = TheShop();
+  if ((shop.Eori ?? "").Trim() == "") { throw new Exception("To send outside the EU the shop needs its EORI number — add it in the settings."); }
+  // Only what is in the parcel: a gift card or a download never crosses a border.
+  foreach (var l in order.Lines.ToList().Where(x => x.Kind == LineKind.Goods)) {
+    var p = l.Variant.Product;
+    if ((p.HsCode ?? "").Trim().Length < 6) {
+      throw new Exception($"Customs needs a tariff number (HS code, six digits or more) for {p.Name} — add it on the product.");
+    }
+    if ((p.OriginCountry ?? "").Trim().Length != 2) {
+      throw new Exception($"Customs needs the country {p.Name} was made in — add it on the product.");
+    }
+    lines.Add(new CustomsLine { Description = (p.CustomsDescription ?? "").Trim() == "" ? p.Name : p.CustomsDescription!,
+                                Quantity = l.Quantity, WeightGrams = l.Variant.WeightGrams * l.Quantity,
+                                Value = l.Price * l.Quantity, Currency = OrderCurrency(order),
+                                HsCode = p.HsCode!.Trim(), OriginCountry = p.OriginCountry!.Trim().ToUpper() });
+  }
+  return lines;
+}

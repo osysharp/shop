@@ -1,0 +1,254 @@
+// Goods with an age — wine at 20 in Sweden's retail, 18 elsewhere: the checkout asks for a date of birth, refuses the
+// underage, keeps what was checked on the order, and the parcel is booked to be handed over against ID.
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+DateOnly YearsAgo(int years) { return DateOnly.FromDateTime(DateTime.UtcNow).AddYears(-years).AddDays(-1); }
+
+[Test(Floor)]
+void goods_with_an_age_need_a_date_of_birth_and_an_age_that_is_enough() {
+  runas (new Visitor { Id = "v-age" }) {
+    runas (Desk) { Product.Single(p => p.Name == "Loafer").MinimumAge = 20; UnitOfWork.Commit(); }
+    Bag("v-age", "Loafer", "38", 1);
+    Assert.Contains("20 or older. Tell us your date of birth", Assert.Throws<Exception>(() => Checkout("v-age")).Message);
+    SetBirthDate(YearsAgo(19));
+    Assert.Contains("20 or older", Assert.Throws<Exception>(() => Checkout("v-age")).Message);
+    SetBirthDate(YearsAgo(20));                                        // twenty yesterday
+    var reference = Checkout("v-age").Reference;
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      Assert.Equal(20, order.AgeChecked);
+      Assert.Equal(YearsAgo(20), order.Contact.Single().BornOn);               // kept where only staff read
+    }
+  }
+}
+
+[Test(Floor)]
+void goods_without_an_age_ask_nothing() {
+  var reference = Buy("v-free", "Loafer", "38", 1);
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Assert.Equal(0, order.AgeChecked);
+    Assert.Null(order.Contact.Single().BornOn);
+  }
+}
+
+[Test(Floor)]
+void the_parcel_is_booked_to_be_handed_over_against_id() {
+  runas (new Visitor { Id = "v-id" }) {
+    runas (Desk) { Product.Single(p => p.Name == "Loafer").MinimumAge = 20; UnitOfWork.Commit(); }
+    Bag("v-id", "Loafer", "38", 1);
+    SetBirthDate(YearsAgo(30));
+    var reference = PlaceOrder("Anna Svensson", "anna@example.test", "", "courier", "banktransfer",
+                               "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      MarkPaid(order, ""); Workflow.Settle(order);
+      MarkSent(order, ""); Workflow.Settle(order);
+      Assert.EndsWith("#age=20", order.TrackingUrl);
+    }
+  }
+}
+
+[Test(Floor)]
+void erasing_the_customer_forgets_their_date_of_birth() {
+  runas (new Visitor { Id = "v-erase" }) {
+    runas (Desk) { Product.Single(p => p.Name == "Loafer").MinimumAge = 20; UnitOfWork.Commit(); }
+    Bag("v-erase", "Loafer", "38", 1);
+    SetBirthDate(YearsAgo(40));
+    var reference = Checkout("v-erase").Reference;
+    runas (Desk) {
+      EraseCustomer(ShopAccount.Single(a => a.Email == "maja@example.test"));
+      Assert.Null(Order.Single(o => o.Reference == reference).Contact.Single().BornOn);
+    }
+  }
+}
+
+// ── a VERIFIED age (AgeChecks.osy) — an identity provider proves it, and the shop keeps only that it was proved ──────
+//
+// The provider is model/identity.osy's `FakeId`, offered only where a test stubs `FakeIdOffered`. What it answers is
+// the test's (`FakeIdSays`); the handles it hands out are recorded through `FakeIdStarted`.
+
+/// Wine at 20. (Each test offers the provider itself — a stub is a test's own statement.)
+void Wine() {
+  runas (Desk) { Product.Single(p => p.Name == "Loafer").MinimumAge = 20; UnitOfWork.Commit(); }
+}
+
+AgeCheckAnswer ProvedBornOn(DateOnly bornOn) {
+  return new AgeCheckAnswer { Status = AgeCheckStatus.Verified, BornOn = bornOn };
+}
+
+[Test(Floor)]
+void a_verified_age_places_the_order_and_keeps_no_date_of_birth() {
+  runas (new Visitor { Id = "v-verified" }) {
+    Wine();
+    FakeIdOffered.Stub(() => true);
+    FakeIdSays.Stub(h => ProvedBornOn(YearsAgo(30)));
+    Bag("v-verified", "Loafer", "38", 1);
+    Assert.Equal("Fake ID", AgeVerifiedWith());
+    var started = StartAgeCheck("/checkout");
+    Assert.Equal("waiting", started.State);
+    Assert.Equal(21, started.Qr.Count);                        // the provider's frame, drawn as a QR code to scan
+    Assert.StartsWith("fakeid://", started.AppLink);            // …and its app, on this device
+    var now = AgeCheckNow();
+    Assert.Equal("verified", now.State);
+    Assert.Equal(20, now.ProvenAge);
+    var reference = Checkout("v-verified").Reference;
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      Assert.Equal(20, order.AgeChecked);
+      Assert.Equal("Fake ID", order.AgeVerifiedBy);
+      Assert.NotNull(order.AgeVerifiedAt);
+      // ⭐ DATA MINIMISATION: the provider told the shop a date of birth, and the shop kept only that it was 20+.
+      Assert.Null(order.Contact.Single().BornOn);
+      var check = AgeCheck.Single(c => c.Bag.VisitId == "v-verified");
+      Assert.Equal(20, check.ProvenAge);
+      Assert.Null(check.SealedHandle);                          // done with: the provider's handle is not kept either
+    }
+  }
+}
+
+[Test(Floor)]
+void a_declared_date_still_works_beside_a_provider_and_the_order_says_it_was_declared() {
+  runas (new Visitor { Id = "v-declared" }) {
+    Wine();
+    FakeIdOffered.Stub(() => true);
+    Bag("v-declared", "Loafer", "38", 1);
+    SetBirthDate(YearsAgo(30));
+    var reference = Checkout("v-declared").Reference;
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      Assert.Equal(20, order.AgeChecked);
+      Assert.Null(order.AgeVerifiedBy);                         // whoever hands it over checks ID
+      Assert.Equal(YearsAgo(30), order.Contact.Single().BornOn);
+    }
+  }
+}
+
+[Test(Floor)]
+void a_shop_that_must_verify_refuses_a_declared_date() {
+  runas (new Visitor { Id = "v-must" }) {
+    Wine();
+    FakeIdOffered.Stub(() => true);
+    FakeIdRequired.Stub(() => true);
+    Bag("v-must", "Loafer", "38", 1);
+    SetBirthDate(YearsAgo(30));
+    Assert.Contains("Verify your age with Fake ID", Assert.Throws<Exception>(() => Checkout("v-must")).Message);
+  }
+}
+
+[Test(Floor)]
+void a_verified_buyer_under_the_age_is_refused_and_told_why() {
+  runas (new Visitor { Id = "v-young" }) {
+    Wine();
+    FakeIdOffered.Stub(() => true);
+    FakeIdSays.Stub(h => ProvedBornOn(YearsAgo(18)));
+    Bag("v-young", "Loafer", "38", 1);
+    StartAgeCheck("/checkout");
+    var now = AgeCheckNow();
+    Assert.Equal("failed", now.State);
+    Assert.Contains("under 20", now.Message);
+    Assert.Contains("20 or older", Assert.Throws<Exception>(() => Checkout("v-young")).Message);
+    runas (Desk) {
+      var check = AgeCheck.Single(c => c.Bag.VisitId == "v-young");
+      Assert.Equal(0, check.ProvenAge);                         // nothing about the age is kept, not even "18"
+      Assert.Null(check.Seal);
+    }
+  }
+}
+
+[Test(Floor)]
+void a_check_verified_on_one_visit_does_not_verify_another() {
+  runas (new Visitor { Id = "v-mine" }) {
+    Wine();
+    FakeIdOffered.Stub(() => true);
+    FakeIdSays.Stub(h => ProvedBornOn(YearsAgo(30)));
+    Bag("v-mine", "Loafer", "38", 1);
+    StartAgeCheck("/checkout");
+    Assert.Equal("verified", AgeCheckNow().State);
+    Bag("v-other", "Loafer", "39", 1);
+    runas (new Visitor { Id = "v-other" }) { Assert.Equal("none", AgeCheckNow().State); }
+    Assert.Contains("Tell us your date of birth", Assert.Throws<Exception>(() => Checkout("v-other")).Message);
+  }
+}
+
+[Test(Floor)]
+void a_customer_cannot_write_a_verified_check_themselves() {
+  runas (new Visitor { Id = "v-real" }) {
+    Wine();
+    FakeIdOffered.Stub(() => true);
+    FakeIdSays.Stub(h => ProvedBornOn(YearsAgo(30)));
+    // A real verification on one visit, and its seal…
+    Bag("v-real", "Loafer", "38", 1);
+    StartAgeCheck("/checkout");
+    Assert.Equal("verified", AgeCheckNow().State);
+    var real = AgeCheck.Single(c => c.Bag.VisitId == "v-real");
+    var provider = real.Provider;
+    var startedAt = real.StartedAt;
+    var verifiedAt = real.VerifiedAt;
+    var seal = real.Seal;
+    // …copied, field for field, onto another visit's bag — and a check written from nothing beside it. The checkout
+    // writes a check as the customer, so the customer may write one; what it says proves nothing without the server's seal.
+    Bag("v-forged", "Loafer", "39", 1);
+    runas (new Visitor { Id = "v-forged" }) {
+      var bag = BagFor(false)!;
+      new AgeCheck { Bag = bag, Provider = provider, Status = AgeCheckStatus.Verified, ProvenAge = 20,
+                     StartedAt = startedAt, VerifiedAt = verifiedAt, Seal = seal };
+      new AgeCheck { Bag = bag, Provider = "fakeid", Status = AgeCheckStatus.Verified, ProvenAge = 99,
+                     StartedAt = DateTime.UtcNow, VerifiedAt = DateTime.UtcNow, Seal = "verified, honestly" };
+      UnitOfWork.Commit();
+      Assert.Equal("none", AgeCheckNow().State);
+    }
+    Assert.Contains("Tell us your date of birth", Assert.Throws<Exception>(() => Checkout("v-forged")).Message);
+  }
+}
+
+[Test(Floor)]
+void a_handle_copied_from_another_bag_is_not_polled() {
+  runas (new Visitor { Id = "v-thief" }) {
+    Wine();
+    FakeIdOffered.Stub(() => true);
+    List<string> handles = [];
+    List<string> asked = [];
+    FakeIdStarted.Stub((h, text) => { handles.Add(h); });
+    FakeIdSays.Stub(h => { asked.Add(h); return new AgeCheckAnswer { Message = "Open Fake ID." }; });
+    Bag("v-victim", "Loafer", "38", 1);
+    runas (new Visitor { Id = "v-victim" }) { StartAgeCheck("/checkout"); }
+    Bag("v-thief", "Loafer", "39", 1);
+    StartAgeCheck("/checkout");
+    // Another visit's check is not the thief's to read at all (SECURITY-INVARIANT(a-guest-row-is-its-visits))…
+    Assert.Equal(0, AgeCheck.Count(c => c.Bag.VisitId == "v-victim"));
+    // …so give them the victim's (encrypted) handle however they might have come by it, to be verified by the
+    // victim's BankID.
+    var stolen = "";
+    runas (Desk) { stolen = AgeCheck.Single(c => c.Bag.VisitId == "v-victim").SealedHandle!; }
+    var thiefs = AgeCheck.Single(c => c.Bag.VisitId == "v-thief");
+    thiefs.SealedHandle = stolen;
+    UnitOfWork.Commit();
+    var now = AgeCheckNow();
+    Assert.Equal("failed", now.State);
+    Assert.DoesNotContain(handles[0], asked);                  // the victim's check was never asked about from here
+  }
+}
+
+[Test(Floor)]
+void the_page_gets_the_code_and_never_the_providers_handle() {
+  runas (new Visitor { Id = "v-page" }) {
+    Wine();
+    FakeIdOffered.Stub(() => true);
+    List<string> handles = [];
+    List<string> texts = [];
+    FakeIdStarted.Stub((h, text) => { handles.Add(h); texts.Add(text); });
+    Bag("v-page", "Loafer", "38", 1);
+    var view = StartAgeCheck("/checkout");
+    Assert.DoesNotContain(handles[0], view.AppLink);
+    Assert.DoesNotContain(handles[0], view.Message);
+    Assert.DoesNotContain(handles[0], string.Join("", view.Qr));
+    var check = AgeCheck.Single(c => c.Bag.VisitId == "v-page");
+    Assert.DoesNotContain(handles[0], check.SealedHandle ?? "");   // kept only encrypted
+    // What the buyer reads in the provider's app says who asks and why.
+    Assert.Contains("Kit Test Shop", texts[0]);
+    Assert.Contains("20 or older", texts[0]);
+  }
+}

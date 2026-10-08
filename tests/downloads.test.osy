@@ -1,0 +1,241 @@
+// Digital products: a variant that is a file, uploaded privately; bought without a parcel or a delivery charge, with
+// the customer's consent to have it at once; downloaded from a link in the mail or from the account, so many times for
+// so many days; closed by a refund; never sent back; and taxed where the buyer lives.
+
+using Osysharp.Shop;
+using Osysharp.Storage;
+using Osysharp.Workflow;
+
+/// A guide sold as a PDF (6 % — a book), and a printed one beside it (goods, with a weight).
+void GuideShelf() {
+  runas (Desk) {
+    var guide = new Product { Name = "Brewing guide", Slug = "brewing-guide", Price = 20m, Vat = VatClass.Lower };
+    var pdf = new Variant { Product = guide, Size = "PDF" };
+    new Variant { Product = guide, Size = "Printed", Price = 30m, Stock = 5, WeightGrams = 300 };
+    var shop = TheShop();
+    shop.VatPercent = 25m;
+    shop.VatLowerPercent = 6m;
+    UnitOfWork.Commit();
+    // Uploaded privately (`Upload(privately: true)` stores it here, at a name the platform chose).
+    File.WriteAllBytes("uploads/4f1c2e.pdf", Text.ToBytes("%PDF-1.4 how to brew"));
+    SetDownloadFile(pdf, new UploadedFile { Path = "uploads/4f1c2e.pdf", FileName = "brewing-guide.pdf", ContentType = "application/pdf", Length = 20 }, "");
+  }
+}
+
+Variant GuideAs(string size) { return Variant.Single(v => v.Product.Slug == "brewing-guide" && v.Size == size); }
+
+/// Maja buys the PDF, agreeing to have it at once, and it is paid by transfer. Answers the order's reference.
+string MajaBuysTheGuide(string visitId) {
+  runas (new Visitor { Id = visitId }) {
+    var reference = "";
+    runas (Maja) {
+      Assert.Equal("", AddToBag(GuideAs("PDF"), 1));
+      AgreeToDigitalDelivery(true);
+      reference = PlaceOrder("Maja Berg", "maja@example.test", "", NothingToShipId(), "banktransfer", "", "", "", "Sweden").Reference;
+    }
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      MarkPaid(order, "");
+      Workflow.Settle(order);
+    }
+    return reference;
+  }
+}
+
+/// The download link mailed to `email` — the grant's text, as the mail carries it.
+string DownloadLinkIn(string email) {
+  var text = "";
+  runas (Desk) { text = ShopMail.Single(m => m.To == email && m.Subject.Contains("downloads")).Text; }
+  var at = text.IndexOf("/download/");
+  var rest = text.Substring(at + "/download/".Length);
+  var end = 0;
+  while (end < rest.Length && rest.Substring(end, 1) != " " && rest.Substring(end, 1) != "\n" && rest.Substring(end, 1) != ")") { end = end + 1; }
+  return rest.Substring(0, end);
+}
+
+[Test(Floor)]
+void a_file_is_uploaded_privately_and_sold_without_a_parcel() {
+  runas (new Visitor { Id = "v-look" }) {
+    GuideShelf();
+    runas (Desk) {
+      var pdf = GuideAs("PDF");
+      Assert.True(pdf.IsDownload);
+      Assert.True(pdf.Unlimited);                                      // never out of stock
+      Assert.Equal("brewing-guide.pdf", pdf.DownloadName);
+      // Only a file the platform stored privately — never one under public/.
+      Assert.Throws<Exception>(() => SetDownloadFile(pdf, new UploadedFile { Path = "public/uploads/x.pdf", FileName = "x.pdf", ContentType = "application/pdf", Length = 1 }, ""));
+    }
+    // Where it is kept is the desk's alone.
+    runas (Maja) { Assert.Null(GuideAs("PDF").DownloadPath); }
+    // A visitor looking at it: nothing to send — one way to receive it, free, and no counter to collect it from.
+    Assert.Equal("", AddToBag(GuideAs("PDF"), 1));
+    var ways = DeliveryChoices("SE");
+    Assert.Equal(1, ways.Count);
+    Assert.True(ways[0].NothingToShip);
+    Assert.Equal(0m, ways[0].Price);
+    Assert.False(PaymentChoices(false).Any(p => p.Key == "oncollection"));
+    var reference = MajaBuysTheGuide("v-pdf");
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      Assert.Equal(Fulfilment.Digital, order.Fulfilment);
+      // Paid is delivered: nothing is picked, packed or booked.
+      Assert.Equal(OrderStatus.Delivered, order.Status);
+      Assert.Null(order.Tracking);
+      Assert.Equal(0m, order.Delivery);
+      Assert.Equal(LineKind.Download, order.Lines.Single().Kind);
+      Assert.Equal(0, PackingList(order).Count);
+      var d = Download.Single(x => x.Order == order);
+      Assert.Equal(DownloadStatus.Open, d.Status);
+      Assert.Equal(5, d.Limit);
+      Assert.True(ShopMail.Any(m => m.To == "maja@example.test" && m.Subject.Contains("downloads") && m.Text.Contains("brewing-guide.pdf")));
+    }
+  }
+}
+
+[Test(Floor)]
+void the_checkout_asks_for_consent_to_have_it_at_once_and_the_order_keeps_it() {
+  runas (new Visitor { Id = "v-consent" }) {
+    GuideShelf();
+    runas (Maja) {
+      Assert.True(BagHoldsDownloads() == false);
+      AddToBag(GuideAs("PDF"), 1);
+      Assert.True(BagHoldsDownloads());
+      var refused = Assert.Throws<Exception>(() =>
+        PlaceOrder("Maja Berg", "maja@example.test", "", NothingToShipId(), "banktransfer", "", "", "", "Sweden"));
+      Assert.Contains("right to withdraw", refused.Message);
+      // …and where she lives, since a download is taxed there.
+      AgreeToDigitalDelivery(true);
+      Assert.Throws<Exception>(() => PlaceOrder("Maja Berg", "maja@example.test", "", NothingToShipId(), "banktransfer", "", "", "", ""));
+      var reference = PlaceOrder("Maja Berg", "maja@example.test", "", NothingToShipId(), "banktransfer", "", "", "", "Sweden").Reference;
+      Assert.NotNull(Order.Single(o => o.Reference == reference).DigitalConsentAt);
+    }
+    runas (Desk) {
+      // The confirmation says what she agreed to, word for word — on a durable medium, as the law asks.
+      var mail = ShopMail.Single(m => m.To == "maja@example.test" && m.Subject.Contains("Your order"));
+      Assert.Contains(DigitalConsentWords(), mail.Text);
+    }
+  }
+}
+
+[Test(Floor)]
+void a_download_opens_for_its_buyer_only_and_only_so_many_times() {
+  GuideShelf();
+  runas (Desk) { TheShop().DownloadLimit = 2; UnitOfWork.Commit(); }
+  var reference = MajaBuysTheGuide("v-times");
+  Download? d = null;
+  runas (Maja) {
+    var mine = MyDownloads().Single();
+    Assert.Equal("brewing-guide.pdf", mine.File);
+    Assert.Equal(2, mine.Left);
+    d = mine.Download;
+    // A link to the file, signed, for fifteen minutes.
+    var url = DownloadMine(d!);
+    Assert.Contains("uploads/4f1c2e.pdf", url);
+    Assert.Contains("sig=", url);
+  }
+  // Not Olle's: he cannot see it, nor fetch it.
+  runas (Olle) {
+    Assert.Equal(0, Download.Count());
+    Assert.Equal(0, MyDownloads().Count);
+  }
+  // The link in the mail opens it for whoever holds it — signed in or not — and counts.
+  var link = DownloadLinkIn("maja@example.test");
+  Assert.Equal("brewing-guide.pdf", DownloadFor(DownloadLink.From(link)).File);
+  Assert.Contains("sig=", StartDownload(DownloadLink.From(link)));
+  // Twice is its limit: the third is refused, from the link and from the account.
+  Assert.Throws<Exception>(() => StartDownload(DownloadLink.From(link)));
+  runas (Maja) {
+    Assert.Throws<Exception>(() => DownloadMine(Download.Single()));
+    Assert.Contains("as many times", MyDownloads().Single().Problem);
+  }
+  // Staff open it again.
+  runas (Desk) {
+    ReopenDownload(Download.Single(), 3, 7);
+    Workflow.Settle(Download.Single());
+    Assert.Equal(DownloadStatus.Open, Download.Single().Status);
+  }
+  Assert.Contains("sig=", StartDownload(DownloadLink.From(link)));
+  // A refund closes it — and the link with it.
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    RefundOrder(order, "Wrong edition", false);
+    Workflow.Settle(order);
+    Assert.Equal(DownloadStatus.Closed, Download.Single().Status);
+  }
+  Assert.Throws<NotAuthorized>(() => DownloadLink.From(link));
+  runas (Maja) { Assert.Contains("closed", MyDownloads().Single().Problem); }
+}
+
+[Test(Floor)]
+void a_download_runs_out_after_its_days() {
+  GuideShelf();
+  MajaBuysTheGuide("v-days");
+  TestClock.Advance(TimeSpan.FromDays(31));
+  runas (Maja) {
+    Assert.Contains("passed", MyDownloads().Single().Problem);
+    Assert.Throws<Exception>(() => DownloadMine(Download.Single()));
+  }
+}
+
+[Test(Floor)]
+void a_bag_of_goods_and_a_file_ships_the_goods_and_charges_delivery_for_them_alone() {
+  runas (new Visitor { Id = "v-mix" }) {
+    GuideShelf();
+    var reference = "";
+    runas (Maja) {
+      AddToBag(GuideAs("PDF"), 1);
+      AddToBag(GuideAs("Printed"), 1);
+      AgreeToDigitalDelivery(true);
+      // Delivered: the flat fee, for the printed guide.
+      var ways = DeliveryChoices("SE");
+      Assert.False(ways.Any(w => w.NothingToShip));
+      Assert.Equal(9m, ways.Single(w => w.Id == "flat").Price);
+      reference = PlaceOrder("Maja Berg", "maja@example.test", "", "flat", "banktransfer", "Storgatan 1", "11122",
+                             "Stockholm", "Sweden").Reference;
+    }
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == reference);
+      Assert.Equal(Fulfilment.Deliver, order.Fulfilment);
+      Assert.Equal(59m, order.Total);                                  // 20 + 30 + 9
+      MarkPaid(order, "");
+      Workflow.Settle(order);
+      // Paid: the file is ready now; the parcel still has to go.
+      Assert.Equal(OrderStatus.Paid, order.Status);
+      Assert.Equal(DownloadStatus.Open, Download.Single().Status);
+      Assert.Equal(1, PackingList(order).Count);
+      Assert.Equal("Printed", PackingList(order).Single().Variant);
+      MarkSent(order, "PostNord 1");
+      Workflow.Settle(order);
+      Assert.Equal(OrderStatus.Fulfilled, order.Status);
+    }
+    // A file cannot be sent back once it was hers to open — the printed one can.
+    runas (Maja) {
+      var order = Order.Single(o => o.Reference == reference);
+      Assert.Throws<Exception>(() => ReturnItem(order.Lines.Single(l => l.Kind == LineKind.Download), 1, "Changed my mind"));
+      ReturnItem(order.Lines.Single(l => l.Kind == LineKind.Goods), 1, "Changed my mind");
+    }
+  }
+}
+
+[Test(Floor)]
+void vat_on_a_download_follows_the_buyers_country() {
+  runas (new Visitor { Id = "v-de" }) {
+    GuideShelf();
+    runas (Desk) {
+      TheShop().OssRegistered = true;
+      UnitOfWork.Commit();
+      SeedEuVatRates();
+    }
+    runas (Maja) {
+      AddToBag(GuideAs("PDF"), 1);
+      AgreeToDigitalDelivery(true);
+      // Germany's lowest rate for a book, 7 % — not Sweden's 6.
+      var quote = CheckoutQuote(NothingToShipId(), "DE");
+      Assert.Equal(Math.Round(20m * 7m / 107m, 2), quote.Vat);
+      var reference = PlaceOrder("Maja Berg", "maja@example.test", "", NothingToShipId(), "banktransfer", "", "", "", "Germany").Reference;
+      var vat = Order.Single(o => o.Reference == reference).VatRates.Single();
+      Assert.Equal(7m, vat.Percent);
+      Assert.Equal("DE", vat.Country);
+    }
+  }
+}

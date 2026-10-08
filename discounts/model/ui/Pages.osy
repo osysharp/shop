@@ -1,0 +1,24 @@
+// The discount codes' desk as a page of the kit — it stands in the store's own working shell and puts itself in its
+// navigation, beside the shop's desk (Osysharp.Shop's DeskPages.osy). A store writes nothing to have it.
+
+namespace Osysharp.Shop.Discounts;
+
+using Osysharp.Ui;
+using Osysharp.Shop;
+
+/// The codes: what each gives, how often it has been used, and a form for a new one.
+[Page("/staff/codes")] [Layout(WorkspaceFrame)] [Authorize(IsShopStaff)] [Render(CSR)] [Title("Discount codes")]
+[Nav("Codes", Order = 50)]
+public component DiscountCodesPage() {
+  render { Stack(gap: 6, w: "100%", maxW: "1200px") { PageTitle("Codes"); DeskDiscountCodes(); } }
+}
+
+/// Before staff give a gift card away: a discount code is usually the simpler goodwill.
+[Authorize(IsShopStaff)]
+public component CodesInsteadOfAGiftCard() : GiftCardGoodwill {
+  render {
+    Link(href: "/staff/codes", label: "Discount codes") {
+      Text("Make a discount code", color: Colors.Primary, fontWeight: FontWeight.Semibold);
+    }
+  }
+}

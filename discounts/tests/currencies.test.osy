@@ -1,0 +1,52 @@
+// A code in a currency the shop SELLS in besides its own (D-SELLCURRENCY1): an amount off is a promise in one currency,
+// so it applies in euros only once staff gave it a euro amount; a percent applies anywhere, its minimum spend the
+// euro one staff set, else the shop's converted at the day's rate.
+
+using Osysharp.Shop.Discounts;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// Euros SOLD at the ECB's 11.3205 kronor — beans (200 kr) are €17.95 — and a visit shopping in them with two bags.
+void TwoBagsInEuros(string visit) {
+  runas (Desk) {
+    var today = DateTime.UtcNow.Date;
+    new ExchangeRate { Currency = "EUR", PerUnit = 0.08833532m, RateDate = today, UsableUntil = today.AddDays(6),
+                       Source = "European Central Bank", Symbol = "€", Sold = true };
+    UnitOfWork.Commit();
+  }
+  runas (new Visitor { Id = visit }) { ShowPricesIn("EUR"); }
+  Beans(visit, 2);
+}
+
+[Test(Shop)]
+void an_amount_off_applies_in_euros_only_once_it_has_a_euro_amount() {
+  TwoBagsInEuros("v-eur-amount");
+  runas (Desk) { CreateCode("TENOFF", "Ten off", DiscountKind.Amount, 100m, 0m, null, null, null, null); }
+  runas (new Visitor { Id = "v-eur-amount" }) {
+    Assert.Equal(35.90m, CheckoutQuote("collect", "").Goods);
+    Assert.Equal("That code is for orders in SEK.", Assert.Throws<Exception>(() => ApplyCode("tenoff")).Message);
+  }
+  runas (Desk) { SetCodeAmountIn(DiscountCode.Single(), "EUR", 10m, 0m); }
+  runas (new Visitor { Id = "v-eur-amount" }) {
+    Assert.Equal("Ten off", ApplyCode("tenoff"));
+    var quote = CheckoutQuote("collect", "");
+    Assert.Equal("EUR", quote.Currency);
+    Assert.Equal(10m, quote.Discount);                      // €10 — never 100 converted
+    Assert.Equal(25.90m, quote.Total);
+  }
+}
+
+[Test(Shop)]
+void a_percent_code_measures_its_minimum_spend_in_the_currency_of_the_basket() {
+  TwoBagsInEuros("v-eur-percent");
+  runas (Desk) { CreateCode("BIGTEN", "Big ten", DiscountKind.Percent, 10m, 1000m, null, null, null, null); }
+  runas (new Visitor { Id = "v-eur-percent" }) {
+    // 1,000 kr is €88.34 at the day's rate — a threshold, converted to the cent, not rounded to a nice price.
+    Assert.Equal("That code is for a spend of €88.34 or more.", Assert.Throws<Exception>(() => ApplyCode("bigten")).Message);
+  }
+  runas (Desk) { SetCodeAmountIn(DiscountCode.Single(), "EUR", 0m, 30m); }
+  runas (new Visitor { Id = "v-eur-percent" }) {
+    Assert.Equal("Big ten", ApplyCode("bigten"));
+    Assert.Equal(3.59m, CheckoutQuote("collect", "").Discount);   // 10 % of €35.90
+  }
+}

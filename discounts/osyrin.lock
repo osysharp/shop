@@ -1,0 +1,183 @@
+{
+  "platform": {
+    "version": "0.9.0"
+  },
+  "entries": [
+    {
+      "name": "Osysharp.Shop",
+      "kind": "package",
+      "version": "0.7.0",
+      "hash": "sha256:2c765f62d7379fc59a51c367b967a454abe3dd1287e944e47275f526b7027894",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:kits/shop",
+      "constraint": "0"
+    },
+    {
+      "name": "Osysharp.Workflow",
+      "kind": "package",
+      "version": "1.0.0",
+      "hash": "sha256:c9b5bb60a8be44efc0030d73b0bd60bdab05926344a68fb4db29dc78ee94c2f8",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:Platform.Core/Dsl/OsySharp/Baseline/Capabilities/Workflow"
+    },
+    {
+      "name": "Osysharp.Ui",
+      "kind": "package",
+      "version": "2.17.1",
+      "hash": "sha256:17d6d844ed71d4d614d43a6993723da70b2d39241c31e9f9fb58250a5183263c",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:Platform.Core/Dsl/OsySharp/Baseline/Capabilities/Ui"
+    },
+    {
+      "name": "Osysharp.Storage",
+      "kind": "package",
+      "version": "1.2.0",
+      "hash": "sha256:0e45268f33acd5a0fe1dae3e886ab1d828824fc628f9a34efa81af746b0f57d0",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:Platform.Core/Dsl/OsySharp/Baseline/Capabilities/Storage"
+    },
+    {
+      "name": "Osysharp.PdfWriter",
+      "kind": "package",
+      "version": "0.1.0",
+      "hash": "sha256:f1779051eb1bc07dbef8065778361473de5162d865a55299dce76d02ec2be865",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:kits/pdfwriter",
+      "constraint": "0"
+    },
+    {
+      "name": "Osysharp.Payments",
+      "kind": "package",
+      "version": "0.1.0",
+      "hash": "sha256:24c25dc952d65c184b67b1c80f75ee1825e8e4fd6d5417c5e477fa77b5d8fd87",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:kits/payments",
+      "constraint": "0"
+    },
+    {
+      "name": "Osysharp.Delivery",
+      "kind": "package",
+      "version": "0.1.0",
+      "hash": "sha256:4938c793fe6765bd64250b643f00e8b83fc09cbfed0f16a42052c2446b721f9a",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:kits/delivery",
+      "constraint": "0"
+    },
+    {
+      "name": "Osysharp.Http",
+      "kind": "package",
+      "version": "1.0.0",
+      "hash": "sha256:4c24068aeea5ef1a155459d4cc332c85d7ee3d96049f2404e54ac860d94beb0f",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:Platform.Core/Dsl/OsySharp/Baseline/Capabilities/Http"
+    },
+    {
+      "name": "Osysharp.Seo",
+      "kind": "package",
+      "version": "0.2.0",
+      "hash": "sha256:9e0cab5e4cbbe27973f17c0e9cdfc8e86d8455c4169dbca8df0d0ed15e387c4f",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:kits/seo",
+      "constraint": "0"
+    },
+    {
+      "name": "Osysharp.Analytics",
+      "kind": "package",
+      "version": "0.1.0",
+      "hash": "sha256:8037fe7d59bdc14a8f2f39a0598b6a09735556ceaf8705801bfeec2de40e62d6",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:kits/analytics",
+      "constraint": "0",
+      "contractVersion": "1.1"
+    },
+    {
+      "name": "Osysharp.EmailTemplates",
+      "kind": "package",
+      "version": "0.1.1",
+      "hash": "sha256:3ef5eb08590a6772a073aad43e6bae51b31126fb7ea4ce45f09d64d83200527a",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:kits/emailtemplates",
+      "constraint": "0"
+    },
+    {
+      "name": "Osysharp.Csv",
+      "kind": "package",
+      "version": "0.1.0",
+      "hash": "sha256:1e9cdc7953a3c0b5e0380e844d3cc25c5b65f7145985e499054d7c852c472af5",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:kits/csv",
+      "constraint": "0"
+    },
+    {
+      "name": "Osysharp.Markdown",
+      "kind": "package",
+      "version": "1.0.0",
+      "hash": "sha256:1d3c26de068b57c2124ae395a3c5891cb99cc75f6304028539ccaf458080d225",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:Platform.Core/Dsl/OsySharp/Baseline/Capabilities/Markdown"
+    },
+    {
+      "name": "Osysharp.MarkdownEditor",
+      "kind": "package",
+      "version": "1.0.1",
+      "hash": "sha256:005db3daf5244c92885318ac97a58b08048e65c815390aa61fc9e36fc8511e66",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:kits/markdown",
+      "constraint": "1",
+      "contractVersion": "1.1"
+    },
+    {
+      "name": "Osysharp.Resend",
+      "kind": "package",
+      "version": "0.2.0",
+      "hash": "sha256:c310c059c71a204e89e3f023c471ee2ce7bf66351ba5a6f17b23ab40ecdfdec9",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:kits/resend",
+      "constraint": "0"
+    },
+    {
+      "name": "Osysharp.MailingLists",
+      "kind": "package",
+      "version": "0.2.0",
+      "hash": "sha256:140cb2c3ef38c1f890fbea6867fe38bf9ad8f94feed5d83b0957c55318efacec",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:kits/mailinglists",
+      "constraint": "0"
+    },
+    {
+      "name": "Osysharp.Blocks",
+      "kind": "package",
+      "version": "1.1.0",
+      "hash": "sha256:2ca2c536187612fb43d848192a0cce47328473f1176ee55129b41132262aac02",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:Platform.Core/Dsl/OsySharp/Baseline/Capabilities/Blocks"
+    },
+    {
+      "name": "Osysharp.Site.Looks",
+      "kind": "package",
+      "version": "0.1.1",
+      "hash": "sha256:cc0f9668459d22f9724d7962b649bdae81f874e963f29baf1fae53f8fc76ef48",
+      "minPlatform": "0.9.0",
+      "shadow": "app-forkable",
+      "source": "workspace:kits/site-looks",
+      "constraint": "0"
+    }
+  ]
+}

@@ -1,0 +1,190 @@
+// The codes on the page: a field at the checkout, and the list staff run on the desk.
+
+namespace Osysharp.Shop.Discounts;
+
+using Osysharp.Shop;
+using Osysharp.Ui;
+
+/// A discount-code field for the checkout, and the codes already on the bag. Shows nothing while the shop runs no
+/// code. `onChange` re-prices the checkout.
+[Composable]
+[AllowAnonymous]
+public component CheckoutCode(Action onChange) {
+  bool running = false;
+  string code = "";
+  string problem = "";
+  List<BagCode> applied = [];
+  on mount { running = CodesRunning(); applied = BagCodes(); }
+  action Apply() {
+    problem = "";
+    try { ApplyCode(code); code = ""; applied = BagCodes(); onChange(); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action Remove(BagCode c) { RemoveCode(c); applied = BagCodes(); onChange(); }
+  render {
+    if (running) {
+      Stack(gap: 2) {
+        Row(gap: 2, align: Align.End) {
+          Box(grow: 1) { Field("Discount code", value: code, onEnter: Apply); }
+          Button("Apply", onPress: Apply);
+        }
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+        foreach (var c in applied) {
+          Row(justify: Justify.Between, align: Align.Center, gap: 2, label: c.Discount.Label) {
+            Text(c.Discount.Label, color: Colors.TextMuted);
+            Button("Remove", onPress: () => Remove(c), tone: Tone.Ghost, size: Size.Sm);
+          }
+        }
+      }
+    }
+  }
+}
+
+/// The codes, for staff: what each gives, how often it has been used, and a form for a new one.
+[Composable]
+[Authorize(IsShopStaff)]
+public component DeskDiscountCodes() {
+  live var codes = DiscountCode.OrderByDescending(d => d.CreatedAt).ToList();
+  live var shop = ShopSettings.FirstOrDefault();
+  // The currencies the shop SELLS in besides its own, and what each code is worth in them (DiscountCodeAmount).
+  live var sold = ExchangeRate.Where(r => r.Sold).OrderBy(r => r.Currency).ToList();
+  live var amounts = DiscountCodeAmount.ToList();
+  DiscountCode? pricing = null;
+  ExchangeRate? pricingIn = null;
+  decimal inValue = 0;
+  decimal inMinSpend = 0;
+  string code = "";
+  string label = "";
+  DiscountKind kind = DiscountKind.Percent;
+  decimal value = 10;
+  decimal minSpend = 0;
+  DateOnly? startsOn = null;
+  DateOnly? endsOn = null;
+  int maxUses = 0;
+  int maxPerCustomer = 0;
+  string problem = "";
+  bool giving = false;
+  string giveTo = "";
+  DiscountKind giveKind = DiscountKind.Amount;
+  decimal giveValue = 100;
+  int giveDays = 60;
+  string giveWhy = "";
+  string given = "";
+  action AskGive() { giving = true; given = ""; problem = ""; giveTo = ""; giveWhy = ""; }
+  action CloseGive() { giving = false; }
+  action Give() {
+    problem = "";
+    try { given = GiveCode(giveTo, giveKind, giveValue, giveDays, giveWhy); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action Create() {
+    problem = "";
+    try {
+      CreateCode(code, label, kind, value, minSpend, startsOn, endsOn, maxUses, maxPerCustomer);
+      code = ""; label = ""; startsOn = null; endsOn = null; maxUses = 0; maxPerCustomer = 0;
+    }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  action Toggle(DiscountCode d) { d.Active = !d.Active; UnitOfWork.Commit(); }
+  action Price(DiscountCode d) { pricing = d; pricingIn = sold.FirstOrDefault(); problem = ""; Pick(); }
+  action Pick() {
+    var there = pricing == null || pricingIn == null ? null : amounts.FirstOrDefault(a => a.Discount.Id == pricing!.Id && a.Currency == pricingIn!.Currency);
+    inValue = there == null ? 0 : there.Value;
+    inMinSpend = there == null ? 0 : there.MinSpend;
+  }
+  action PickIn(ExchangeRate r) { pricingIn = r; Pick(); }
+  action ClosePrice() { pricing = null; }
+  action SavePrice() {
+    problem = "";
+    try { SetCodeAmountIn(pricing!, pricingIn!.Currency, inValue, inMinSpend); pricing = null; }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    Stack(gap: 4) {
+      // One customer's own code — to put something right: made up by the shop, once, for them alone, mailed to them.
+      Row(justify: Justify.End) { Button("Give a code…", onPress: AskGive); }
+      if (codes.Count == 0) { Text("No codes yet.", color: Colors.TextMuted); }
+      foreach (var d in codes) {
+        Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 2, borderTW: 1, border: Colors.Border, label: d.Code) {
+          Stack(gap: 0) {
+            Strong(d.Code);
+            Text($"{d.Label} · {(shop == null ? d.Kind.Label : CodeGives(d, shop))}"
+                 + (CodeDates(d) == "" ? "" : " · " + CodeDates(d))
+                 + $" · used {d.Uses}{(d.MaxUses == null ? "" : " of " + d.MaxUses)}"
+                 + (d.MaxPerCustomer == null ? "" : $" · {d.MaxPerCustomer} per customer"),
+                 color: Colors.TextMuted, fontSize: FontSize.Label);
+            if (d.ForEmail != null) { Text($"Given to {d.ForEmail} — {d.Reason}", color: Colors.TextMuted, fontSize: FontSize.Label); }
+            foreach (var a in amounts.Where(x => x.Discount.Id == d.Id)) {
+              Text(d.Kind == DiscountKind.Amount ? $"In {a.Currency}: {MoneyIn(a.Value, a.Currency, shop)} off" + (a.MinSpend > 0 ? $", from {MoneyIn(a.MinSpend, a.Currency, shop)}" : "")
+                   : $"In {a.Currency}: from {MoneyIn(a.MinSpend, a.Currency, shop)}", color: Colors.TextMuted, fontSize: FontSize.Label);
+            }
+          }
+          Row(gap: 2) {
+            if (sold.Count > 0) { Button("Other currencies…", onPress: () => Price(d), size: Size.Sm); }
+            Button(d.Active ? "Stop it" : "Start it", onPress: () => Toggle(d), size: Size.Sm);
+          }
+        }
+      }
+      SectionLabel("A new code");
+      Box(display: Display.Grid, cols: "repeat(auto-fit, minmax(160px, 1fr))", gap: 3) {
+        Field("Code", value: code, placeholder: "SUMMER10");
+        Field("What it says", value: label, placeholder: "Summer sale");
+        Dropdown("Kind", value: kind);
+        DecimalField("Percent or amount", value: value);
+        DecimalField("Minimum spend", value: minSpend);
+        DatePicker("First day", value: startsOn, hint: "Empty: from now");
+        DatePicker("Last day", value: endsOn, hint: "Empty: until stopped");
+        NumberField("Uses in all", value: maxUses, min: 0, hint: "0: no limit");
+        NumberField("Per customer", value: maxPerCustomer, min: 0, hint: "0: no limit");
+      }
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      Row() { Button("Create the code", onPress: Create, tone: Tone.Primary); }
+    }
+    if (pricing != null) {
+      Dialog($"{pricing!.Code} in other currencies", onDismiss: ClosePrice,
+             subtitle: pricing!.Kind == DiscountKind.Amount
+               ? "An amount off applies in a currency only once it has an amount there."
+               : "Without a minimum spend here, the code's own is converted at the day's rate.") {
+        Stack(gap: 4) {
+          Row(gap: 2, label: "Currency", wrap: Wrapping.Wrap) {
+            foreach (var r in sold) {
+              Button(r.Currency, onPress: () => PickIn(r), size: Size.Sm,
+                     tone: pricingIn != null && pricingIn!.Currency == r.Currency ? Tone.Primary : Tone.Default);
+            }
+          }
+          if (pricing!.Kind == DiscountKind.Amount) { DecimalField("Amount off", value: inValue); }
+          DecimalField("Minimum spend", value: inMinSpend, hint: "0: none");
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+          Row(gap: 3, justify: Justify.End) {
+            Button("Cancel", onPress: ClosePrice);
+            Button("Save", onPress: SavePrice, tone: Tone.Primary);
+          }
+        }
+      }
+    }
+    if (giving) {
+      Dialog("Give a code", onDismiss: CloseGive,
+             subtitle: "A code of their own, for one order: only this email can use it, and it is mailed to them.") {
+        Stack(gap: 4) {
+          if (given == "") {
+            Field("Their email", value: giveTo, placeholder: "maja@example.com");
+            Box(display: Display.Grid, cols: "repeat(auto-fit, minmax(140px, 1fr))", gap: 3) {
+              Dropdown("Kind", value: giveKind);
+              DecimalField("Percent or amount", value: giveValue);
+              NumberField("Valid for days", value: giveDays, min: 1);
+            }
+            Field("Why", value: giveWhy, placeholder: "The parcel arrived a week late", hint: "Kept with the code, for staff.");
+            if (problem != "") { Alert(problem, tone: Tone.Danger); }
+            Row(gap: 3, justify: Justify.End) {
+              Button("Not now", onPress: CloseGive);
+              Button("Give it", onPress: Give, tone: Tone.Primary);
+            }
+          } else {
+            Alert($"{given} is on its way to {giveTo.Trim().ToLower()}.", tone: Tone.Success);
+            Row(justify: Justify.End) { Button("Done", onPress: CloseGive); }
+          }
+        }
+      }
+    }
+  }
+}

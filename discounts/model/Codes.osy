@@ -1,0 +1,363 @@
+// Discount codes. A code is found by its FINGERPRINT (`Security.Fingerprint`, keyed by the platform), and the code
+// itself is readable by staff alone — so a shopper who types one can have it checked, and nobody can list them.
+//
+// ⚑ A CODE IS PRICED WHEN THE BASKET IS, not when it is typed: `Adjust` re-checks it (still active, still in its
+//   dates, the spend still met) every time the checkout or the order is priced, so a code that ran out between the
+//   bag and the order takes nothing off rather than something it no longer may.
+
+namespace Osysharp.Shop.Discounts;
+
+using Osysharp.Shop;
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum DiscountKind {
+  [Label("Percent off")] Percent,
+  [Label("Amount off")] Amount,
+  [Label("Free delivery")] FreeDelivery,
+}
+
+public entity DiscountCode {
+  /// The code's fingerprint — what a typed code is looked up by.
+  [Required, Unique, MaxLength(64)] string CodeHash;
+  /// The code as staff wrote it. Nobody else reads it.
+  [Required, MaxLength(40)] string Code;
+  /// What the customer sees beside it — "Summer sale".
+  [Required, MaxLength(120)] string Label;
+  DiscountKind Kind = DiscountKind.Percent;
+  /// Percent for Percent, the shop's money for Amount; unused for free delivery.
+  decimal Value = 0;
+  /// The goods must cost at least this.
+  decimal MinSpend = 0;
+  /// From the start of its first day and to the END of its last, in the shop's time zone — kept as the two instants:
+  /// `EndsAt` is the first moment it no longer applies (midnight after the last day).
+  DateTime? StartsAt;
+  DateTime? EndsAt;
+  /// The days as staff chose them, for showing: the instants above are these, in the shop's zone when it was made.
+  DateOnly? FirstDay;
+  DateOnly? LastDay;
+  /// In all, and per customer (by email). Null: no limit.
+  int? MaxUses;
+  int? MaxPerCustomer;
+  int Uses = 0;
+  bool Active = true;
+  /// A code GIVEN to one customer — compensation, a thank-you: only their email may use it. Who, and why, are staff's.
+  [MaxLength(255)] string? ForEmail;
+  [MaxLength(64)] string? ForEmailHash;
+  [MaxLength(300)] string? Reason;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    deny read Code when !IsShopStaff;
+    deny read ForEmail when !IsShopStaff;
+    deny read Reason when !IsShopStaff;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// What a code is worth in a currency the shop SELLS in besides its own (Osysharp.Shop's Currencies.osy): an "Amount
+/// off" code's amount there, and a minimum spend in it.
+///
+/// ⚑ AN AMOUNT OFF IS A PROMISE IN ONE CURRENCY. "100 kr off" printed on a flyer is 100 kr, and "€10 off" is €10 — a
+///   code converted at each day's rate would be worth a different amount every day and a figure nobody printed. So an
+///   amount-off code applies in a sold currency only once staff set its amount there; until then a shopper buying in
+///   it is told the code is for the currencies it has an amount in. A percent and a free delivery need no amount, and
+///   their minimum spend, when none is set here, is the shop's converted at the day's rate (a threshold, not a price).
+[Unique(Discount, Currency, "That code already has an amount in that currency.")]
+public entity DiscountCodeAmount {
+  [Required] DiscountCode Discount;
+  /// ISO 4217: "EUR".
+  [Required, MaxLength(3)] string Currency;
+  /// The amount off, for an "Amount off" code — unused for the other kinds.
+  decimal Value = 0;
+  /// The goods must cost at least this, in this currency.
+  decimal MinSpend = 0;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// A bag's codes and an order's uses, as lists on the shop's own records (extension members, D-COMPOSE1 S4): live, so a
+/// code applied in this unit of work is on `bag.Codes` before it is committed.
+partial entity Bag { [ForeignKey(Bag)] BagCode[] Codes; }
+partial entity Order { [ForeignKey(Order)] DiscountUse[] DiscountUses; }
+
+/// A code the shopper applied to their bag.
+public entity BagCode {
+  [Required] Bag Bag;
+  [Required] DiscountCode Discount;
+  // …or a counter's sale, by the clerks of that counter (SECURITY-INVARIANT(a-counter-sells-only-at-its-location)).
+  security {
+    allow read, create, delete when IsAnonymous || IsAuthenticated
+      where Bag.Owner == null && Bag.VisitId == Visitor.Id || Bag.Owner == user;
+    allow read, create, delete when IsShopCounter where Bag.Owner == null && Bag.AtCounter && SellsAt(Bag.SoldAt);
+    allow read, create, delete when IsShopStaff;
+  }
+}
+
+/// One use of a code — by which order, and whom.
+///
+/// ⚑ WHO USED IT IS COUNTED BY FINGERPRINT. A once-per-customer code has to be checked against a GUEST's checkout,
+///   which is anonymous, so the count must be readable by anyone; the email and the order are not. What a visitor can
+///   see is how often a code was used — already public as `DiscountCode.Uses` — and a keyed hash nobody can reverse.
+public entity DiscountUse {
+  [Required] DiscountCode Discount;
+  [Required] Order Order;
+  [MaxLength(255)] string? Email;
+  /// `Security.Fingerprint` of the email, lower-cased — what a limit per customer counts.
+  [MaxLength(64)] string? EmailHash;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    deny read Email when !IsShopStaff;
+    deny read Order when !IsShopStaff;
+  }
+}
+
+/// A code as typed, normalised: case and spaces do not matter.
+string Normal(string code) { return code.Trim().ToUpper().Replace(" ", ""); }
+
+/// Why a code cannot be used on this basket right now — "" when it can.
+public string Unusable(DiscountCode d, decimal subtotal) { return UnusableAt(d, subtotal, DateTime.UtcNow); }
+
+/// Why a code cannot be used on a basket of `subtotal` in `currency` (`perShopUnit` of it to one of the shop's own) —
+/// "" when it can. In the shop's own currency, `Unusable`.
+public string UnusableIn(DiscountCode d, decimal subtotal, string currency, decimal perShopUnit) {
+  var shop = TheShop();
+  if (currency == "" || currency == shop.Currency) { return Unusable(d, subtotal); }
+  var dated = UnusableAt(d, decimal.MaxValue, DateTime.UtcNow);
+  if (dated != "") { return dated; }
+  var code = currency;
+  var there = DiscountCodeAmount.FirstOrDefault(a => a.Discount == d && a.Currency == code);
+  if (d.Kind == DiscountKind.Amount && there == null) {
+    return $"That code is for orders in {string.Join(" or ", CodeCurrencies(d))}.";
+  }
+  var min = there != null ? there.MinSpend : Math.Round(d.MinSpend * perShopUnit, 2, MidpointRounding.AwayFromZero);
+  if (subtotal < min) { return $"That code is for a spend of {MoneyIn(min, currency, shop)} or more."; }
+  return "";
+}
+
+/// The currencies an amount-off code has an amount in: the shop's own, and each set for it.
+[SuppressWarning("cost-unbounded-read")]   // one code's amounts — at most one per currency the shop sells in
+List<string> CodeCurrencies(DiscountCode d) {
+  List<string> all = [TheShop().Currency];
+  foreach (var a in DiscountCodeAmount.Where(x => x.Discount == d).OrderBy(x => x.Currency).ToList()) { all.Add(a.Currency); }
+  return all;
+}
+
+/// What an amount-off code takes off in `currency` — its own amount, or the one set for the currency (0: none).
+decimal AmountIn(DiscountCode d, string currency) {
+  if (currency == "" || currency == TheShop().Currency) { return d.Value; }
+  var code = currency;
+  var there = DiscountCodeAmount.FirstOrDefault(a => a.Discount == d && a.Currency == code);
+  return there == null ? 0m : there.Value;
+}
+
+/// Sets what a code is worth in `currency`, a currency the shop sells in besides its own: the amount off (an "Amount
+/// off" code) and the minimum spend there. `value` 0 and `minSpend` 0 take it off.
+[Authorize(IsShopStaff)]
+public void SetCodeAmountIn(DiscountCode d, string currency, decimal value, decimal minSpend) {
+  var code = currency.Trim().ToUpper();
+  if (code == TheShop().Currency) { throw new Exception($"{code} is the shop's own currency — change the code itself."); }
+  if (value < 0 || minSpend < 0) { throw new Exception("An amount cannot be below nothing."); }
+  var row = DiscountCodeAmount.FirstOrDefault(a => a.Discount == d && a.Currency == code);
+  if (value == 0 && minSpend == 0) { if (row != null) { row.Delete(); } }
+  else {
+    if (row == null) { row = new DiscountCodeAmount { Discount = d, Currency = code }; }
+    row.Value = Math.Round(value, 2, MidpointRounding.AwayFromZero);
+    row.MinSpend = Math.Round(minSpend, 2, MidpointRounding.AwayFromZero);
+  }
+  UnitOfWork.Commit();
+}
+
+/// `Unusable` at the instant `now` (UTC).
+public string UnusableAt(DiscountCode d, decimal subtotal, DateTime now) {
+  if (!d.Active || (d.EndsAt != null && d.EndsAt <= now)) { return "That code has ended."; }
+  if (d.StartsAt != null && d.StartsAt > now) { return "That code is not valid yet."; }
+  if (d.MaxUses != null && d.Uses >= d.MaxUses) { return "That code has been used up."; }
+  if (subtotal < d.MinSpend) { return $"That code is for a spend of {Money(d.MinSpend, TheShop())} or more."; }
+  return "";
+}
+
+/// Whether `d` was given to someone other than `email`. False while the buyer is not known yet (a guest before the
+/// order is placed) — the placing asks again.
+bool GivenToAnother(DiscountCode d, string email) {
+  if (d.ForEmailHash == null || email == "") { return false; }
+  return Security.Fingerprint(email.Trim().ToLower()) != d.ForEmailHash;
+}
+
+/// Whether `email` has had all the uses of `d` it may.
+bool UsedUp(DiscountCode d, string email) {
+  if (d.MaxPerCustomer == null || email == "") { return false; }
+  var who = Security.Fingerprint(email.Trim().ToLower());
+  return DiscountUse.Count(u => u.Discount == d && u.EmailHash == who) >= d.MaxPerCustomer;
+}
+
+/// What a code gives, as a customer reads it — "15 % off", "100 kr off", "Free delivery".
+public string CodeGives(DiscountCode d, ShopSettings shop) {
+  if (d.Kind == DiscountKind.Percent) { return $"{d.Value.ToString("0.##")} % off"; }
+  if (d.Kind == DiscountKind.Amount) { return $"{Money(d.Value, shop)} off"; }
+  return "Free delivery";
+}
+
+/// When a code applies, in the shop's days — "3 Oct – 9 Oct", "from 3 Oct", "until 9 Oct", or "" when always.
+public string CodeDates(DiscountCode d) {
+  var first = d.FirstDay == null ? "" : d.FirstDay.Value.ToString("d MMM");
+  var last = d.LastDay == null ? "" : d.LastDay.Value.ToString("d MMM");
+  if (first != "" && last != "") { return $"{first} – {last}"; }
+  if (first != "") { return $"from {first}"; }
+  if (last != "") { return $"until {last}"; }
+  return "";
+}
+
+/// Applies a typed code to the caller's bag. Answers what it gives, or throws the sentence to show.
+[AllowAnonymous]
+public string ApplyCode(string code) {
+  var hash = Security.Fingerprint(Normal(code));
+  var d = DiscountCode.FirstOrDefault(c => c.CodeHash == hash);
+  if (d == null) { throw new Exception("That code is not one of ours."); }
+  return ApplyCodeOn(BagFor(true)!, d);
+}
+
+/// Puts code `d` on `bag` — the caller's own at the checkout, or a counter's sale (`CounterCode`). Answers what it gives.
+string ApplyCodeOn(Bag bag, DiscountCode d) {
+  var basket = BasketOf(bag, "");
+  var problem = UnusableIn(d, basket.Subtotal, basket.Currency, basket.PerShopUnit);
+  if (problem != "") { throw new Exception(problem); }
+  if (bag.Owner != null && UsedUp(d, bag.Owner.Email)) { throw new Exception("You have already used that code."); }
+  if (bag.Owner != null && GivenToAnother(d, bag.Owner.Email)) { throw new Exception("That code was given to someone else."); }
+  if (!BagCode.Any(b => b.Bag == bag && b.Discount == d)) { new BagCode { Bag = bag, Discount = d }; }
+  UnitOfWork.Commit();
+  return d.Label;
+}
+
+/// The codes on the caller's bag.
+[SuppressWarning("cost-unbounded-read")]   // one bag's codes — the ones its owner typed in
+[AllowAnonymous]
+public List<BagCode> BagCodes() {
+  var bag = BagFor(false);
+  return bag == null ? [] : bag.Codes.Include(b => b.Discount).ToList();
+}
+
+/// Takes a code off the bag.
+[AllowAnonymous]
+public void RemoveCode(BagCode applied) {
+  applied.Delete();
+  UnitOfWork.Commit();
+}
+
+/// Whether the checkout should offer a code field at all — the shop has a code running.
+[AllowAnonymous]
+public bool CodesRunning() { return DiscountCode.Any(d => d.Active); }
+
+/// Staff create a code, valid from the start of `startsOn` to the end of `endsOn` in the shop's time zone (either may
+/// be left open). A limit of null or 0 is no limit.
+[Authorize(IsShopStaff)]
+public DiscountCode CreateCode(string code, string label, DiscountKind kind, decimal value, decimal minSpend,
+                               DateOnly? startsOn, DateOnly? endsOn, int? maxUses, int? maxPerCustomer) {
+  var normal = Normal(code);
+  if (normal.Length < 3) { throw new Exception("A code needs at least three characters."); }
+  if (kind == DiscountKind.Percent && (value <= 0 || value > 100)) { throw new Exception("A percent is between 1 and 100."); }
+  if (kind == DiscountKind.Amount && value <= 0) { throw new Exception("An amount off must be more than zero."); }
+  if (startsOn != null && endsOn != null && endsOn < startsOn) { throw new Exception("The last day comes before the first."); }
+  if ((maxUses ?? 0) < 0 || (maxPerCustomer ?? 0) < 0) { throw new Exception("A limit cannot be below zero."); }
+  var hash = Security.Fingerprint(normal);
+  if (DiscountCode.Any(d => d.CodeHash == hash)) { throw new Exception($"{normal} is already a code."); }
+  var zone = TheShop().TimeZone;
+  var d = new DiscountCode { CodeHash = hash, Code = normal, Label = label.Trim() == "" ? normal : label.Trim(), Kind = kind,
+                             Value = value, MinSpend = minSpend,
+                             StartsAt = startsOn == null ? null : zone.Resolve(startsOn.Value, TimeOnly.MinValue),
+                             EndsAt = endsOn == null ? null : zone.Resolve(endsOn.Value.AddDays(1), TimeOnly.MinValue),
+                             FirstDay = startsOn, LastDay = endsOn,
+                             MaxUses = maxUses == 0 ? null : maxUses, MaxPerCustomer = maxPerCustomer == 0 ? null : maxPerCustomer };
+  UnitOfWork.Commit();
+  return d;
+}
+
+/// Gives one customer a code of their own — to put something right, or to say thank you: made up by the shop, valid
+/// once, for `days` days from today, only for `email`, and mailed to them. Answers the code.
+[Authorize(IsShopStaff)]
+public string GiveCode(string email, DiscountKind kind, decimal value, int days, string reason) {
+  var to = email.Trim().ToLower();
+  if (!to.Contains("@")) { throw new Exception("Give it to an email address."); }
+  if (days < 1) { throw new Exception("Make it valid for at least a day."); }
+  if (reason.Trim() == "") { throw new Exception("Say why — it is kept with the code, for whoever reads it next."); }
+  var shop = TheShop();
+  var today = DateOnly.FromDateTime(DateTime.UtcNow.InZone(shop.TimeZone));
+  var code = "GIFT-" + Security.RandomHex(4).ToUpper();
+  var made = CreateCode(code, $"A gift from {shop.Name}", kind, value, 0m, today, today.AddDays(days - 1), 1, 1);
+  made.ForEmail = to;
+  made.ForEmailHash = Security.Fingerprint(to);
+  made.Reason = reason.Trim();
+  var gives = CodeGives(made, shop).ToLower();
+  Mail(to, App.Setting<ShopSetup>().Mails.GiftCode(code, gives, today.AddDays(days - 1)));
+  UnitOfWork.Commit();
+  return code;
+}
+
+/// The add-on: prices the codes on a basket and refuses one a buyer may not use. The shop finds it — an app that uses
+/// this kit lists nothing. Its uses are counted when the order is placed (`CountTheCodes`, below).
+public class DiscountCodes : IShopAddOn {
+  public string Key() { return "discounts"; }
+
+  public List<Adjustment> Adjust(Basket basket) {
+    if (basket.Bag == null) { return []; }
+    var bag = basket.Bag;
+    List<Adjustment> off = [];
+    foreach (var applied in bag.Codes.Include(b => b.Discount).ToList()) {
+      var d = applied.Discount;
+      // Priced in the basket's currency: an amount off in it, a minimum spend in it (see `DiscountCodeAmount`).
+      if (UnusableIn(d, basket.Subtotal, basket.Currency, basket.PerShopUnit) != "") { continue; }
+      if (UsedUp(d, basket.Email) || GivenToAnother(d, basket.Email)) { continue; }
+      var amount = d.Kind == DiscountKind.Percent ? Math.Round(basket.Subtotal * d.Value / 100m, 2, MidpointRounding.AwayFromZero)
+                 : d.Kind == DiscountKind.Amount ? Math.Min(AmountIn(d, basket.Currency), basket.Subtotal) : 0m;
+      off.Add(new Adjustment { Label = d.Label, Amount = amount, FreeDelivery = d.Kind == DiscountKind.FreeDelivery,
+                               Reference = d.Id.ToString() });
+    }
+    return off;
+  }
+
+  /// A code limited per customer that this buyer has used up — known for a guest only now, as the order is placed.
+  public string Refuses(Basket basket) {
+    if (basket.Bag == null) { return ""; }
+    var bag = basket.Bag;
+    foreach (var applied in bag.Codes.Include(b => b.Discount).ToList()) {
+      if (UsedUp(applied.Discount, basket.Email)) {
+        return $"You have already used the code for {applied.Discount.Label} — remove it to place the order.";
+      }
+      if (GivenToAnother(applied.Discount, basket.Email)) {
+        return $"The code for {applied.Discount.Label} was given to someone else — remove it to place the order.";
+      }
+    }
+    return "";
+  }
+
+  /// A code typed at a counter: this kit's when it is one of its codes — put on the counter's sale like the checkout's.
+  public string CounterCode(Bag bag, string code) {
+    var hash = Security.Fingerprint(Normal(code));
+    var d = DiscountCode.FirstOrDefault(c => c.CodeHash == hash);
+    return d == null ? "" : ApplyCodeOn(bag, d);
+  }
+}
+
+/// A code used on an order is counted, and taken off the bag it came from — heard once the order is placed.
+[On] void CountTheCodes(OrderPlaced e) {
+  var order = e.Order;
+  var email = order.Contact.FirstOrDefault()?.Email?.Trim().ToLower();
+  foreach (var a in order.Adjustments.Where(x => x.Source == "discounts" && x.Reference != null).ToList()) {
+    var id = Guid.Parse(a.Reference!);
+    var d = DiscountCode.FirstOrDefault(c => c.Id == id);
+    if (d == null) { continue; }
+    d.Uses = d.Uses + 1;
+    new DiscountUse { Discount = d, Order = order, Email = email, EmailHash = email == null ? null : Security.Fingerprint(email) };
+    // …and off a counter's sale, so the next customer at the counter does not find it there.
+    foreach (var b in BagCode.Where(x => x.Discount == d && (x.Bag.Owner == order.Account && order.Account != null || order.AtCounter && x.Bag == order.PlacedFrom)).ToList()) { b.Delete(); }
+  }
+}
+
+/// A reservation called off gives its code's use back.
+[On] void GiveTheCodesBack(OrderCancelled e) {
+  var order = e.Order;
+  foreach (var u in order.DiscountUses.Include(x => x.Discount).ToList()) {
+    u.Discount.Uses = Math.Max(0, u.Discount.Uses - 1);
+    u.Delete();
+  }
+}

@@ -1,0 +1,105 @@
+// The codes through the screen: staff make one on the desk, a shopper types it at the checkout.
+
+using Osysharp.Shop.Discounts;
+using Osysharp.Shop;
+
+[Test(Shop)]
+void staff_make_a_code_on_the_desk_and_can_stop_it() {
+  Ui.Visit("/account/sign-in");
+  Ui.Fill("Email", "anna@shop.test");
+  Ui.Fill("Password", "desk-pass-1");
+  Ui.Click("Sign in");
+  Ui.Visit("/codes");
+  Assert.Visible("No codes yet.");
+  Ui.Fill("Code", "spring 15");
+  Ui.Fill("What it says", "Spring");
+  Ui.Fill("Percent or amount", "15");
+  Ui.Fill("First day", "2026-10-03");                                      // 15 % off, once each, 3–9 October
+  Ui.Fill("Last day", "2026-10-09");
+  Ui.Fill("Per customer", "1");
+  Ui.Click("Create the code");
+  Assert.Visible("SPRING15");                                              // normalised: upper case, no spaces
+  Assert.Visible("15 % off", within: "SPRING15");
+  Assert.Visible("3 Oct – 9 Oct", within: "SPRING15");
+  Assert.Visible("1 per customer", within: "SPRING15");
+  Assert.Visible("used 0", within: "SPRING15");
+  runas (Desk) {
+    var d = DiscountCode.Single();
+    Assert.Equal(new DateTime(2026, 10, 2, 22, 0, 0), d.StartsAt);         // midnight in the shop's Stockholm
+    Assert.Equal(1, d.MaxPerCustomer);
+    Assert.Null(d.MaxUses);
+  }
+  Ui.Click("Stop it", within: "SPRING15");
+  Assert.Visible("Start it", within: "SPRING15");
+  runas (Desk) { Assert.False(DiscountCode.Single().Active); }
+}
+
+void MakeSpring15() {
+  Ui.Visit("/account/sign-in");
+  Ui.Fill("Email", "anna@shop.test");
+  Ui.Fill("Password", "desk-pass-1");
+  Ui.Click("Sign in");
+  Ui.Visit("/codes");
+  Ui.Fill("Code", "SPRING15");
+  Ui.Fill("What it says", "Spring");
+  Ui.Fill("Percent or amount", "15");
+  Ui.Click("Create the code");
+  Assert.Visible("SPRING15");
+}
+
+[Test(Shop)]
+void a_shopper_types_a_code_and_the_total_drops() {
+  MakeSpring15();                          // made on the desk, as a shop makes it
+  Ui.Visit("/try");
+  Ui.Click("Add two bags of beans");
+  Assert.Visible("Total 449");                                             // 400 + 49 delivery
+  Ui.Fill("Discount code", "nope");
+  Ui.Click("Apply");
+  Assert.Visible("That code is not one of ours.");
+  Ui.Fill("Discount code", "spring15");
+  Ui.Click("Apply");
+  Assert.Visible("Spring −60");
+  Assert.Visible("Total 389");
+  Ui.Click("Remove", within: "Spring");
+  Assert.Visible("Total 449");
+}
+
+[Test(Shop)]
+void staff_give_one_customer_a_code_of_their_own() {
+  Ui.Visit("/account/sign-in");
+  Ui.Fill("Email", "anna@shop.test");
+  Ui.Fill("Password", "desk-pass-1");
+  Ui.Click("Sign in");
+  Ui.Visit("/codes");
+  Ui.Click("Give a code…");
+  Ui.Fill("Their email", "maja@example.test");
+  Ui.Fill("Why", "The parcel arrived a week late");
+  Ui.Click("Give it");
+  Assert.Visible("is on its way to maja@example.test");
+  Ui.Click("Done");
+  Assert.Visible("Given to maja@example.test — The parcel arrived a week late");
+  runas (Desk) {
+    var d = DiscountCode.Single();
+    Assert.Equal(100m, d.Value);
+    Assert.Equal(1, ShopMail.Count(m => m.To == "maja@example.test" && m.Text.Contains(d.Code)));
+  }
+}
+
+/// ⭐ THE CODES STAND IN THE STORE'S DESK WITH NOTHING WRITTEN FOR THEM (D-COMPOSE1): the shop's desk and this kit's codes
+/// are the kits' own pages, in the store's shell and its navigation, and a free gift card points to the codes — this
+/// kit's contribution to the shop's `GiftCardGoodwill` slot. The test store wrote a shell and nothing else.
+[Test(Shop)]
+void the_codes_stand_in_the_stores_desk_and_a_free_gift_card_points_to_them() {
+  Ui.Visit("/account/sign-in");
+  Ui.Fill("Email", "anna@shop.test");
+  Ui.Fill("Password", "desk-pass-1");
+  Ui.Click("Sign in");
+  Ui.Visit("/staff/desk");
+  Assert.Visible("Desk", within: "Staff pages");
+  Assert.Visible("Codes", within: "Staff pages");
+  Ui.Click("Gift cards");
+  Ui.Click("Issue a gift card…");
+  Ui.Click("Make a discount code");
+  Assert.Visible("No codes yet.");
+  Assert.Visible("Codes", within: "Staff pages");
+}

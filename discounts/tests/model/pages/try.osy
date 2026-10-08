@@ -1,0 +1,39 @@
+// The pages a store writes around the kit's components — as bare as a page can be, so the tests drive the components.
+using Osysharp.Shop.Discounts;
+using Osysharp.Shop;
+using Osysharp.Ui;
+
+[Page("/")] [AllowAnonymous] component KitHome() { render { Text("Discounts test shop"); } }
+[Page("/account/sign-in")] [AllowAnonymous] component KitSignIn() { render { ShopSignIn(); } }
+[Page("/codes")] component KitCodes() { render { DeskDiscountCodes(); } }
+
+/// The store's working shell, designed once — what every kit's staff page stands in. The test store writes NO page for the
+/// shop's desk or the codes: they are the kits' own, and put themselves in this bar.
+[AllowAnonymous]
+component TestStoreShell() : WorkspaceShell {
+  render {
+    Stack(gap: 4) {
+      Row(gap: 4, label: "Staff pages") { foreach (var n in Nav.Pages()) { Link(href: n.To, label: n.Label) { Text(n.Label); } } }
+      Slot;
+    }
+  }
+}
+
+/// A checkout reduced to what a code changes: a bag, the code field, and the total it prices to.
+[Page("/try")]
+[AllowAnonymous]
+component KitTry() {
+  CheckoutTotals? totals = null;
+  action Add() { AddToBag(Variant.Single(v => v.Product.Name == "Beans"), 2); Price(); }
+  action Price() { totals = CheckoutQuote("flat", "SE"); }
+  render {
+    Stack(gap: 4, p: 6) {
+      Button("Add two bags of beans", onPress: Add);
+      CheckoutCode(Price);
+      if (totals != null) {
+        foreach (var a in totals.Adjustments) { Text($"{a.Label} −{a.Amount.ToString("0.##")}"); }
+        Text($"Total {totals.Total.ToString("0.##")}");
+      }
+    }
+  }
+}

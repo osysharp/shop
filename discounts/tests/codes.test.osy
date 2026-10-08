@@ -1,0 +1,161 @@
+// Discount codes through a real shop: found by fingerprint, priced with the basket, counted when used.
+
+using Osysharp.Shop.Discounts;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[TestFixture]
+void Shop() {
+  new ShopSettings { Name = "Grounds & Grapes", Currency = "SEK", CurrencySymbol = "kr", SymbolAfter = true, OrderPrefix = "GG-" };
+  var beans = new Product { Name = "Beans", Slug = "beans", Price = 200m };
+  new Variant { Product = beans, Stock = 50 };
+  var anna = new ShopAccount { Email = "anna@shop.test", PasswordHash = Security.HashPassword("desk-pass-1") };
+  new ShopRoleGrant { Member = anna, Role = ShopRole.Staff };
+}
+
+principal Desk => ShopAccount.Single(s => s.Email == "anna@shop.test");
+
+void Beans(string visit, int quantity) {
+  runas (new Visitor { Id = visit }) {
+   AddToBag(Variant.Single(v => v.Product.Name == "Beans"), quantity); 
+  }
+}
+
+string Order(string visit) {
+  runas (new Visitor { Id = visit }) {
+    return PlaceOrder("Maja Berg", "maja@example.test", "", "flat", "banktransfer", "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+  }
+}
+
+[Test(Shop)]
+void a_code_takes_its_share_off_and_is_counted_once_used() {
+  runas (new Visitor { Id = "v-1" }) {
+    runas (Desk) { CreateCode("summer10", "Summer sale", DiscountKind.Percent, 10m, 0m, null, null, null, null); }
+    Beans("v-1", 2);
+    Assert.Equal("Summer sale", ApplyCode(" Summer10 "));          // case and spaces do not matter
+    var quote = CheckoutQuote("flat", "SE");
+    Assert.Equal(40m, quote.Discount);
+    Assert.Equal(400m - 40m + 49m, quote.Total);
+    var reference = Order("v-1");
+    runas (Desk) {
+      var d = DiscountCode.Single();
+      Assert.Equal(1, d.Uses);
+      Assert.Equal(reference, DiscountUse.Single().Order.Reference);
+      Assert.Equal("Summer sale", Order.Single(o => o.Reference == reference).Adjustments.Single().Label);
+    }
+  }
+}
+
+[Test(Shop)]
+void a_code_nobody_made_or_out_of_its_rules_is_refused_with_why() {
+  runas (new Visitor { Id = "v-2" }) {
+    runas (Desk) {
+      CreateCode("BIG50", "Big spenders", DiscountKind.Amount, 50m, 1000m, null, null, null, null);
+      var ended = CreateCode("GONE", "Old sale", DiscountKind.Percent, 20m, 0m, null, DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-2), null, null);
+    }
+    Beans("v-2", 1);
+    Assert.Contains("not one of ours", Assert.Throws<Exception>(() => ApplyCode("NOPE")).Message);
+    Assert.Contains("spend of", Assert.Throws<Exception>(() => ApplyCode("big50")).Message);
+    Assert.Contains("ended", Assert.Throws<Exception>(() => ApplyCode("gone")).Message);
+  }
+}
+
+[Test(Shop)]
+void a_limited_code_runs_out_and_a_cancelled_order_gives_its_use_back() {
+  runas (new Visitor { Id = "v-3" }) {
+    runas (Desk) { CreateCode("ONCE", "Once only", DiscountKind.FreeDelivery, 0m, 0m, null, null, 1, null); }
+    Beans("v-3", 1);
+    ApplyCode("once");
+    Assert.Equal(0m, CheckoutQuote("flat", "SE").Delivery);          // free delivery
+    var first = Order("v-3");
+    Beans("v-4", 1);
+    runas (new Visitor { Id = "v-4" }) { Assert.Contains("used up", Assert.Throws<Exception>(() => ApplyCode("once")).Message); }
+    runas (Desk) {
+      var o = Order.Single(x => x.Reference == first);
+      CancelOrder(o, "changed her mind");
+      Workflow.Settle(o);
+      Assert.Equal(0, DiscountCode.Single().Uses);
+    }
+    runas (new Visitor { Id = "v-4" }) { Assert.Equal("Once only", ApplyCode("once")); }    // back on offer
+  }
+}
+
+[Test(Shop)]
+void nobody_but_staff_reads_a_code_and_the_table_holds_only_its_fingerprint() {
+  runas (Desk) { CreateCode("SECRET20", "Friends", DiscountKind.Percent, 20m, 0m, null, null, null, null); }
+  var seen = DiscountCode.Single();                                        // a visitor may find the row…
+  Assert.Null(seen.Code);                                                  // …not the code on it
+  Assert.Equal(64, seen.CodeHash.Length);
+  Assert.NotEqual("SECRET20", seen.CodeHash);
+  runas (Desk) { Assert.Equal("SECRET20", DiscountCode.Single().Code); }
+}
+
+[Test(Shop)]
+void a_code_once_per_customer_is_refused_to_a_guest_who_used_it_when_the_order_is_placed() {
+  runas (new Visitor { Id = "v-6" }) {
+    runas (Desk) { CreateCode("FIRST", "First order", DiscountKind.Percent, 10m, 0m, null, null, null, 1); }
+    Beans("v-5", 1);
+    runas (new Visitor { Id = "v-5" }) { ApplyCode("first"); }
+    Order("v-5");                                                            // maja@example.test uses it once
+    runas (Desk) { Assert.Equal("maja@example.test", DiscountUse.Single().Email); }
+    Beans("v-6", 1);
+    Assert.Equal("First order", ApplyCode("first"));                 // a guest is not known until the order
+    var refused = Assert.Throws<Exception>(() =>
+      PlaceOrder("Maja Berg", " Maja@Example.test ", "", "flat", "banktransfer", "Storgatan 1", "11122", "Stockholm", "SE"));
+    Assert.Contains("already used the code for First order", refused.Message);
+    var other = PlaceOrder("Ola Berg", "ola@example.test", "", "flat", "banktransfer", "Storgatan 1", "11122", "Stockholm", "SE");
+    runas (Desk) {
+      Assert.Equal(2, DiscountCode.Single().Uses);
+      Assert.Equal(20m, Order.Single(o => o.Reference == other.Reference).Adjustments.Single().Amount);
+    }
+  }
+}
+
+[Test(Shop)]
+void a_week_long_code_applies_from_the_start_of_its_first_day_to_the_end_of_its_last_in_the_shops_time() {
+  // 15 % off, once per customer, 3–9 October — the owner's own example.
+  runas (Desk) {
+    TheShop().TimeZone = Zone.Of("Europe/Stockholm");
+    UnitOfWork.Commit();
+    var d = CreateCode("OCTOBER15", "October week", DiscountKind.Percent, 15m, 0m,
+                       new DateOnly(2026, 10, 3), new DateOnly(2026, 10, 9), null, 1);
+    Assert.Equal(new DateTime(2026, 10, 2, 22, 0, 0), d.StartsAt);       // 00:00 in Stockholm (summer time, UTC+2)
+    Assert.Equal(new DateTime(2026, 10, 9, 22, 0, 0), d.EndsAt);         // the first moment of 10 October there
+    Assert.Equal("3 Oct – 9 Oct", CodeDates(d));
+    Assert.Equal("", UnusableAt(d, 100m, new DateTime(2026, 10, 2, 22, 0, 0)));
+    Assert.Equal("", UnusableAt(d, 100m, new DateTime(2026, 10, 9, 21, 59, 0)));   // 23:59 on the last day, locally
+    Assert.Contains("not valid yet", UnusableAt(d, 100m, new DateTime(2026, 10, 2, 21, 59, 0)));
+    Assert.Contains("ended", UnusableAt(d, 100m, new DateTime(2026, 10, 9, 22, 0, 0)));
+    Assert.Equal(1, d.MaxPerCustomer);
+  }
+}
+
+[Test(Shop)]
+void a_code_given_to_one_customer_is_mailed_to_them_and_works_for_them_alone_once() {
+  runas (new Visitor { Id = "v-gift-1" }) {
+    var code = "";
+    runas (Desk) { code = GiveCode(" Maja@Example.test ", DiscountKind.Amount, 100m, 30, "Parcel arrived late"); }
+    runas (Desk) {
+      var mail = ShopMail.Single(m => m.To == "maja@example.test");
+      Assert.Contains(code, mail.Text);
+      Assert.Contains("yours alone", mail.Text);
+      var d = DiscountCode.Single();
+      Assert.Equal("Parcel arrived late", d.Reason);
+      Assert.Equal(1, d.MaxUses);
+    }
+    var seen = DiscountCode.Single();                                        // a visitor sees neither who nor why
+    Assert.Null(seen.ForEmail);
+    Assert.Null(seen.Reason);
+
+    Beans("v-gift-1", 1);
+    ApplyCode(code.ToLower());
+    var refused = Assert.Throws<Exception>(() =>
+      PlaceOrder("Ola Berg", "ola@example.test", "", "flat", "banktransfer", "Storgatan 1", "11122", "Stockholm", "SE"));
+    Assert.Contains("given to someone else", refused.Message);
+    var mine = Order("v-gift-1");                                            // Maja places it: 200 − 100 + 49
+    runas (Desk) { Assert.Equal(149m, Order.Single(o => o.Reference == mine).Total); }
+
+    Beans("v-gift-2", 1);
+    runas (new Visitor { Id = "v-gift-2" }) { Assert.Contains("used up", Assert.Throws<Exception>(() => ApplyCode(code)).Message); }
+  }
+}

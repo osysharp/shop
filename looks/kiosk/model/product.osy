@@ -1,0 +1,139 @@
+// One piece: every photograph down the left, and on the right — staying in view — its name, price, sizes and the spec
+// sheet.
+
+namespace Osysharp.Shop.Looks.Kiosk;
+
+using Osysharp.Ui;
+using Osysharp.Storage;
+using Osysharp.Shop;
+using Osysharp.Shop.Looks;
+
+[AllowAnonymous]
+component KioskProductPage(Product? product, string note = "") : ProductPage {
+  live var shop = ShopSettings.FirstOrDefault();
+  string chosenSku = "";
+  string problem = "";
+  string added = "";
+  // The variant chosen — or the only one, when a piece comes in one size.
+  live var single = product != null && product.Variants.Count() == 1 ? product.Variants.FirstOrDefault() : null;
+  live var chosen = single ?? (product == null ? null : product.Variants.FirstOrDefault(v => v.Sku == chosenSku));
+  live var soldOut = product != null && Sold(product.Variants);
+
+  action Choose(string sku) { chosenSku = sku; problem = ""; added = ""; }
+  action Add() {
+    added = "";
+    if (chosen == null) { problem = "Choose a size first."; return; }
+    problem = AddToBag(chosen, 1);
+    if (problem == "") { added = "Added to your bag."; }
+  }
+
+  render {
+    if (product == null) {
+      KioskNotFound("That piece is not in the shop.", linkLabel: "See what's just in", to: "/shop");
+    } else {
+      KioskSection {
+        Box(display: Display.Grid, cols: "repeat(auto-fit, minmax(340px, 1fr))", gap: 10, pt: 6, pb: 20, align: Align.Start) {
+          // ── the photographs, one after another ───────────────────────────────────────────────────────────
+          KioskGallery {
+            foreach (var img in product.Images.OrderBy(i => i.Rank)) {
+              KioskGalleryPhoto(img.Path, img.Alt ?? product.Name);
+            }
+          }
+          // ── what it is, and how to have it ───────────────────────────────────────────────────────────────
+          Stack(gap: 6, position: Position.Sticky, top: "104px", maxW: "480px", animation: KioskRiseIn) {
+            Stack(gap: 2) {
+              if (product.Brand != null) { Text(product.Brand, fontSize: FontSize.Label, letterSpacing: "0.12em", color: Colors.TextMuted); }
+              Text(product.Name, fontFamily: Font.Display, fontSize: FontSize.Title, fontWeight: FontWeight.Light, lineHeight: "1.15");
+              Text(LookPrice(product.Price, shop), fontSize: FontSize.Lead);
+            }
+            if (product.Summary != null) { Text(product.Summary, color: Colors.TextSecondary, lineHeight: "1.6"); }
+
+            if (single == null) {
+              Stack(gap: 3) {
+                Text(chosen == null ? "Size" : $"Size · {LookSizeName(chosen)}", fontSize: FontSize.Label, letterSpacing: "0.08em",
+                     color: Colors.TextMuted);
+                Row(gap: 2, wrap: Wrapping.Wrap, role: UiRole.RadioGroup, label: "Size") {
+                  foreach (var v in product.Variants.OrderBy(x => x.Rank)) {
+                    KioskSizeChip(LookSizeName(v), v.Stock > 0, v.Sku == chosenSku, () => Choose(v.Sku ?? ""));
+                  }
+                }
+              }
+            }
+            ShopProductView(product);
+            if (soldOut) {
+              Text("Sold out.", fontSize: FontSize.Lead, color: Colors.TextMuted);
+              ShopNotifyWhenBack(product);
+            } else {
+              Button("Add to bag", onPress: Add, tone: Tone.Primary, size: Size.Lg);
+            }
+            if (problem != "") { Text(problem, role: UiRole.Alert, color: Colors.Primary); }
+            if (added != "") {
+              Row(gap: 3, align: Align.Baseline) {
+                Text(added, role: UiRole.Status);
+                Link(href: "/bag", label: "Open the bag") { Text("Open the bag →", color: Colors.TextSecondary); }
+              }
+            }
+            if (product.Description != null) {
+              Text(product.Description, lineHeight: "1.7", color: Colors.TextSecondary, pt: 2, borderTW: 1, border: Colors.Border);
+            }
+            Stack(gap: 0) {
+              foreach (var line in product.Specs.OrderBy(x => x.Rank)) { KioskSpecLine(line.Name, line.Value); }
+            }
+            if (note != "") { Text(note, fontSize: FontSize.Label, color: Colors.TextMuted); }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// One size, as a quiet box you press — outlined when chosen, struck through when there is none left.
+[Composable]
+component KioskSizeChip(string label, bool available, bool selected, Action onPress) {
+  variants {
+    base { MinW = "52px"; Px = 3; Py = 2; BorderW = 1; Border = Colors.Border; Bg = Colors.Bg; Color = Colors.OnBg;
+           FontSize = FontSize.Body; Transition = Motion.Fade;
+           Hover { Border = Colors.OnBg; }
+           Focus { OutlineW = 1; OutlineColor = Colors.OnBg; OutlineOffset = "2px"; OutlineStyle = OutlineStyle.Solid; } }
+  }
+  render {
+    Pressable(onClick: onPress, label: label, role: UiRole.Radio, checked: selected, disabled: !available,
+              border: selected ? Colors.OnBg : Colors.Border) {
+      Text(label, textDecoration: available ? TextDecoration.None : TextDecoration.LineThrough,
+           color: available ? Colors.OnBg : Colors.TextMuted, textAlign: TextAlign.Center);
+    }
+  }
+}
+
+/// One line of the spec sheet.
+[Composable]
+component KioskSpecLine(string label, string value) {
+  render {
+    Row(justify: Justify.Between, gap: 4, py: 3, borderBW: 1, border: Colors.Border) {
+      Text(label, color: Colors.TextMuted, fontSize: FontSize.Body);
+      Text(value, fontSize: FontSize.Body, textAlign: TextAlign.Right);
+    }
+  }
+}
+
+/// The photographs. On a phone a strip you swipe, one photograph at a time with the edge of the next in view — so the
+/// name, price and sizes are right under the first picture instead of three screens down. From a laptop up, the
+/// photographs stack beside the details, which stay in view.
+[Composable]
+component KioskGallery() {
+  variants {
+    base { Display = Display.Grid; GridAutoFlow = GridAutoFlow.Column; GridAutoCols = "86%"; Gap = 2;
+           OverflowX = Overflow.Auto; ScrollSnapType = ScrollSnapType.X; ScrollbarWidth = ScrollbarWidth.None;
+           Laptop { GridAutoFlow = GridAutoFlow.Row; GridAutoCols = "auto"; OverflowX = Overflow.Visible; } }
+  }
+  render { Box(label: "Photographs") { Slot; } }
+}
+
+/// One photograph of the gallery, resting at the start of the strip when swiped to.
+[Composable]
+component KioskGalleryPhoto(string path, string alt) {
+  variants { base { ScrollSnapAlign = ScrollSnapAlign.Start; } }
+  render {
+    Box { Image(src: File.Url(path), alt: alt, w: "100%", aspectRatio: "3 / 4", objectFit: ObjectFit.Cover, bg: Colors.Surface); }
+  }
+}

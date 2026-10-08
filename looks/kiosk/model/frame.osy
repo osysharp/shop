@@ -1,0 +1,83 @@
+// The frame — the kit's EditorialShell: a centred wordmark, the shelves either side, the header floating over the front
+// page's photograph and settling on white everywhere else. The menu, the strip across the top and the words in the
+// footer are the store's to arrange at the page desk; what is written here is what they show until staff do.
+
+namespace Osysharp.Shop.Looks.Kiosk;
+
+using Osysharp.Ui;
+using Osysharp.Blocks;
+using Osysharp.Pages;
+using Osysharp.Shop;
+using Osysharp.Shop.Looks;
+using Osysharp.Site.Looks;
+
+[Composable]
+component KioskFrame() : ShopFrame {
+  string visitId = Visitor.Id;
+  live var bag = Bag.Include(b => b.Lines).SingleOrDefault(b => b.VisitId == visitId);
+  live var inBag = bag == null ? 0 : bag.Lines.Sum(l => l.Quantity);
+  live var menu = SiteMenu("menu", [
+      new NavItem { Label = "Just in", To = "/shop", Exact = true },
+      new NavItem { Label = "Jackets", To = "/shop/jackets-coats" },
+      new NavItem { Label = "Denim", To = "/shop/denim" },
+      new NavItem { Label = "Knitwear", To = "/shop/knitwear" },
+      new NavItem { Label = "Dresses", To = "/shop/dresses-tops" },
+      new NavItem { Label = "Bags", To = "/shop/bags" },
+      new NavItem { Label = "Shoes", To = "/shop/shoes-boots" },
+      new NavItem { Label = "Accessories", To = "/shop/accessories" },
+      new NavItem { Label = "Sale", To = "/sale" },
+  ]);
+  live var shop = ShopSettings.FirstOrDefault();
+  live var chrome = new AppChrome { Product = shop?.Name ?? "", Home = "/", Nav = menu };
+
+  action OpenBag() { Navigation.Go("/bag"); }
+
+  render {
+    EditorialShell(chrome) {
+      SiteLook();
+      ShopVisitSync();
+      Slot;
+      slot promo {
+        Region("announcement", allow: [Announcement]) {
+          Announcement(words: "A demo of Osy# — nothing here is for sale and no money moves. Pay with the test card 4242 4242 4242 4242.");
+        }
+      }
+      slot actions { ShopAccountButton(); Button(inBag == 0 ? "Bag" : $"Bag ({inBag})", onPress: OpenBag); }
+      slot footer {
+        EditorialFooter(chrome) {
+          slot about {
+            Region("footer", allow: [FooterWords, FooterLink, OpeningHours, Address, FooterSignUp]) {
+              FooterWords(words: "Second-hand clothing, bags and boots, picked one at a time, washed, mended where it needs it, and priced like a find.");
+            }
+          }
+        }
+        Box(px: 6, pb: 6) { ShopPolicyLinks(); }
+      }
+    }
+  }
+}
+
+/// The footer's words, as the kiosk sets them — a paragraph a size up, never wider than a column.
+component KioskFooterWords(string words) : FooterWords {
+  render { Text(words, fontSize: FontSize.Subhead, lineHeight: "1.6", maxW: "420px"); }
+}
+
+/// A page's content column — generous side margins that shrink on a phone.
+component KioskSection() : ShopSection {
+  variants { base { W = "100%"; MaxW = "1440px"; Mx = "auto"; Px = 5; Laptop { Px = 10; } } }
+  render { Box { Slot; } }
+}
+
+/// Something that is not here, set as the kiosk sets a heading — large and light.
+component KioskNotFound(string message, string linkLabel = "", string to = "") : NotFound {
+  render {
+    KioskSection {
+      Stack(gap: 3, py: 20) {
+        Text(message, fontSize: FontSize.Hero, fontWeight: FontWeight.Light);
+        if (linkLabel != "" && to != "") {
+          Row { Link(href: to, label: linkLabel) { Text(linkLabel + " →", color: Colors.TextSecondary); } }
+        }
+      }
+    }
+  }
+}

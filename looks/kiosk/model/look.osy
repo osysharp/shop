@@ -1,0 +1,54 @@
+// THE DIRECTION — "the kiosk".
+//
+// Brief: the thrift shop for a customer who reads it like a magazine kiosk — one find at a time, big, with a line of
+// copy each, and the rest of the rail underneath.
+//
+// Looked at: vintage magazines' covers (one image, one headline), museum shops (quiet grey grounds, clean grotesk),
+// and flea-market stalls (everything at once). Three directions written:
+//   1. Flea market — everything at once. REJECTED: that is The Rail's energy already.
+//   2. Museum shop — archival labels and sepia. REJECTED: the default in a vintage costume.
+//   3. The kiosk — CHOSEN: a pale lilac-grey ground, ink type in Familjen Grotesk (a Swedish grotesk) set light and
+//      large, the find full-bleed under a floating header, and ONE accent — emerald — for what to press.
+
+namespace Osysharp.Shop.Looks.Kiosk;
+
+/// The kiosk — a pale lilac-grey ground, ink type set light and large, the find full-bleed, an emerald accent.
+look Kiosk {
+  Label = "Kiosk";
+  Theme = KioskTheme;
+}
+
+theme KioskTheme {
+  Colors {
+    Bg = "#ECEAF1"; OnBg = "#1A1924"; Surface = "#F6F5F9"; OnSurface = "#1A1924"; Muted = "#E2DFE9";
+    TextMuted = "#6D6A7C"; TextSecondary = "#383645"; Border = "#D8D4E1";
+    Primary = Palette.From("#0E9F6E");   // emerald — the ONE accent
+    OnPrimary = "#FFFFFF"; OnImage = "#FFFFFF"; Scrim = "rgb(0 0 0 / 0.5)";
+    // Raised panels and wells in this look's own paper — a menu or a dialog, a field's well — and statuses that read
+    // on its light ground. Left at the floor they follow the visitor's system instead: dark menus and pale statuses
+    // inside a look that stays as it is.
+    Elevated = Colors.Surface;
+    Sunken   = Colors.Muted;
+    Danger   = "#B42318";   // errors and refusals, set for this look's light ground
+    Success  = Colors.Primary;   // done, paid, in stock — this look's accent is already its green
+    Warning  = "#8A5300";   // a caution that is not yet a refusal, set for this look's light ground
+    Waiting  = "#55587F";   // pending — held, not yet paid, set for this look's light ground
+  }
+  Font {
+    Display = "\"Familjen Grotesk\", system-ui, sans-serif"; Sans = "\"Familjen Grotesk\", system-ui, sans-serif";
+  }
+  FontSize {
+    Mega = "clamp(60px, 10vw, 170px)"; Hero = "clamp(40px, 5.5vw, 84px)"; Title = "26px";
+    Lead = "18px"; Body = "15px"; Label = "12px"; Caption = "12px";
+  }
+  // `Headline` — the weight a store's own page headings are set in (Checkout, Your bag, Paid.): light, as everything here.
+  FontWeight { Light = 400; Headline = 400; }
+  Radius { Card = "0"; Md = "0"; Lg = "0"; Pill = "999px"; }
+  Shadow { Raised = "none"; Floating = "0 18px 40px -24px rgb(0 0 0 / 0.35)"; }
+  Motion {
+    Lift = "transform 280ms cubic-bezier(.2,.8,.2,1), opacity 280ms ease";
+    Fade = "opacity 220ms ease";
+  }
+}
+
+animation KioskRiseIn { Duration = "560ms"; Easing = EaseOut; from { Opacity = 0; TranslateY = "16px"; } to { Opacity = 1; TranslateY = "0"; } }

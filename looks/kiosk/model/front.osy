@@ -1,0 +1,149 @@
+// The front of the shop: one piece, full-bleed; what is new; the three shelves as three tall photographs. It is a
+// region staff arrange — a hero, a row of products, the shelves, and anything else the look draws — and what is written
+// here is how it stands until they do.
+
+namespace Osysharp.Shop.Looks.Kiosk;
+
+using Osysharp.Ui;
+using Osysharp.Blocks;
+using Osysharp.Storage;
+using Osysharp.Shop;
+using Osysharp.Shop.Looks;
+using Osysharp.Site.Looks;
+
+[AllowAnonymous]
+component KioskFront() : FrontPage {
+  render {
+    Stack(gap: 0) {
+      Region("front", allow: [Hero, ProductRow, CategoryTiles, PictureWithWords, Quote, SignUp, Banner, PhotoGallery]) {
+        Hero(title: "Found, not made.", words: "One of each — washed, mended, priced like a find.",
+             photo: "/_osy/files/public/products/shearling_leather_jacket_1.jpg", button: "See what's just in", link: "/shop");
+        ProductRow(title: "New in", count: 8, more: "Shop all", link: "/shop");
+        CategoryTiles(title: "The shelves");
+      }
+    }
+  }
+}
+
+/// The hero: one piece, full-bleed, and one line over its foot.
+[Composable]
+component KioskHero(string title, Markdown words = "", Picture photo = "", Picture second = "", string button = "Shop now", PageLink link = "/",
+                      Color ground = Colors.Surface) : Hero {
+  render {
+    // A hero with no photograph — arranged in a look whose hero is words, then drawn in this one — is a hero of words here too:
+    // the full-height frame exists to hold a picture, and without one it is an empty grey page with white text on it.
+    if (photo == "") {
+      // On the ground staff chose, the words take the ink the theme pairs with it (`Colors.On`); the quieter line
+      // keeps this look's secondary ink on its own ground, where that is what the theme drew it in.
+      Box(bg: ground, color: Colors.On(ground, Colors.OnSurface), label: "Hero: " + title) {
+        Stack(gap: 4, px: 5, pt: 20, pb: 14, maxW: "1440px", mx: "auto", animation: KioskRiseIn) {
+          Text(title, fontFamily: Font.Display, fontSize: FontSize.Mega, fontWeight: FontWeight.Light,
+               lineHeight: "0.95", letterSpacing: "-0.03em");
+          Row(gap: 6, align: Align.Center, wrap: Wrapping.Wrap) {
+            if (words != "") {
+              Text(words, fontSize: FontSize.Lead,
+                   color: ground == Colors.Surface ? Colors.TextSecondary : Colors.On(ground, Colors.TextSecondary));
+            }
+            if (button != "") { Link(href: link, label: button) { Text(button, fontSize: FontSize.Body, letterSpacing: "0.08em", borderBW: 1, border: Colors.On(ground, Colors.OnBg), pb: 1); } }
+          }
+        }
+      }
+    } else {
+    Box(position: Position.Relative, h: "min(92vh, 980px)", minH: "560px", overflow: Overflow.Hidden, bg: ground, label: "Hero: " + title) {
+      Image(picture: photo, alt: title, w: "100%", h: "100%", objectFit: ObjectFit.Cover, objectPosition: "center 30%");
+      Box(position: Position.Absolute, inset: "0",
+          bgImage: "linear-gradient(180deg, rgb(0 0 0 / 0) 55%, rgb(0 0 0 / 0.38) 100%)");
+      Stack(position: Position.Absolute, left: "0", right: "0", bottom: "0", gap: 4, px: 5, pb: 12, maxW: "1440px",
+            mx: "auto", animation: KioskRiseIn) {
+        Text(title, fontFamily: Font.Display, fontSize: FontSize.Mega, fontWeight: FontWeight.Light,
+             lineHeight: "0.95", letterSpacing: "-0.03em", color: Colors.OnImage);
+        Row(gap: 6, align: Align.Center, wrap: Wrapping.Wrap) {
+          if (words != "") { Text(words, fontSize: FontSize.Lead, color: Colors.OnImage); }
+          if (button != "") { Link(href: link, label: button) { KioskHeroLink(button); } }
+        }
+      }
+    }
+    }
+  }
+}
+
+/// The hero's call to action: text and a hairline, not a box.
+[Composable]
+component KioskHeroLink(string label) {
+  variants {
+    base { Color = Colors.OnImage; BorderBW = 1; Border = Colors.OnImage; Pb = 1; FontSize = FontSize.Body;
+           LetterSpacing = "0.08em"; Transition = Motion.Fade; Hover { Opacity = 0.7; } }
+  }
+  render { Text(label); }
+}
+
+/// What is new: a quiet heading, a link off to the right, and the grid.
+[AllowAnonymous]
+component KioskProductRow(string title = "New in", Category? shelf = null, int count = 4, string more = "See them all",
+                            PageLink link = "/search") : ProductRow {
+  live var listed = Product.Include(p => p.Images).Include(p => p.Variants)
+    .Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard).OrderBy(p => p.Rank).ToList();
+  // The pieces this row shows — a computed of the read above, so the grid is handed one list, not a new one per render.
+  live var shown = listed.Where(p => shelf == null || (p.Category != null && (p.Category.Id == shelf.Id))).Take(count).ToList();
+  render {
+    KioskSection {
+      Stack(gap: 0, pt: 16, pb: 12) {
+        KioskSectionHead(title, linkLabel: more, to: link);
+        KioskGrid(shown);
+      }
+    }
+  }
+}
+
+/// The shelves as tall photographs, each with its name under it — the dresses, the boots and the bags, each with a
+/// photograph the grid above does not already show, and any other shelf staff gave a picture of its own.
+[AllowAnonymous]
+component KioskShelves(string title = "The shelves") : CategoryTiles {
+  live var shelves = Category.Where(c => c.Parent == null
+      && (c.Picture != null || c.Slug == "dresses-tops" || c.Slug == "shoes-boots" || c.Slug == "bags")).OrderBy(c => c.Rank).ToList();
+  live var pieces = Product.Include(p => p.Images)
+    .Where(p => p.Slug == "rose-print-tea-dress" || p.Slug == "western-leather-boots" || p.Slug == "tooled-leather-saddle-bag").ToList();
+  render {
+    KioskSection {
+      Box(display: Display.Grid, cols: "repeat(auto-fit, minmax(300px, 1fr))", gap: 3, pb: 20, label: "Shelves: " + title) {
+        foreach (var c in shelves) {
+          KioskShelfTile(c.Name, "/shop/" + c.Slug, c.Picture ?? KioskShelfPicture(c.Slug, pieces));
+        }
+      }
+    }
+  }
+}
+
+/// The photograph the kiosk hangs for a shelf: the tea dress's second view, the western boots, the saddle bag.
+string KioskShelfPicture(string shelf, List<Product> pieces) {
+  if (shelf == "dresses-tops") { return LookSecondCover(pieces.Where(p => p.Slug == "rose-print-tea-dress").SelectMany(p => p.Images).ToArray()); }
+  if (shelf == "shoes-boots") { return CoverPhoto(pieces.Where(p => p.Slug == "western-leather-boots").SelectMany(p => p.Images).ToArray()); }
+  return CoverPhoto(pieces.Where(p => p.Slug == "tooled-leather-saddle-bag").SelectMany(p => p.Images).ToArray());
+}
+
+/// A shelf as a tall photograph with its name under it; the photograph eases in under the pointer.
+[Composable]
+component KioskShelfTile(string name, string to, string photo) {
+  variants {
+    base { Display = Display.Block; Color = Colors.OnBg; TextDecoration = TextDecoration.None; }
+  }
+  render {
+    Link(href: to, label: name) {
+      Stack(gap: 3) {
+        Box(overflow: Overflow.Hidden, bg: Colors.Surface) {
+          KioskShelfPhoto(photo, name);
+        }
+        Row(justify: Justify.Between, align: Align.Baseline) {
+          Text(name, fontSize: FontSize.Title, fontWeight: FontWeight.Light);
+          Text("Shop →", fontSize: FontSize.Label, color: Colors.TextMuted, letterSpacing: "0.08em");
+        }
+      }
+    }
+  }
+}
+
+[Composable]
+component KioskShelfPhoto(string photo, string name) {
+  variants { base { Transition = Motion.Lift; inside KioskShelfTile.Hover { Scale = "1.03"; } } }
+  render { Image(src: File.Url(photo), alt: name, w: "100%", aspectRatio: "3 / 4", objectFit: ObjectFit.Cover); }
+}

@@ -1,0 +1,223 @@
+// Subscribing from the store: the customer chooses a plan, it goes in their bag at the PLAN's price, they check out as
+// they would for anything, and the paid order starts the subscription — its first period, with the card kept for the
+// renewals. The customer's only write is the choice; the price, the bag line and the subscription are the shop's.
+//
+// ⚑ An app that sells subscriptions writes `use Osysharp.Shop.Subscriptions@0;` and nothing more: the shop finds the
+//   add-on (`SubscriptionsAddOn`), and the paid, placed and cancelled order are heard as the shop's events (`[On]`).
+
+namespace Osysharp.Shop.Subscriptions;
+
+using Osysharp.Payments;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum SignUpState {
+  [Label("Choosing")] Choosing,
+  /// In the bag at the plan's price.
+  [Label("In the bag")] InBag,
+  /// The bag became an order; the subscription starts when it is paid.
+  [Label("Ordered")] Ordered,
+  [Label("Started")] Started,
+  /// Taken out of the bag, or the plan could not be sold.
+  [Label("Dropped")] Dropped,
+}
+
+public entity SubscriptionSignUp {
+  [Required] ShopAccount Account;
+  [Required] Bag Bag;
+  [Required] SubscriptionPlan Plan;
+  BillingInterval Interval;
+  SignUpState State;                                  // no default — SignUpLife owns it
+  /// The bag line it put in — gone once the bag became an order, or when the customer took it out.
+  BagLine? Line;
+  Order? Order;
+  Subscription? Subscription;
+  [MaxLength(300)] string Answer = "";
+  security {
+    // A customer chooses for THEMSELVES, into THEIR bag; everything after the choice is the shop's.
+    allow read when IsAuthenticated where Account == user;
+    allow read when IsShopStaff;
+    allow create when IsAuthenticated where Account == user && Bag.Owner == user;
+    allow create when IsShopStaff;
+  }
+}
+
+/// Puts the chosen plan in the bag at its price, on the shop's authority.
+public workflow SignUpLife {
+  Tracks    = SubscriptionSignUp.State;
+  Autostart = true;
+  Initial   = Choosing;
+  event Placed();
+  event Paid();
+  event Drop();
+  /// The bag moved to another currency: the plan is agreed again in it.
+  event Reprice();
+  state Choosing {
+    enter {
+      var answer = PutPlanInBag(this.Item);
+      this.Item.Answer = answer;
+      if (answer == "") { goto InBag; }
+      goto Dropped;
+    }
+  }
+  state InBag {
+    subscribe Placed() as BecameAnOrder;
+    on BecameAnOrder() { goto Ordered; }
+    subscribe Reprice() as Moved;
+    on Moved() { RepriceSignUp(this.Item); }
+    subscribe Drop() as TakenOut;
+    on TakenOut() { goto Dropped; }
+  }
+  state Ordered {
+    subscribe Paid() as OrderPaid;
+    on OrderPaid() { StartFromOrder(this.Item); goto Started; }
+    subscribe Drop() as OrderEnded;
+    on OrderEnded() { goto Dropped; }
+  }
+  terminal success Started { }
+  terminal cancel Dropped { }
+}
+
+[SuppressWarning("cost-unbounded-read")]   // one bag's other sign-ups — at most the one it replaces
+string PutPlanInBag(SubscriptionSignUp s) {
+  var plan = s.Plan;
+  if (plan.Retired || plan.IsAddOn || plan.Sells == null) { return $"{plan.Name} is not on sale."; }
+  // Agreed in the currency the bag is bought in — the shop's own, or one it SELLS in — and renewed in it.
+  var currency = OwnOrNull(BagCurrency(s.Bag));
+  if (!PlanSoldEvery(plan, s.Interval, currency)) { return $"{plan.Name} is not sold {s.Interval.Label.ToLower()}."; }
+  decimal price;
+  try { price = PlanAmountIn(plan, s.Interval, currency, DateTime.UtcNow); }
+  catch (Exception ex) { return ex.Message; }
+  // One subscription line per bag: choosing again replaces the choice.
+  foreach (var other in SubscriptionSignUp.Where(o => o.Bag == s.Bag && o.State == SignUpState.InBag && o.Id != s.Id).ToList()) {
+    if (other.Line != null) { RemoveLine(other.Line!); }
+    SignUpLife.RaiseDrop(other);
+  }
+  var line = new BagLine { Bag = s.Bag, Variant = plan.Sells!, Quantity = 1, PriceWhenAdded = price };
+  new AgreedLinePrice { Line = line, Price = price, Currency = currency, Label = $"{plan.Name} — {s.Interval.Label.ToLower()} subscription" };
+  s.Line = line;
+  s.Bag.SaveMethod = true;                        // renewals are charged to the card this order is paid with
+  return "";
+}
+
+/// The bag moved to another currency: the plan is agreed again in it, at its price there — as the shop.
+void RepriceSignUp(SubscriptionSignUp s) {
+  if (s.Line == null) { return; }
+  var line = s.Line!;
+  var agreed = line.Agreed.FirstOrDefault();
+  if (agreed == null) { return; }
+  var currency = OwnOrNull(BagCurrency(s.Bag));
+  if (!PlanSoldEvery(s.Plan, s.Interval, currency)) { return; }
+  try {
+    agreed.Price = PlanAmountIn(s.Plan, s.Interval, currency, DateTime.UtcNow);
+    agreed.Currency = currency;
+    line.PriceWhenAdded = agreed.Price;
+  }
+  catch (Exception ex) { Log.Warning($"A subscription in a bag could not be priced in {currency ?? TheShop().Currency}: {ex.Message}"); }
+}
+
+void RemoveLine(BagLine line) {
+  line.Delete();                                  // its agreed price goes with it
+}
+
+/// The paid order is the first period: the subscription starts now, charged as that order, and renews on the card the
+/// customer asked to keep (looked up at the first renewal when it is not yet known).
+void StartFromOrder(SubscriptionSignUp s) {
+  var order = s.Order!;
+  var now = DateTime.UtcNow;
+  var plan = s.Plan;
+  // In the currency the order was bought in, at the price it was bought at — what the customer agreed to.
+  var sub = new Subscription { Customer = s.Account, Interval = s.Interval, StartedAt = now, PeriodStart = now,
+                               PeriodEnd = PeriodAfter(now, s.Interval), PaymentKey = order.PaymentMethod,
+                               DeliveryId = plan.Kind == PlanKind.Shipped ? order.DeliveryMethod : "",
+                               Currency = OwnOrNull(order.Currency) };
+  var paid = order.Lines.ToList().FirstOrDefault(l => l.Variant == plan.Sells);
+  if (paid != null) { new SubscriptionItem { Subscription = sub, Plan = plan, Quantity = 1, UnitPrice = paid.Price }; }
+  else { AddItem(sub, plan, 1); }
+  new SubscriptionCharge { Subscription = sub, Kind = ChargeKind.Renewal, At = now, Amount = PeriodTotal(sub),
+                           Description = $"{plan.Name}, {s.Interval.Label.ToLower()} — first period", Order = order, Settled = true };
+  s.Subscription = sub;
+  Notify(sub, NoticeKind.Started, null);
+}
+
+/// The customer chooses a plan for their bag. Answers the sign-up: in the bag, or dropped with why.
+///
+/// ⚑ CALLABLE BY A SIGNED-OUT VISITOR, because a plan page is a public page and the refusal below is written FOR the
+///   visitor: without the grant the server refused the call before this body ran, and a guest pressing "Choose" on a
+///   store's plan page got nothing on screen instead of "Sign in to subscribe". The sign-up row itself stays gated by
+///   its own `security { }` (created only for the signed-in caller, into their own bag).
+[AllowAnonymous]
+public SubscriptionSignUp ChooseSubscription(string planKey, BillingInterval interval) {
+  var me = Session.CurrentUser;
+  if (me == null) { throw new Exception("Sign in to subscribe — the subscription is kept on your account."); }
+  var plan = SubscriptionPlan.FirstOrDefault(p => p.Key == planKey);
+  if (plan == null) { throw new Exception($"There is no plan '{planKey}'."); }
+  var s = new SubscriptionSignUp { Account = me!, Bag = BagFor(true), Plan = plan, Interval = interval };
+  UnitOfWork.Commit();
+  Workflow.Settle(s);
+  return s;
+}
+
+/// The add-on, found by the shop: refuses a guest's checkout of a plan, and moves what was agreed in a currency when the
+/// bag or the shop stops buying in it. What happens to the order is heard as events, below the class.
+public class SubscriptionsAddOn : IShopAddOn {
+  public string Key() { return "subscriptions"; }
+
+  /// A subscription is kept on an account, so a guest cannot check one out.
+  public string Refuses(Basket basket) {
+    if (basket.Bag == null || basket.Customer != null) { return ""; }
+    var bag = basket.Bag!;
+    return SubscriptionSignUp.Any(s => s.Bag == bag && s.State == SignUpState.InBag)
+      ? "Sign in to subscribe — the subscription is kept on your account." : "";
+  }
+
+  /// The bag is in another currency now: each plan chosen into it is agreed again in that currency, by its own workflow
+  /// (the agreed price is the shop's to write, and this runs as the customer who switched).
+  public void BagCurrencyChanged(Bag bag) {
+    foreach (var s in SubscriptionSignUp.Where(x => x.Bag == bag && x.State == SignUpState.InBag).ToList()) {
+      SignUpLife.RaiseReprice(s);
+    }
+  }
+
+  /// The shop stops selling in a currency: every subscription in it is told it moves to the shop's own (CurrencyMoves.osy).
+  public void CurrencyNoLongerSold(ExchangeRate rate) {
+    MoveSubscriptionsOutOf(rate);
+  }
+}
+
+/// A sign-up still in the bag the order was placed from is bound to the order; one taken out of it is let go.
+[On] void BindTheSignUps(OrderPlaced e) {
+  var order = e.Order;
+  if (order.Account == null) { return; }
+  var account = order.Account!;
+  foreach (var s in SubscriptionSignUp.Where(x => x.Account == account && x.State == SignUpState.InBag).ToList()) {
+    // Still in the bag it was chosen into, so it is in this order; a line taken out is a choice undone.
+    if (s.Line != null && order.Lines.Any(l => l.Variant == s.Plan.Sells)) {
+      s.Order = order;
+      SignUpLife.RaisePlaced(s);
+    } else if (s.Line == null) {
+      SignUpLife.RaiseDrop(s);
+    }
+  }
+}
+
+/// A period paid — however it was paid: the kept card, a transfer staff marked, a link the customer used. What the
+/// other system hears about money drawn comes from here, once per paid order.
+[On] void StartWhatWasPaidFor(OrderPaid e) {
+  var order = e.Order;
+  foreach (var c in SubscriptionCharge.Where(x => x.Order == order && x.Kind == ChargeKind.Renewal).ToList()) {
+    Notify(c.Subscription, c.Subscription.Status == SubscriptionStatus.PastDue ? NoticeKind.Recovered : NoticeKind.Renewed, c);
+  }
+  foreach (var s in SubscriptionSignUp.Where(x => x.Order == order && x.State == SignUpState.Ordered).ToList()) {
+    SignUpLife.RaisePaid(s);
+  }
+}
+
+/// An order called off before it was paid lets its sign-ups go.
+[On] void LetTheSignUpsGo(OrderCancelled e) {
+  var order = e.Order;
+  foreach (var s in SubscriptionSignUp.Where(x => x.Order == order && x.State == SignUpState.Ordered).ToList()) {
+    SignUpLife.RaiseDrop(s);
+  }
+}

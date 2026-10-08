@@ -1,0 +1,132 @@
+// The catalogue: what can be subscribed to, what it costs per interval, and what it grants.
+namespace Osysharp.Shop.Subscriptions;
+
+using Osysharp.Shop;
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum BillingInterval {
+  [Label("Every month")] Monthly,
+  [Label("Every year")] Yearly,
+  [Label("Every two weeks")] EveryTwoWeeks,
+  [Label("Every four weeks")] EveryFourWeeks,
+}
+
+public enum PlanKind {
+  /// Each period becomes an order that ships (a refill).
+  [Label("Shipped")] Shipped,
+  /// Nothing ships; the plan grants features and limits while it is active.
+  [Label("Entitled")] Entitled,
+}
+
+/// A plan or an add-on. Its `Key` is the contract — stable, what another system and the entitlements refer to.
+public entity SubscriptionPlan {
+  [Required, Unique, MaxLength(80)] string Key;
+  [Required, MaxLength(120), Translatable] string Name;
+  [MaxLength(500), Translatable] string? Description;
+  PlanKind Kind = PlanKind.Entitled;
+  /// Taken on top of a plan (HA, a domain), never alone.
+  bool IsAddOn = false;
+  /// No longer sold; subscribers who have it keep it until they change.
+  bool Retired = false;
+  /// What the plan is sold as on its orders and invoices — for a shipped plan, what each period sends (a refill), for
+  /// an entitled one a variant whose stock is not counted ("Pro plan"). Its product's VAT class is the plan's. Null: the
+  /// plan is charged but places no order.
+  Variant? Sells;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update when IsShopStaff;
+  }
+}
+
+/// What a plan costs per interval. A yearly price below twelve monthly ones is how a yearly discount is written.
+///
+/// ⚑ PER CURRENCY (D-SELLCURRENCY1, owner 2026-09-29: "yes on per currency subscription"): a row with no `Currency` is
+///   the shop's own price — every plan has one, and it is what a sold currency without its own falls back to,
+///   converted at the day's rate and rounded by that currency's rule (`PlanAmountIn`), as a variant's price is. A row
+///   with a `Currency` is the plan's own price in a currency the shop SELLS in.
+public entity PlanPrice {
+  [Required] SubscriptionPlan Plan;
+  BillingInterval Interval;
+  decimal Amount;
+  /// ISO 4217 — null: the shop's own currency.
+  [MaxLength(3)] string? Currency;
+  /// Null: in force now. A date: the price from then — scheduled with `SchedulePrice`, which tells subscribers first.
+  DateTime? EffectiveFrom;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// What a plan grants while it is active: a feature (`Limit` null) or an amount of a unit per item ("unit.storage-gb", 10).
+public entity PlanEntitlement {
+  [Required] SubscriptionPlan Plan;
+  [Required, MaxLength(80)] string Key;
+  int? Limit;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// The price of `plan` per `interval` now — or the refusal to sell it on that interval.
+public decimal PlanAmount(SubscriptionPlan plan, BillingInterval interval) {
+  return PlanAmountAt(plan, interval, DateTime.UtcNow);
+}
+
+/// The price of `plan` per `interval` in force at `at`, in the shop's own currency: the latest row that has started.
+public decimal PlanAmountAt(SubscriptionPlan plan, BillingInterval interval, DateTime at) {
+  var price = PriceInForce(plan, interval, at, null);
+  if (price == null) { throw new Exception($"{plan.Name} is not sold {interval.Label.ToLower()}."); }
+  return price.Amount;
+}
+
+/// The price of `plan` per `interval` at `at` in `currency` (null or the shop's own: `PlanAmountAt`) — the plan's own
+/// price there, else its own-currency price converted at the day's rate and rounded by the currency's rule. Throws
+/// when the shop does not sell in `currency` now (not sold, or its rate is out of date).
+public decimal PlanAmountIn(SubscriptionPlan plan, BillingInterval interval, string? currency, DateTime at) {
+  var code = OwnOrNull(currency);
+  if (code == null) { return PlanAmountAt(plan, interval, at); }
+  var listed = PriceInForce(plan, interval, at, code);
+  if (listed != null) { return listed.Amount; }
+  var rate = SaleRate(code);
+  if (rate == null) { throw new Exception($"{plan.Name} cannot be priced in {code} just now — the shop does not sell in it, or its rate is out of date."); }
+  return NicePrice(PlanAmountAt(plan, interval, at) * rate.PerUnit, rate.Rounding);
+}
+
+/// Whether `plan` is sold per `interval` — its own price, or one in `currency`.
+public bool PlanSoldEvery(SubscriptionPlan plan, BillingInterval interval, string? currency) {
+  var code = OwnOrNull(currency);
+  return PlanPrice.Any(p => p.Plan == plan && p.Interval == interval
+                            && (p.Currency == null || p.Currency == "" || p.Currency == code));
+}
+
+/// A currency as a plan's prices name it: null for the shop's own (or none), else its code.
+public string? OwnOrNull(string? currency) {
+  if (currency == null || currency.Trim() == "") { return null; }
+  return OwnIn(currency, TheShop().Currency);
+}
+
+/// `OwnOrNull` with the shop's own currency already in hand — what a loop asks, so it reads the shop's settings once
+/// rather than once per row.
+public string? OwnIn(string? currency, string own) {
+  if (currency == null || currency.Trim() == "") { return null; }
+  var code = currency.Trim().ToUpper();
+  return code == own ? null : code;
+}
+
+/// The row in force at `at` for `plan` per `interval` in `currency` (null: the shop's own).
+PlanPrice? PriceInForce(SubscriptionPlan plan, BillingInterval interval, DateTime at, string? currency) {
+  var want = currency ?? "";
+  return PlanPrice.Where(p => p.Plan == plan && p.Interval == interval).ToList()
+    .Where(p => (p.Currency ?? "") == want && (p.EffectiveFrom == null || p.EffectiveFrom <= at))
+    .OrderByDescending(p => p.EffectiveFrom ?? DateTime.MinValue).FirstOrDefault();
+}
+
+/// The end of a period that starts at `start`.
+public DateTime PeriodAfter(DateTime start, BillingInterval interval) {
+  if (interval == BillingInterval.Yearly) { return start.AddYears(1); }
+  if (interval == BillingInterval.EveryTwoWeeks) { return start.AddDays(14); }
+  if (interval == BillingInterval.EveryFourWeeks) { return start.AddDays(28); }
+  return start.AddMonths(1);
+}

@@ -1,0 +1,195 @@
+// THE SUBSCRIPTIONS DESK — a page of the kit (`/staff/subscriptions`), standing in the store's own working shell
+// (`[Layout(WorkspaceFrame)]`) and listed in its navigation (`[Nav]`), beside the shop's own desk pages. A store writes
+// nothing to have it. To tailor it, take it over by name (`component SubscriptionsDeskPage()` in the app); to leave it
+// out, `use Osysharp.Shop.Subscriptions@0 { without SubscriptionsDeskPage; }`. Money is written as the shop writes it
+// (`MoneyIn`), in each subscription's own currency.
+
+namespace Osysharp.Shop.Subscriptions;
+
+using Osysharp.Ui;
+using Osysharp.Shop;
+
+/// Every subscription — who, what, at what price, where it stands, when the next period starts and what its subscriber
+/// last asked — and what staff do to one: pause it, resume it, stop it when its period ends (or keep it going), or stop
+/// it now. Above them, a plan's price from a date.
+[Page("/staff/subscriptions")] [Layout(WorkspaceFrame)] [Authorize(IsShopStaff)] [Render(CSR)] [Title("Subscriptions")]
+[Nav("Subscriptions", Order = 40)]
+public component SubscriptionsDeskPage() {
+  render { Stack(gap: 6, w: "100%", maxW: "1200px") { PageTitle("Subscriptions"); SubscriptionsDesk(); } }
+}
+
+/// The desk itself, for a store that places it on a page of its own.
+[Composable]
+[Authorize(IsShopStaff)]
+public component SubscriptionsDesk() {
+  live var subs = Subscription.Include(s => s.Items.Plan).Include(s => s.Customer).Include(s => s.NextPlan)
+    .OrderByDescending(s => s.StartedAt).ToList();
+  live var asked = SubscriptionRequest.Include(r => r.Subscription).OrderByDescending(r => r.At).ToList();
+  live var shop = ShopSettings.FirstOrDefault();
+  string said = "";
+  bool refused = false;
+
+  action Pause(Subscription sub) { var p = PauseSubscription(sub); refused = p != ""; said = refused ? p : $"{SubscriberName(sub)}: paused."; }
+  action Resume(Subscription sub) { var p = ResumeSubscription(sub); refused = p != ""; said = refused ? p : $"{SubscriberName(sub)}: resumed."; }
+  action StopLater(Subscription sub) { CancelSubscription(sub, true); refused = false; said = $"{SubscriberName(sub)}: stops when this period ends."; }
+  action KeepGoing(Subscription sub) { KeepSubscription(sub); refused = false; said = $"{SubscriberName(sub)}: keeps going."; }
+  action StopNow(Subscription sub) { CancelSubscription(sub, false); refused = false; said = $"{SubscriberName(sub)}: stopped."; }
+
+  render {
+    Stack(gap: 5) {
+      SubscriptionPriceChanger();
+      Text($"{subs.Count(s => s.Status == SubscriptionStatus.Active)} active, {subs.Count(s => s.Status == SubscriptionStatus.Paused)} paused",
+           color: Colors.TextMuted);
+      if (said != "") { Text(said, role: UiRole.Status, color: refused ? Colors.Danger : Colors.TextSecondary); }
+      if (subs.Count == 0) {
+        Text("Nobody has subscribed yet.", color: Colors.TextMuted, py: 6);
+      } else {
+        // Six columns do not fit a phone: the table keeps its width and scrolls sideways there, never crushed.
+        Box(overflowX: Overflow.Auto, w: "100%") {
+          Stack(gap: 0, minW: "960px") {
+            Box(display: Display.Grid, cols: SubscriptionDeskColumns(), gap: 5, pb: 2) {
+              SubscriptionDeskLabel("Customer"); SubscriptionDeskLabel("Plan"); SubscriptionDeskLabel("Standing");
+              SubscriptionDeskLabel("Next period"); SubscriptionDeskLabel("Last ask"); Box(decorative: true) { }
+            }
+            foreach (var sub in subs) {
+              Box(display: Display.Grid, cols: SubscriptionDeskColumns(), gap: 5, py: 4, borderTW: 1, border: Colors.Border,
+                  align: Align.Center, label: sub.Customer.Email) {
+                Stack(gap: 1, minW: "0") {
+                  Text(SubscriberName(sub), fontWeight: FontWeight.Semibold);
+                  Text(sub.Customer.Email, fontSize: FontSize.Label, color: Colors.TextMuted);
+                }
+                Stack(gap: 1, minW: "0") {
+                  foreach (var item in sub.Items) { Text(item.Plan.Name); }
+                  Text(SubscriptionPriceText(sub, shop), fontSize: FontSize.Label, color: Colors.TextMuted);
+                  if (sub.RenewalWaits != "") { Text(sub.RenewalWaits, fontSize: FontSize.Label, color: Colors.Danger); }
+                  if (SubscriptionMoveText(sub, shop) != "") {
+                    Text(SubscriptionMoveText(sub, shop), fontSize: FontSize.Label, color: Colors.TextSecondary);
+                  }
+                  if (sub.NextPlan != null) { Text("then " + sub.NextPlan.Name, fontSize: FontSize.Label, color: Colors.TextMuted); }
+                }
+                Text(SubscriptionStanding(sub), fontWeight: FontWeight.Semibold);
+                Text(sub.Status == SubscriptionStatus.Active ? sub.PeriodEnd.ToString("d MMM yyyy") : "", color: Colors.TextSecondary);
+                Text(asked.Where(r => r.Subscription.Id == sub.Id).Select(r => r.Kind.Label + (r.State == RequestState.Refused ? " (refused)" : "")).FirstOrDefault() ?? "",
+                     fontSize: FontSize.Label, color: Colors.TextMuted);
+                Row(gap: 2, wrap: Wrapping.Wrap, justify: Justify.End) {
+                  if (sub.Status == SubscriptionStatus.Active) {
+                    Button("Pause", onPress: () => Pause(sub), size: Size.Sm);
+                    if (sub.CancelAtPeriodEnd) { Button("Keep it going", onPress: () => KeepGoing(sub), size: Size.Sm); }
+                    else { Button("Stop at period end", onPress: () => StopLater(sub), size: Size.Sm); }
+                  }
+                  if (sub.Status == SubscriptionStatus.Paused) { Button("Resume", onPress: () => Resume(sub), size: Size.Sm); }
+                  if (sub.Status != SubscriptionStatus.Cancelled) {
+                    Button("Stop now", onPress: () => StopNow(sub), size: Size.Sm, tone: Tone.Danger);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// A plan's price from a date — in the shop's own currency or one it sells in. Subscribers who pay in it are told now,
+/// or keep what they pay. A change in the shop's own currency reaches too those in a sold currency where the plan has
+/// no price of its own there.
+[Composable]
+[Authorize(IsShopStaff)]
+public component SubscriptionPriceChanger() {
+  live var plans = SubscriptionPlan.Where(p => !p.IsAddOn && !p.Retired).OrderBy(p => p.Name).ToList();
+  live var sold = ExchangeRate.Where(r => r.Sold).OrderBy(r => r.Currency).ToList();
+  live var shop = ShopSettings.FirstOrDefault();
+  string currency = "";
+  SubscriptionPlan? plan = null;
+  BillingInterval interval = BillingInterval.EveryFourWeeks;
+  decimal amount = 0m;
+  DateOnly? from = null;
+  bool keep = false;
+  string said = "";
+  bool refused = false;
+
+  action Schedule() {
+    said = "";
+    if (plan == null || from == null) { refused = true; said = "Choose the plan and the day it starts."; return; }
+    try {
+      var done = SchedulePriceIn(plan!.Key, interval, currency == "" ? (shop?.Currency ?? "") : currency, amount,
+                                 from!.Value.ToDateTime(TimeOnly.MinValue), keep);
+      refused = false;
+      said = keep ? $"Scheduled. {done.Kept} subscriber(s) keep what they pay." : $"Scheduled. {done.Told} subscriber(s) told by mail.";
+    }
+    catch (Exception ex) { refused = true; said = ex.Message; }
+  }
+
+  render {
+    Stack(gap: 3, p: 5, borderW: 1, border: Colors.Border, label: "Change a price") {
+      Text("Change a price", fontWeight: FontWeight.Semibold);
+      Row(gap: 3, wrap: Wrapping.Wrap, align: Align.End) {
+        Box(minW: "180px") { Dropdown("Plan", value: plan, options: plans, placeholder: "Choose") { p => Text(p.Name); } }
+        Box(minW: "160px") { Dropdown("How often", value: interval); }
+        if (sold.Count > 0 && shop != null) {
+          Box(w: "120px") {
+            Dropdown("In", value: currency, options: new List<string> { "" }.Concat(sold.Select(r => r.Currency)).ToList()) {
+              c => Text(c == "" ? shop!.Currency : c);
+            }
+          }
+        }
+        Box(w: "130px") { DecimalField("New price", value: amount, min: 0m); }
+        Box(w: "170px") { DatePicker("From", value: from); }
+        Checkbox("Keep subscribers on what they pay", value: keep);
+        Button("Schedule", onPress: Schedule, tone: Tone.Primary);
+      }
+      if (said != "") { Text(said, role: UiRole.Status, color: refused ? Colors.Danger : Colors.TextSecondary); }
+    }
+  }
+}
+
+/// The desk's columns — ONE template for the header and every row, so the columns line up.
+string SubscriptionDeskColumns() {
+  return "minmax(0, 1.3fr) minmax(0, 1.4fr) minmax(0, 0.7fr) minmax(0, 0.8fr) minmax(0, 1fr) 300px";
+}
+
+[Composable]
+component SubscriptionDeskLabel(string text) {
+  render { Text(text, fontSize: FontSize.Label, fontWeight: FontWeight.Semibold, color: Colors.TextMuted); }
+}
+
+// ── what the desk reads while it renders — pure, over the rows it holds, so they run in the browser ─────────────────
+
+/// Who subscribes — their name, else their address.
+public string SubscriberName(Subscription sub) {
+  return sub.Customer.Name ?? sub.Customer.Email;
+}
+
+/// Where a subscription stands, in a word or two — "Ending" for one set to stop when its period ends.
+public string SubscriptionStanding(Subscription sub) {
+  if (sub.Status == SubscriptionStatus.Active && sub.CancelAtPeriodEnd) { return "Ending"; }
+  return sub.Status.Label;
+}
+
+/// What a period costs and how often, in the subscription's own currency — "€100, every four weeks".
+public string SubscriptionPriceText(Subscription sub, ShopSettings? shop) {
+  var amount = sub.Items.Sum(i => i.UnitPrice * i.Quantity);
+  var money = shop == null ? $"{amount:N0}" : MoneyIn(amount, sub.Currency, shop!);
+  return $"{money}, {sub.Interval.Label.ToLower()}";
+}
+
+/// The subscription's move into the shop's own currency, when the shop stopped selling in its own — "Moves to SEK on 29
+/// Oct 2026: 153 kr, every four weeks", "Moved from EUR on 29 Oct 2026" — or "".
+public string SubscriptionMoveText(Subscription sub, ShopSettings? shop) {
+  if (shop == null) { return ""; }
+  // Named locals, so a translator reads `{currency}`, `{day}`, `{price}`, `{interval}` rather than the expressions.
+  if (sub.MovesOn != null) {
+    var currency = shop!.Currency;
+    var day = sub.MovesOn!.Value.ToString("d MMM yyyy");
+    var price = MoneyIn(sub.Items.Sum(i => (i.MovedPrice ?? i.UnitPrice) * i.Quantity), currency, shop!);
+    var interval = sub.Interval.Label.ToLower();
+    return $"Moves to {currency} on {day}: {price}, {interval}";
+  }
+  if (sub.MovedFrom != null && sub.MovedAt != null) {
+    var from = sub.MovedFrom!;
+    var day = sub.MovedAt!.Value.ToString("d MMM yyyy");
+    return $"Moved from {from} on {day}";
+  }
+  return "";
+}

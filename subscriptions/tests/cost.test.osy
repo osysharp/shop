@@ -1,0 +1,61 @@
+// WHAT SUBSCRIPTIONS COST AS THEY GROW — what a customer may use is read with one read of their plans' grants however
+// many items they hold, and a new price for a plan reads that plan's subscribers, not every subscription the shop has.
+// Each test runs one act at two sizes; a read per item, or per subscription, turns it red with both numbers.
+
+using Osysharp.Shop.Subscriptions;
+using Osysharp.Shop;
+
+/// A customer of the shop, made by staff — answers the account.
+ShopAccount NewCustomer(string email) {
+  var who = new ShopAccount { Email = email, PasswordHash = Security.HashPassword("customer-pass-1"), Name = "A Customer" };
+  new ShopRoleGrant { Member = who, Role = ShopRole.Customer };
+  UnitOfWork.Commit();
+  return who;
+}
+
+/// ⭐ WHAT A CUSTOMER MAY USE READS THE SAME FOR ONE ITEM AND FOR THREE — their plans' grants are read at once.
+[Test(Catalogue)]
+void what_a_customer_may_use_reads_the_same_however_many_items_they_hold() {
+  runas (Ops) {
+    var one = NewCustomer("one@example.test");
+    var three = NewCustomer("three@example.test");
+    Subscribe(one, "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    Subscribe(three, "pro", ["addon.ha", "addon.storage"], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    EntitlementsOf(Customer());   // the first read sets up what every later one reuses — not what this compares
+    var mark = Cost.Mark();
+    var few = EntitlementsOf(one);
+    var oneCost = Cost.StatementsSince(mark);
+    mark = Cost.Mark();
+    var many = EntitlementsOf(three);
+    var threeCost = Cost.StatementsSince(mark);
+    Log.Information("EntitlementsOf: " + oneCost + " statements for one item, " + threeCost + " for three");
+    Assert.Equal(10, few.Single(e => e.Key == "unit.storage-gb").Limit);
+    Assert.Equal(20, many.Single(e => e.Key == "unit.storage-gb").Limit);    // 10 + 10
+    Assert.True(many.Any(e => e.Key == "feature.ha"));
+    Assert.Equal(oneCost, threeCost);
+  }
+}
+
+/// ⭐ A NEW PRICE FOR A PLAN READS THE SAME HOWEVER MANY SUBSCRIPTIONS ARE ON OTHER PLANS — it reads the plan's own
+/// subscribers, not every subscription and its items.
+[Test(Catalogue)]
+void a_new_price_reads_the_same_however_many_subscriptions_are_on_other_plans() {
+  runas (Ops) {
+    Subscribe(NewCustomer("a1@example.test"), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    var from = DateTime.UtcNow.AddDays(60);
+    SchedulePrice("free", BillingInterval.EveryFourWeeks, 0m, from, false);   // sets up what every later one reuses
+    var mark = Cost.Mark();
+    var few = SchedulePrice("dedicated", BillingInterval.EveryFourWeeks, 550m, from, false);
+    var fewCost = Cost.StatementsSince(mark);
+    for (var i = 2; i <= 5; i++) {
+      Subscribe(NewCustomer($"a{i}@example.test"), "pro", ["addon.storage"], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    }
+    mark = Cost.Mark();
+    var many = SchedulePrice("dedicated", BillingInterval.EveryFourWeeks, 560m, from.AddDays(7), false);   // another day: nothing to replace
+    var manyCost = Cost.StatementsSince(mark);
+    Log.Information("SchedulePrice: " + fewCost + " statements beside one other subscription, " + manyCost + " beside five");
+    Assert.Equal(0, few.Told);
+    Assert.Equal(0, many.Told);
+    Assert.Equal(fewCost, manyCost);
+  }
+}

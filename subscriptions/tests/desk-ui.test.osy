@@ -1,0 +1,71 @@
+// The kit's own subscriptions desk (`/staff/subscriptions`), in a store that writes no page for it: staff sign in at the
+// shop's staff page, open it from their pages, read each subscriber and what they pay — and act on one.
+
+using Osysharp.Shop;
+using Osysharp.Shop.Subscriptions;
+using Osysharp.Workflow;
+
+void SignInAsOps() {
+  Ui.Visit("/staff");
+  Ui.Fill("Email", "ops@cloudlet.test");
+  Ui.Fill("Password", "ops-pass-1");
+  Ui.Click("Sign in", within: "Staff sign-in");
+  Ui.Click("Subscriptions", within: "Staff pages");
+  Assert.OnPage("/staff/subscriptions");
+}
+
+SubscriptionStatus StatusOf(Subscription sub) {
+  var status = SubscriptionStatus.Active;
+  runas (Ops) {
+    var row = Subscription.Single(s => s.Id == sub.Id);
+    Workflow.Settle(row);
+    status = Subscription.Single(s => s.Id == sub.Id).Status;
+  }
+  return status;
+}
+
+bool EndsWithItsPeriod(Subscription sub) {
+  var ends = false;
+  runas (Ops) { ends = Subscription.Single(s => s.Id == sub.Id).CancelAtPeriodEnd; }
+  return ends;
+}
+
+[Test(Catalogue)]
+void the_kits_desk_lists_the_subscriptions_and_acts_on_one() {
+  Subscription? sub = null;
+  runas (Ops) { sub = Subscribe(Customer(), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", ""); }
+  SignInAsOps();
+  Assert.Visible("1 active, 0 paused");
+  Assert.Visible("Maja Berg", within: "maja@example.test");
+  Assert.Visible("Pro", within: "maja@example.test");
+  Assert.Visible("€100, every four weeks", within: "maja@example.test");
+
+  Ui.Click("Pause", within: "maja@example.test");
+  Assert.Visible("Maja Berg: paused.");
+  Assert.Equal(SubscriptionStatus.Paused, StatusOf(sub!));
+
+  Ui.Visit("/staff/subscriptions");
+  Assert.Visible("0 active, 1 paused");
+  Ui.Click("Resume", within: "maja@example.test");
+  Assert.Visible("Maja Berg: resumed.");
+  Assert.Equal(SubscriptionStatus.Active, StatusOf(sub!));
+
+  Ui.Visit("/staff/subscriptions");
+  Ui.Click("Stop at period end", within: "maja@example.test");
+  Assert.Visible("Ending", within: "maja@example.test");
+  Assert.True(EndsWithItsPeriod(sub!));
+  Ui.Click("Keep it going", within: "maja@example.test");
+  Assert.False(EndsWithItsPeriod(sub!));
+
+  Ui.Click("Stop now", within: "maja@example.test");
+  Assert.Equal(SubscriptionStatus.Cancelled, StatusOf(sub!));
+}
+
+/// A customer is no member of staff: the desk is not theirs to open, and its actions are not theirs to run.
+[Test(Catalogue)]
+void a_customer_cannot_pause_anyone_elses_subscription() {
+  Subscription? sub = null;
+  runas (Ops) { sub = Subscribe(ShopAccount.Single(s => s.Email == "olle@example.test"), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", ""); }
+  runas (Maja) { Assert.Throws<Exception>(() => PauseSubscription(sub!)); }
+  Assert.Equal(SubscriptionStatus.Active, StatusOf(sub!));
+}

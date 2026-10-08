@@ -1,0 +1,315 @@
+// Subscriptions in a currency the shop SELLS in besides its own (D-SELLCURRENCY1; owner 2026-09-29: "yes on per
+// currency subscription"). A plan has a price per sold currency, else its own converted and rounded by the currency's
+// rule, as a variant does; a subscription is bought in the visit's currency and renews in THAT one — its renewal
+// orders, their payment and every price notice — and a converted price is fixed until the shop moves its own.
+
+using Osysharp.Http;
+using Osysharp.Shop;
+using Osysharp.Shop.Subscriptions;
+using Osysharp.Workflow;
+
+/// The shop (in euros) sells in kronor too, at a rate dated today — or refreshed to today after the clock moved.
+ExchangeRate SellsInKronor(decimal perEuro) {
+  var rate = ExchangeRate.FirstOrDefault(r => r.Currency == "SEK");
+  runas (Ops) {
+    var today = DateTime.UtcNow.Date;
+    if (rate == null) {
+      rate = new ExchangeRate { Currency = "SEK", Symbol = "kr", SymbolAfter = true, Sold = true, Source = "ECB",
+                                Rounding = PriceRounding.Whole };
+    }
+    rate.PerUnit = perEuro;
+    rate.RateDate = today;
+    rate.UsableUntil = today.AddDays(6);
+    UnitOfWork.Commit();
+  }
+  return rate!;
+}
+
+/// Maja, shown kronor, subscribes to the coffee refill at the checkout on the card she keeps; the paid order is its
+/// first period. Answers the subscription.
+Subscription MajaSubscribesInKronor(string visitId) {
+  var reference = "";
+  runas (new Visitor { Id = visitId }) {
+    runas (Maja) {
+      ShowPricesIn("SEK");
+      var s = ChooseSubscription("coffee.refill", BillingInterval.EveryFourWeeks);
+      Assert.Equal(SignUpState.InBag, s.State);
+      reference = PlaceOrder("Maja Berg", "maja@example.test", "", "flat", "keepcard", "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+      Assert.True(CheckPayment(OrderLink.From(LinkToMyOrder(reference)), "keepcard-keep-good").Paid);
+    }
+  }
+  Subscription? sub = null;
+  runas (Ops) {
+    Workflow.Settle(Order.Single(o => o.Reference == reference));
+    foreach (var s in SubscriptionSignUp.ToList()) { Workflow.Settle(s); }
+    var maja = Customer();
+    sub = Subscription.Single(x => x.Customer == maja);
+  }
+  return sub!;
+}
+
+[Test(Catalogue)]
+void a_plan_is_bought_in_the_visits_sold_currency_at_its_price_there_and_renews_in_it() {
+  Http.Post.Stub((url, body) => new HttpResponse { StatusCode = 200, Body = "" });
+  SellsInKronor(11.3205m);
+  runas (Ops) {
+    // The plan's own price in kronor, set before anyone pays it — nobody to tell.
+    Assert.Equal(0, SchedulePriceIn("coffee.refill", BillingInterval.EveryFourWeeks, "SEK", 1495m, DateTime.UtcNow, false).Told);
+  }
+  runas (new Visitor { Id = "v-sek-quote" }) {
+    runas (Maja) {
+      ShowPricesIn("SEK");
+      ChooseSubscription("coffee.refill", BillingInterval.EveryFourWeeks);
+      var quote = CheckoutQuote("flat", "SE");
+      Assert.Equal("SEK", quote.Currency);
+      Assert.Equal(1495m, quote.Goods);                                           // the plan's own kronor price
+    }
+  }
+  var sub = MajaSubscribesInKronor("v-sek-quote");
+  runas (Ops) {
+    Assert.Equal("SEK", sub.Currency);
+    Assert.Equal(1495m, sub.Items.Single().UnitPrice);
+    var first = sub.Charges.Single().Order!;
+    Assert.Equal("SEK", first.Currency);
+    // A month on, at that day's rate: renewed in kronor, on the card kept — as any sale in kronor.
+    TestClock.Advance(TimeSpan.FromDays(29));
+    SellsInKronor(11.40m);
+    Workflow.Settle(sub);
+    Assert.Equal("", sub.RenewalWaits);
+    var renewal = sub.Charges.Single(c => c.At > sub.StartedAt && c.Kind == ChargeKind.Renewal);
+    Assert.Equal(1495m, renewal.Amount);
+    var order = renewal.Order!;
+    Workflow.Settle(order);
+    Assert.Equal("SEK", order.Currency);
+    Assert.Equal(1495m, order.Lines.Single().Price);
+    Assert.NotNull(order.PaidAt);
+    // Invoiced at the rate of the day it was paid, which the books convert it at.
+    Assert.Equal(11.40m, Invoice.Single(i => i.Order == order).Rate);                // 11.40 kronor to the euro
+  }
+}
+
+[Test(Catalogue)]
+void a_plan_with_no_price_of_its_own_there_is_converted_once_and_fixed_until_the_shop_moves_its_own() {
+  Http.Post.Stub((url, body) => new HttpResponse { StatusCode = 200, Body = "" });
+  SellsInKronor(11.3205m);
+  var sub = MajaSubscribesInKronor("v-sek-converted");
+  runas (Ops) {
+    // €135 at 11.3205, to whole kronor: 1528 kr — agreed once.
+    Assert.Equal(1528m, sub.Items.Single().UnitPrice);
+    // The rate moves; the price she agreed does not.
+    TestClock.Advance(TimeSpan.FromDays(29));
+    SellsInKronor(12m);
+    Workflow.Settle(sub);
+    Assert.Equal(1528m, sub.Charges.Single(c => c.At > sub.StartedAt && c.Kind == ChargeKind.Renewal).Amount);
+    // The shop's own price goes up: she is told the new one converted today, in kronor, a month ahead.
+    var from = DateTime.UtcNow.AddDays(31);
+    Assert.Contains("30 days", Assert.Throws<Exception>(() => SchedulePrice("coffee.refill", BillingInterval.EveryFourWeeks, 150m, DateTime.UtcNow.AddDays(3), false)).Message);
+    Assert.Equal(1, SchedulePrice("coffee.refill", BillingInterval.EveryFourWeeks, 150m, from, false).Told);
+    var mail = ShopMail.Single(m => m.To == "maja@example.test" && m.Subject.StartsWith("Coffee refill"));
+    Assert.Contains("costs 1,800 kr every four weeks, instead of 1,528 kr", mail.Text);
+    var notice = JsonSerializer.Deserialize<NoticeBody>(SubscriptionNotice.Single(n => n.Kind == NoticeKind.PriceChanging).Body);
+    Assert.Equal(1800m, notice.NewPrice);
+    Assert.Equal("SEK", notice.Currency);
+    // Before the day, the agreed price; the first renewal on or after it, the new one.
+    TestClock.Advance(TimeSpan.FromDays(28));
+    SellsInKronor(12m);
+    Workflow.Settle(sub);
+    Assert.Equal(1528m, sub.Charges.Where(c => c.Kind == ChargeKind.Renewal).OrderByDescending(c => c.At).First().Amount);
+    TestClock.Advance(TimeSpan.FromDays(28));
+    SellsInKronor(12m);
+    Workflow.Settle(sub);
+    Assert.Equal(1800m, sub.Charges.Where(c => c.Kind == ChargeKind.Renewal).OrderByDescending(c => c.At).First().Amount);
+  }
+}
+
+[Test(Catalogue)]
+void a_renewal_waits_while_its_currency_cannot_be_charged_and_says_why() {
+  Http.Post.Stub((url, body) => new HttpResponse { StatusCode = 200, Body = "" });
+  SellsInKronor(11.3205m);
+  var sub = MajaSubscribesInKronor("v-sek-stale");
+  runas (Ops) {
+    // A month on and no rate since: nothing is charged — never in euros instead.
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(sub);
+    Assert.Equal(1, sub.Charges.Count());
+    Assert.Contains("The rate for SEK is out of date", sub.RenewalWaits);
+    // A stale rate is not the shop stopping the currency: nothing moves (only an explicit stop does).
+    Assert.Null(sub.MovesOn);
+    Assert.Equal(0, ShopMail.Count(m => m.Subject.Contains("charged in EUR")));
+    Assert.Equal(SubscriptionStatus.Active, sub.Status);
+    // A fresh rate the next day: renewed, in kronor.
+    TestClock.Advance(TimeSpan.FromDays(1));
+    SellsInKronor(11.3205m);
+    Workflow.Settle(sub);
+    Assert.Equal("", sub.RenewalWaits);
+    Assert.Equal("SEK", sub.Charges.Single(c => c.At > sub.StartedAt && c.Kind == ChargeKind.Renewal).Order!.Currency);
+  }
+}
+
+[Test(Catalogue)]
+void a_plan_in_the_bag_is_agreed_again_when_the_bag_moves_to_another_currency() {
+  SellsInKronor(11.3205m);
+  runas (new Visitor { Id = "v-sek-move" }) {
+    runas (Maja) {
+      ShowPricesIn("EUR");
+      ChooseSubscription("coffee.refill", BillingInterval.EveryFourWeeks);
+      Assert.Equal(135m, CheckoutQuote("flat", "SE").Goods);
+      ShowPricesIn("SEK");
+    }
+  }
+  runas (Ops) { Workflow.Settle(SubscriptionSignUp.Single()); }
+  runas (new Visitor { Id = "v-sek-move" }) {
+    runas (Maja) {
+      var quote = CheckoutQuote("flat", "SE");
+      Assert.Equal("SEK", quote.Currency);
+      Assert.Equal(1528m, quote.Goods);                                           // agreed again, in kronor
+      var agreed = BagFor(false)!.Lines.Single().Agreed.Single();
+      Assert.Equal("SEK", agreed.Currency);
+      var reference = PlaceOrder("Maja Berg", "maja@example.test", "", "flat", "keepcard", "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+      Assert.Equal("SEK", Order.Single(o => o.Reference == reference).Currency);
+    }
+  }
+}
+
+// An agreed price is placed only in the currency it was agreed in — the shop's safety net when nothing re-agreed it.
+[Test(Catalogue)]
+void an_agreed_price_is_never_placed_in_another_currency() {
+  SellsInKronor(11.3205m);
+  runas (new Visitor { Id = "v-sek-forged" }) {
+    runas (Maja) {
+      ShowPricesIn("SEK");
+      AddToBag(Variant.Single(v => v.Product.Slug == "house-blend"), 1);
+    }
+  }
+  runas (Ops) {
+    var line = BagLine.Single(l => l.Bag.VisitId == "v-sek-forged");
+    new AgreedLinePrice { Line = line, Price = 99m, Label = "Every month" };      // agreed in euros
+    UnitOfWork.Commit();
+  }
+  runas (new Visitor { Id = "v-sek-forged" }) {
+    runas (Maja) {
+      var refused = Assert.Throws<Exception>(() => PlaceOrder("Maja Berg", "maja@example.test", "", "flat", "keepcard", "Storgatan 1", "11122", "Stockholm", "SE"));
+      Assert.Contains("Every month was agreed in EUR, and your bag is in SEK now", refused.Message);
+    }
+  }
+}
+
+[Test(Catalogue)]
+void another_system_gives_a_plan_its_price_in_a_sold_currency_and_no_other() {
+  SellsInKronor(11.3205m);
+  runas (Ops) {
+    var plan = UpsertPlan(new PlanInput { Key = "team", Name = "Team", Kind = PlanKind.Entitled,
+      Prices = [ new PlanStartingPrice { Interval = BillingInterval.Yearly, Amount = 900m },
+                 new PlanStartingPrice { Interval = BillingInterval.Yearly, Amount = 9900m, Currency = "SEK" } ] });
+    Assert.Equal(900m, PlanAmountIn(plan, BillingInterval.Yearly, null, DateTime.UtcNow));
+    Assert.Equal(9900m, PlanAmountIn(plan, BillingInterval.Yearly, "SEK", DateTime.UtcNow));
+    Assert.Equal(900m, plan.Sells!.Product.Price);                                // its product carries the shop's own
+    var refused = Assert.Throws<Exception>(() => UpsertPlan(new PlanInput { Key = "team", Name = "Team",
+      Prices = [ new PlanStartingPrice { Interval = BillingInterval.Yearly, Amount = 90m, Currency = "GBP" } ] }));
+    Assert.Contains("does not sell in GBP", refused.Message);
+  }
+}
+
+// ── the shop stops selling in a subscription's currency (owner, 2026-09-29: "yes to all the open questions") ──────
+
+/// The latest renewal's amount.
+decimal LastRenewal(Subscription sub) {
+  return sub.Charges.Where(c => c.Kind == ChargeKind.Renewal).OrderByDescending(c => c.At).First().Amount;
+}
+
+[Test(Catalogue)]
+void a_subscription_moves_to_the_shops_currency_at_that_days_rate_told_a_notice_period_ahead() {
+  Http.Post.Stub((url, body) => new HttpResponse { StatusCode = 200, Body = "" });
+  SellsInKronor(11.3205m);
+  var sub = MajaSubscribesInKronor("v-sek-stop");
+  runas (Ops) {
+    Assert.Equal(1528m, sub.Items.Single().UnitPrice);
+    var stopped = DateTime.UtcNow;
+    SellInCurrency("SEK", false);
+    // Converted at the day's rate and rounded by the shop's own rule (to the cent): 1528 kr / 11.3205 = €134.98.
+    Assert.Equal(134.98m, sub.Items.Single().MovedPrice);
+    Assert.Equal(stopped.AddDays(30).Date, sub.MovesOn!.Value.Date);
+    Assert.Equal("SEK", sub.Currency);                                          // nothing moves before the day
+    Assert.StartsWith("Moves to EUR on", CurrencyMoveText(sub));
+    var mail = ShopMail.Single(m => m.To == "maja@example.test" && m.Subject.Contains("charged in EUR"));
+    Assert.Contains("We no longer sell in SEK", mail.Text);
+    Assert.Contains("€134.98 every four weeks, instead of 1,528 kr", mail.Text);
+    Assert.Contains("1 SEK is 0.0883 EUR", mail.Text);
+    var notice = JsonSerializer.Deserialize<NoticeBody>(SubscriptionNotice.Single(n => n.Kind == NoticeKind.CurrencyMoving).Body);
+    Assert.Equal(134.98m, notice.NewPrice);
+    Assert.Equal("EUR", notice.NewCurrency);
+    Assert.Equal("SEK", notice.Currency);
+    // Its renewal falls due inside the notice: SEK is not sold, so it waits — never charged in euros early.
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(sub);
+    Assert.Equal(1, sub.Charges.Count());
+    Assert.Contains("moves to EUR on", sub.RenewalWaits);
+    // The day comes: renewed in euros at the moved price, the period starting that day (the wait is not charged).
+    TestClock.Advance(TimeSpan.FromDays(2));
+    Workflow.Settle(sub);
+    Assert.Null(sub.Currency);
+    Assert.Equal("SEK", sub.MovedFrom);
+    Assert.Equal("", sub.RenewalWaits);
+    Assert.StartsWith("Moved from SEK on", CurrencyMoveText(sub));
+    var renewal = sub.Charges.Single(c => c.At > sub.StartedAt && c.Kind == ChargeKind.Renewal);
+    Assert.Equal(134.98m, renewal.Amount);
+    Workflow.Settle(renewal.Order!);
+    Assert.Equal("EUR", OrderCurrency(renewal.Order!));
+    Assert.NotNull(renewal.Order!.PaidAt);                                       // on the card she keeps
+    Assert.Equal(DateTime.UtcNow.Date, sub.PeriodStart.Date);
+    // …and fixed there: the next period is the moved price, not the plan's €135.
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(sub);
+    Assert.Equal(134.98m, LastRenewal(sub));
+  }
+}
+
+[Test(Catalogue)]
+void a_moved_price_moves_again_only_when_the_shop_moves_the_plans_own_told_first() {
+  Http.Post.Stub((url, body) => new HttpResponse { StatusCode = 200, Body = "" });
+  SellsInKronor(11.3205m);
+  var sub = MajaSubscribesInKronor("v-sek-moved");
+  runas (Ops) {
+    SellInCurrency("SEK", false);
+    TestClock.Advance(TimeSpan.FromDays(31));
+    Workflow.Settle(sub);
+    Assert.Null(sub.Currency);
+    Assert.Equal(134.98m, LastRenewal(sub));
+    // The plan's own price goes up: she is told — it is a rise on what she pays — and pays it from the day.
+    var from = DateTime.UtcNow.AddDays(31);
+    Assert.Equal(1, SchedulePrice("coffee.refill", BillingInterval.EveryFourWeeks, 140m, from, false).Told);
+    var mail = ShopMail.Single(m => m.To == "maja@example.test" && m.Subject.StartsWith("Coffee refill: a new price"));
+    Assert.Contains("costs €140 every four weeks, instead of €134.98", mail.Text);
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(sub);
+    Assert.Equal(134.98m, LastRenewal(sub));                                    // before the day
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(sub);
+    Assert.Equal(140m, LastRenewal(sub));                                       // the first renewal on or after it
+  }
+}
+
+[Test(Catalogue)]
+void until_the_day_a_renewal_is_charged_as_agreed_when_the_shop_sells_in_it_again() {
+  Http.Post.Stub((url, body) => new HttpResponse { StatusCode = 200, Body = "" });
+  SellsInKronor(11.3205m);
+  var sub = MajaSubscribesInKronor("v-sek-again");
+  runas (Ops) {
+    TestClock.Advance(TimeSpan.FromDays(20));
+    SellsInKronor(11.3205m);
+    SellInCurrency("SEK", false);                                                // moves on day 50
+    // The shop sells in kronor again before her renewal on day 28: it renews as agreed, in kronor.
+    TestClock.Advance(TimeSpan.FromDays(9));
+    SellsInKronor(11.3205m);
+    SellInCurrency("SEK", true);
+    Workflow.Settle(sub);
+    Assert.Equal("SEK", sub.Currency);
+    Assert.Equal(1528m, LastRenewal(sub));
+    // The next one, on day 56, is after the day she was told: in euros, at the price she was told.
+    TestClock.Advance(TimeSpan.FromDays(28));
+    SellsInKronor(11.3205m);
+    Workflow.Settle(sub);
+    Assert.Null(sub.Currency);
+    Assert.Equal(134.98m, LastRenewal(sub));
+  }
+}

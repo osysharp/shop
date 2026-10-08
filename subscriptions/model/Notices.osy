@@ -1,0 +1,182 @@
+// Telling another system what happened to a subscription: every period drawn (paid or refused), every start, change,
+// pause and end becomes a NOTICE — signed JSON posted to the endpoint the app names, retried until it is taken. The
+// system on the other end (a control plane unlocking features, a CRM) keeps its own state from these alone.
+//
+//     app.Subscriptions = new SubscriptionSetup {
+//       NoticeUrl = "https://control.example.com/hooks/subscriptions",
+//       NoticeSecret = Secret.SubscriptionNoticeSecret,        // osy secret set SubscriptionNoticeSecret
+//     };
+//
+// ⚑ Verify a notice on the receiving side: `X-Osy-Signature: t={unix seconds},v1={hex HMAC-SHA256(secret, "{t}.{body}")}`
+//   — reject a stale `t`, compare in constant time. Delivery is at-least-once: key your handling on `id`.
+
+namespace Osysharp.Shop.Subscriptions;
+
+using Osysharp.Http;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// Where the app sends notices. Unset (`NoticeUrl` ""), nothing is sent.
+[AppSetting("Subscriptions")]
+public class SubscriptionSetup {
+  public string NoticeUrl = "";
+  /// The shared secret the receiver checks the signature with — a `Secret.*`, never a literal.
+  public string NoticeSecret = "";
+  /// How long before a higher price applies its subscribers must hear of it — EU consumer law expects notice before
+  /// a price rise, and the chance to cancel first. An organisation's policy may set the least notice its apps give.
+  [OrgPolicy(OrgPolicyMode.Range)] public int PriceNoticeDays = 30;
+}
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum NoticeKind {
+  [Label("Started")] Started,
+  /// A new period was drawn and paid.
+  [Label("Renewed")] Renewed,
+  /// A new period could not be drawn — the subscription is past due.
+  [Label("Payment failed")] PaymentFailed,
+  /// What was owed is paid — active again.
+  [Label("Recovered")] Recovered,
+  /// The plan or its add-ons changed.
+  [Label("Changed")] Changed,
+  [Label("Paused")] Paused,
+  [Label("Resumed")] Resumed,
+  [Label("Cancelled")] Cancelled,
+  /// A period passed with nothing ordered or charged — the customer skipped it.
+  [Label("Skipped")] Skipped,
+  /// The plan's price changes from a date — `NewPrice`, `From`.
+  [Label("Price changing")] PriceChanging,
+  /// The shop stopped selling in the subscription's currency: from `From` it renews in `NewCurrency`, at `NewPrice`.
+  [Label("Currency moving")] CurrencyMoving,
+}
+
+public enum NoticeState {
+  [Label("Sending")] Sending,
+  [Label("Delivered")] Delivered,
+  /// Refused for a day — kept, for staff to look at and send again.
+  [Label("Given up")] GivenUp,
+}
+
+public entity SubscriptionNotice {
+  [Required] Subscription Subscription;
+  NoticeKind Kind;
+  DateTime At;
+  /// The JSON posted — built once, so a retry sends the same words.
+  [MaxLength(8000)] string Body;
+  NoticeState State;                                  // no default — NoticeLife owns it
+  int Attempts = 0;
+  [MaxLength(300)] string LastError = "";
+  security {
+    // Written by the subscription's own code — staff's calls and the workflows — and read by staff. A customer's
+    // change reaches a notice only through the shop applying it (RequestLife), never by writing one.
+    allow read, create when IsShopStaff;
+  }
+}
+
+public workflow NoticeLife {
+  Tracks    = SubscriptionNotice.State;
+  Autostart = true;
+  Initial   = Sending;
+  event Taken();
+  event Abandon();
+  state Sending {
+    // ⚑ THE FIRST POST IS ON A CLOCK DUE AT ONCE, NOT IN `enter`: a notice row is written inside the commit that changed
+    //   the subscription (a renewal, a customer's change), and an autostarted run's `enter` is part of that commit — it
+    //   would wait on the other system's endpoint, and past five seconds the commit stops waiting
+    //   (`workflow-first-step-waits-on-a-slow-call`, D-AUTOSTART1). So the retry reminder starts at zero: posted as the
+    //   run parks, after the commit, then tried again every quarter of an hour; after a day it is given up — kept, and
+    //   sendable again by staff.
+    subscribe Taken() as Sent {
+      Finished {
+        Within = TimeSpan.FromDays(1);
+        Remind Retry(After = TimeSpan.Zero, ThenEvery = TimeSpan.FromMinutes(15)) {
+          if (Deliver(this.Item)) { NoticeLife.RaiseTaken(this.Item); }
+        }
+        Unfinished { goto GivenUp; }
+      }
+    }
+    on Sent() { goto Delivered; }
+  }
+  terminal success Delivered { }
+  terminal cancel GivenUp { }
+}
+
+/// Posts a notice once; answers whether the endpoint took it (a 2xx).
+bool Deliver(SubscriptionNotice n) {
+  var setup = App.Setting<SubscriptionSetup>();
+  n.Attempts = n.Attempts + 1;
+  if (setup.NoticeUrl == "") { n.LastError = "No NoticeUrl is set."; return false; }
+  var t = Convert.ToString(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+  var signature = Crypto.ToHex(Crypto.HmacSha256(Text.ToBytes(setup.NoticeSecret), Text.ToBytes(t + "." + n.Body)));
+  var headers = new Dictionary<string, string>();
+  headers.Add("X-Osy-Signature", "t=" + t + ",v1=" + signature);
+  headers.Add("Idempotency-Key", n.Id.ToString());
+  try {
+    var r = Http.Post(setup.NoticeUrl, n.Body, "application/json", headers);
+    if (r.IsSuccess) { n.LastError = ""; return true; }
+    n.LastError = $"{setup.NoticeUrl} answered {r.StatusCode}";
+  } catch (Exception ex) {
+    n.LastError = ex.Message.Length > 300 ? ex.Message.Substring(0, 300) : ex.Message;
+  }
+  return false;
+}
+
+/// What a notice says: what happened, and the subscription as it stands after it.
+public class NoticeBody {
+  public string Id = "";
+  public string Event = "";
+  public DateTime At;
+  public string Subscription = "";
+  public string Customer = "";
+  public string Status = "";
+  public string Interval = "";
+  /// The currency every amount here is in (ISO 4217) — the subscription's.
+  public string Currency = "";
+  public DateTime PeriodStart;
+  public DateTime PeriodEnd;
+  public bool CancelAtPeriodEnd = false;
+  public List<string> Plans = [];
+  public List<NoticeEntitlement> Entitlements = [];
+  /// For a period drawn: what it came to, and the order it is.
+  public decimal Amount = 0;
+  public string Order = "";
+  /// For a refusal: the provider's sentence.
+  public string Problem = "";
+  /// For a price change: the new price per period, and from when.
+  public decimal NewPrice = 0;
+  public DateTime? From;
+  /// For a currency move: the currency `NewPrice` is in, from `From` (ISO 4217) — "" otherwise.
+  public string NewCurrency = "";
+}
+
+public class NoticeEntitlement {
+  public string Key = "";
+  public int? Limit;
+}
+
+/// Records a notice about `sub` — sent at once and retried until taken. Nothing when the app sends none.
+void Notify(Subscription sub, NoticeKind kind, SubscriptionCharge? charge, decimal newPrice = 0, DateTime? from = null,
+            string newCurrency = "") {
+  if (App.Setting<SubscriptionSetup>().NoticeUrl == "") { return; }
+  var n = new SubscriptionNotice { Subscription = sub, Kind = kind, At = DateTime.UtcNow, Body = "{}" };
+  var body = new NoticeBody {
+    Id = n.Id.ToString(), Event = kind.ToString(), At = n.At, Subscription = sub.Id.ToString(), Customer = sub.Customer.Email,
+    Status = (kind == NoticeKind.PaymentFailed ? SubscriptionStatus.PastDue
+            : kind == NoticeKind.Paused ? SubscriptionStatus.Paused
+            : kind == NoticeKind.Cancelled ? SubscriptionStatus.Cancelled
+            : kind == NoticeKind.Recovered || kind == NoticeKind.Resumed || kind == NoticeKind.Started ? SubscriptionStatus.Active
+            : sub.Status).ToString(),
+    Interval = sub.Interval.ToString(), Currency = sub.Currency ?? TheShop().Currency, PeriodStart = sub.PeriodStart, PeriodEnd = sub.PeriodEnd,
+    CancelAtPeriodEnd = sub.CancelAtPeriodEnd,
+    Plans = sub.Items.ToList().Select(i => i.Plan.Key).ToList(),
+  };
+  foreach (var e in EntitlementsOf(sub.Customer)) { body.Entitlements.Add(new NoticeEntitlement { Key = e.Key, Limit = e.Limit }); }
+  body.NewPrice = newPrice;
+  body.From = from;
+  body.NewCurrency = newCurrency;
+  if (charge != null) {
+    body.Amount = charge.Amount;
+    body.Order = charge.Order == null ? "" : charge.Order!.Reference;
+    body.Problem = charge.Problem;
+  }
+  n.Body = JsonSerializer.Serialize(body);
+}

@@ -1,0 +1,14 @@
+// The working shell staff pages stand in — the shop's sign-in and the subscriptions desk among them, which this test app
+// writes no page for. As a store designs it once (`WorkspaceShell`), reduced to its navigation.
+
+using Osysharp.Ui;
+
+[AllowAnonymous]
+component KitStaffShell() : WorkspaceShell {
+  render {
+    Stack(gap: 4) {
+      Row(gap: 4, label: "Desk navigation") { foreach (var n in Nav.Pages()) { Link(href: n.To, label: n.Label) { Text(n.Label); } } }
+      Slot;
+    }
+  }
+}

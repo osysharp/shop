@@ -1,0 +1,126 @@
+// A subscription in a currency the shop stops SELLING in moves to the shop's own (D-SELLCURRENCY1; owner, 2026-09-29:
+// "yes to all the open questions").
+//
+// ⚑ ONLY AN EXPLICIT STOP MOVES ONE. The desk's "Only show it", stopping the rates, or the app no longer offering the
+//   currency (`IShopAddOn.CurrencyNoLongerSold`). A rate that has merely gone STALE moves nothing: the renewal waits for a
+//   fresh one, as before — a weekend without a rate is not the shop deciding anything, and a price moved on a missing
+//   rate could not be moved back.
+// ⚑ AT A PRICE CONVERTED THAT DAY, TOLD FIRST. Each item's price as it stands in the old currency, converted at the day's
+//   rate — the rate the shop stopped on, while it still stands — and rounded by the shop's own rule
+//   (`ShopSettings.Rounding`). The subscriber is mailed (in their own language) and the other system sent a notice at
+//   once, and the move applies from the first renewal on or after `PriceNoticeDays` later: the same lead time a price
+//   rise is owed, since the terms change, and the same chance to stop first.
+// ⚑ UNTIL THEN, AS AGREED IF IT CAN BE. A renewal due before the day renews in the old currency if the shop sells in it
+//   again by then; otherwise it waits, as any renewal the shop cannot charge waits — and once the day comes the new
+//   period starts THAT day: the days it waited were the shop's doing, and are not charged.
+// ⚑ AND THEN FIXED, as a converted price in a sold currency is: the moved price is paid at each renewal until the shop
+//   moves the plan's own price (`SchedulePrice`, with its notice) — never quietly snapped to the plan's list price, which
+//   could be a rise nobody was told of.
+
+namespace Osysharp.Shop.Subscriptions;
+
+using Osysharp.EmailTemplates;
+using Osysharp.Shop;
+
+/// The shop stops selling in `rate`'s currency: every subscription in it that has not ended is told it moves to the
+/// shop's own currency — each item's price converted at `rate` (that day's) and rounded by the shop's own rule — from its
+/// first renewal on or after the price notice's lead time. One already moving is left as it is. Answers how many were
+/// told. The caller commits.
+[SuppressWarning("cost-unbounded-read")]   // every live subscription in the currency the shop stops selling — each must be told
+public int MoveSubscriptionsOutOf(ExchangeRate rate) {
+  var code = rate.Currency;
+  var shop = TheShop();
+  var on = DateTime.UtcNow.AddDays(App.Setting<SubscriptionSetup>().PriceNoticeDays);
+  var told = 0;
+  foreach (var sub in Subscription.Where(s => s.Currency == code && s.Status != SubscriptionStatus.Cancelled && s.MovesOn == null)
+                        .Include(s => s.Items.Plan).Include(s => s.Customer).ToList()) {
+    decimal before = 0m;
+    decimal after = 0m;
+    foreach (var item in sub.Items.ToList()) {
+      var now = PriceBeforeMove(sub, item);
+      // Converted at the day's rate; a rate never fetched (none to convert at) falls back to the plan's own price.
+      item.MovedPrice = rate.PerUnit > 0 ? NicePrice(now / rate.PerUnit, shop.Rounding) : PlanAmountAt(item.Plan, sub.Interval, on);
+      before = before + now * item.Quantity;
+      after = after + item.MovedPrice!.Value * item.Quantity;
+    }
+    sub.MovesOn = on;
+    Mail(sub.Customer.Email, SubscriptionCurrencyMoveMail(sub, code, before, after, rate.PerUnit));
+    Notify(sub, NoticeKind.CurrencyMoving, null, after, on, shop.Currency);
+    told = told + 1;
+  }
+  return told;
+}
+
+/// What `item` costs per period in the subscription's currency as it stands — the price this subscriber keeps, else
+/// the plan's own price there in force today, else the converted price agreed (or the next one, once its day came).
+decimal PriceBeforeMove(Subscription sub, SubscriptionItem item) {
+  if (item.KeptPrice != null) { return item.KeptPrice!.Value; }
+  var code = OwnOrNull(sub.Currency);
+  var now = DateTime.UtcNow;
+  if (code != null) {
+    var listed = PriceInForce(item.Plan, sub.Interval, now, code);
+    if (listed != null) { return listed.Amount; }
+  }
+  if (item.NextUnitPrice != null && item.NextPriceFrom != null && item.NextPriceFrom!.Value <= now) { return item.NextUnitPrice!.Value; }
+  return item.UnitPrice;
+}
+
+/// The day has come: `sub` is in the shop's own currency from this renewal on, each item at its moved price, fixed
+/// until the shop moves the plan's own. A renewal that waited for the day starts its period today.
+void ApplyCurrencyMove(Subscription sub, DateTime now) {
+  sub.MovedFrom = sub.Currency;
+  sub.MovedAt = now;
+  sub.Currency = null;
+  sub.MovesOn = null;
+  foreach (var item in sub.Items.ToList()) {
+    var price = item.MovedPrice ?? item.UnitPrice;
+    item.UnitPrice = price;
+    if (item.KeptPrice != null) { item.KeptPrice = price; }
+    item.PriceFixed = true;
+    item.MovedPrice = null;
+    item.NextUnitPrice = null;
+    item.NextPriceFrom = null;
+  }
+  // The days it waited were the shop's doing — the currency it stopped selling — so they are not charged.
+  if (sub.RenewalWaits != "" && sub.PeriodEnd < now) { sub.PeriodEnd = now; }
+  sub.RenewalWaits = "";
+  UnitOfWork.Commit();
+}
+
+/// What the desk says of a subscription's currency — "Moves to SEK on 29 October 2026: 153 kr", "Moved from EUR on
+/// 29 October 2026", or "".
+public string CurrencyMoveText(Subscription sub) {
+  var shop = TheShop();
+  if (sub.MovesOn != null) {
+    var after = sub.Items.ToList().Sum(i => (i.MovedPrice ?? i.UnitPrice) * i.Quantity);
+    return $"Moves to {shop.Currency} on {sub.MovesOn!.Value.ToString("d MMMM yyyy")}: {MoneyIn(after, shop.Currency, shop)}";
+  }
+  if (sub.MovedFrom != null && sub.MovedAt != null) {
+    return $"Moved from {sub.MovedFrom} on {sub.MovedAt!.Value.ToString("d MMMM yyyy")}";
+  }
+  return "";
+}
+
+/// The subscriber is told their subscription moves to the shop's own currency, because the shop no longer sells in
+/// theirs: the price per period before and after, the day's rate it was converted at, from when, and how to stop
+/// first. In the language of their account.
+[Email]
+public component SubscriptionCurrencyMoveMail(Subscription sub, string from, decimal before, decimal after, decimal perUnit) {
+  language => sub.Customer.Language;
+  subject => $"Your subscription at {TheShop().Name} is charged in {TheShop().Currency} from {(sub.MovesOn ?? DateTime.UtcNow).ToString("d MMMM yyyy")}";
+  render {
+    var shop = TheShop();
+    var plans = string.Join(", ", sub.Items.ToList().Select(i => i.Plan.Name));
+    var day = (sub.MovesOn ?? DateTime.UtcNow).ToString("d MMMM yyyy");
+    ShopMailLayout($"{plans}: {MoneyIn(after, shop.Currency, shop)} from {day}") {
+      EmailHeading($"{plans} in {shop.Currency}");
+      EmailText($"We no longer sell in {from}. From {day} your subscription is charged in {shop.Currency}: {MoneyIn(after, shop.Currency, shop)} {sub.Interval.Label.ToLower()}, instead of {MoneyIn(before, from, shop)}.");
+      if (perUnit > 0) {
+        EmailText($"That is what you pay now, converted at today's exchange rate — 1 {from} is {(1m / perUnit):0.####} {shop.Currency} — and rounded.");
+      }
+      EmailText("It applies from your first renewal on or after that day; what you have paid for already does not change.");
+      EmailText("If you would rather stop, you can end your subscription at the end of a period from your account.");
+      EmailButton("Your subscriptions", ShopLink(App.Setting<ShopSetup>().AccountPath));
+    }
+  }
+}

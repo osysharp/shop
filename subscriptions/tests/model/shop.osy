@@ -1,0 +1,33 @@
+using Osysharp.Delivery;
+using Osysharp.Payments;
+using Osysharp.Shop;
+using Osysharp.Shop.Subscriptions;
+
+app.Auth = new PasswordAuth { LoginField = Email, PasswordField = PasswordHash };
+app.AuthBootstrap = new AuthBootstrap {
+  Role = ShopRole.Authenticator,
+  Login = ShopLogin, Signup = ShopSignup,
+  PasswordResetRequest = ShopRequestPasswordReset, PasswordReset = ShopResetPassword,
+  PasswordChange = ShopChangePassword, EmailChange = ShopChangeEmail,
+  EmailVerify = ShopConfirmEmail, EmailVerifyCode = ShopConfirmEmailCode,
+};
+
+app.Shop = new ShopSetup {
+  Payments = [ new ManualPayment { Key = "banktransfer", Label = "Bank transfer", Instructions = "IBAN SE00" }, new KeepingCard() ],
+  Delivery = [ new CollectInStore { Address = "the shop" }, new FlatRateDelivery { Price = 4900 } ],
+};
+
+// Where subscription notices go — a test endpoint; every post in these tests is stubbed.
+app.Subscriptions = new SubscriptionSetup { NoticeUrl = "https://hooks.example.test/subscriptions", NoticeSecret = "notice-secret" };
+
+// The catalogue as another system keeps it — a control plane holding a staff account's API key.
+app.Apis = [
+  new RestApi("Catalogue") {
+    Route = "catalogue",
+    Auth  = new ApiAuth { ApiKey = true },
+    Endpoints = [
+      new Endpoint(UpsertPlan) { Method = HttpMethod.Post, Path = "/plans" },
+      new Endpoint(SchedulePrice) { Method = HttpMethod.Post, Path = "/prices" },
+    ],
+  },
+];

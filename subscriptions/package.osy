@@ -1,0 +1,23 @@
+// Osysharp.Shop.Subscriptions — selling on a cadence: plans and add-ons priced per interval, what each one grants, and the
+// subscription's life (renewal, changes prorated to the day, pause, cancel). An add-on to Osysharp.Shop.
+//
+// ⚑ BUILT FOR SOFTWARE AND FOR GOODS ALIKE (owner, 2026-09-27, D-SHOPSUBS1): a plan is SHIPPED (a coffee refill —
+//   each period becomes an order) or ENTITLED (Pro, HA, a custom domain — it grants features and limits while it is
+//   active). Prices per interval are data, so "two months free on yearly" is a row, not code.
+// ⚑ WHAT THE PLATFORM OWNS AND WHAT THE SHOP OWNS: plans, their keys and entitlements are the catalogue another system
+//   may push (stable `Key`s); subscriptions, their items and their charges are the shop's.
+package Osysharp.Shop.Subscriptions {
+  version     "0.4.0";
+  minPlatform "0.9.0";
+  summary     "subscriptions for the shop — plans and add-ons per interval, entitlements, renewals, prorated changes.";
+  model "model/**/*.osy";
+  use Osysharp.Shop@0;
+  use Osysharp.Payments@0;
+  use Osysharp.Workflow;
+  use Osysharp.Http;
+  // The staff desk (`/staff/subscriptions`) stands in the store's working shell.
+  use Osysharp.Ui;
+  // The mail a subscriber is sent when their subscription moves currency (CurrencyMoves.osy) is an `[Email]` template.
+  use Osysharp.EmailTemplates@0;
+  tests "tests";
+}

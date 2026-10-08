@@ -1,0 +1,538 @@
+// A software catalogue on subscriptions: plans and add-ons per interval, what they grant, and every change priced.
+
+using Osysharp.Http;
+using Osysharp.Shop;
+using Osysharp.Shop.Subscriptions;
+using Osysharp.Workflow;
+
+[TestFixture]
+void Catalogue() {
+  new ShopSettings { Name = "Cloudlet", Currency = "EUR", CurrencySymbol = "€", OrderPrefix = "CL-" };
+  var staff = new ShopAccount { Email = "ops@cloudlet.test", PasswordHash = Security.HashPassword("ops-pass-1") };
+  new ShopRoleGrant { Member = staff, Role = ShopRole.Staff };
+  new ShopAccount { Email = "maja@example.test", PasswordHash = Security.HashPassword("maja-pass-1"), Name = "Maja Berg",
+                    Street = "Storgatan 1", PostCode = "11122", City = "Stockholm", Country = "SE" };
+  new ShopAccount { Email = "olle@example.test", PasswordHash = Security.HashPassword("olle-pass-1"), Name = "Olle Ek" };
+  var coffee = new Product { Name = "House blend, 500 g", Slug = "house-blend", Price = 150m };
+  var beans = new Variant { Product = coffee, Stock = 100, WeightGrams = 500 };
+  var refill = new SubscriptionPlan { Key = "coffee.refill", Name = "Coffee refill", Kind = PlanKind.Shipped, Sells = beans };
+  new PlanPrice { Plan = refill, Interval = BillingInterval.EveryFourWeeks, Amount = 135m };
+  new PlanPrice { Plan = refill, Interval = BillingInterval.EveryTwoWeeks, Amount = 70m };
+  Plan("pro", "Pro", false, 100m, 1000m, [("feature.custom-domain", null), ("unit.storage-gb", 10)]);
+  Plan("dedicated", "Dedicated", false, 500m, 5000m, [("feature.custom-domain", null), ("feature.ha", null), ("unit.storage-gb", 100)]);
+  Plan("free", "Free", false, 0m, 0m, [("unit.storage-gb", 1)]);
+  Plan("addon.ha", "High availability", true, 50m, 500m, [("feature.ha", null)]);
+  Plan("addon.storage", "10 GB more storage", true, 20m, 200m, [("unit.storage-gb", 10)]);
+}
+
+void Plan(string key, string name, bool addOn, decimal fourWeeks, decimal yearly, List<(string, int?)> grants) {
+  // Sold as a variant whose stock is not counted — so it lands on orders and invoices with its VAT class.
+  var product = new Product { Name = name, Slug = key.Replace(".", "-"), Price = fourWeeks };
+  var variant = new Variant { Product = product, Unlimited = true };
+  var p = new SubscriptionPlan { Key = key, Name = name, IsAddOn = addOn, Sells = variant };
+  new PlanPrice { Plan = p, Interval = BillingInterval.EveryFourWeeks, Amount = fourWeeks };
+  new PlanPrice { Plan = p, Interval = BillingInterval.Yearly, Amount = yearly };
+  foreach (var g in grants) { new PlanEntitlement { Plan = p, Key = g.Item1, Limit = g.Item2 }; }
+}
+
+principal Ops => ShopAccount.Single(s => s.Email == "ops@cloudlet.test");
+principal Maja => ShopAccount.Single(s => s.Email == "maja@example.test");
+principal Olle => ShopAccount.Single(s => s.Email == "olle@example.test");
+
+ShopAccount Customer() { return ShopAccount.Single(s => s.Email == "maja@example.test"); }
+
+[Test(Catalogue)]
+void a_plan_with_an_add_on_is_charged_for_its_first_period_and_grants_what_both_give() {
+  runas (Ops) {
+    var sub = Subscribe(Customer(), "pro", ["addon.ha"], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    Assert.Equal(150m, sub.Charges.Single().Amount);                          // 100 + 50
+    Assert.Equal(sub.StartedAt.AddDays(28), sub.PeriodEnd);
+    var has = EntitlementsOf(Customer());
+    Assert.Equal(["feature.custom-domain", "feature.ha", "unit.storage-gb"], has.Select(e => e.Key).ToList());
+    Assert.Equal(10, has.Single(e => e.Key == "unit.storage-gb").Limit);
+    Assert.True(IsEntitled(Customer(), "feature.ha"));
+  }
+}
+
+[Test(Catalogue)]
+void a_yearly_price_is_data_so_two_months_free_is_a_row() {
+  runas (Ops) {
+    var sub = Subscribe(Customer(), "pro", [], BillingInterval.Yearly, "banktransfer", "");
+    Assert.Equal(1000m, sub.Charges.Single().Amount);                         // not 13 × 100
+    Assert.Contains("not sold", Assert.Throws<Exception>(() => Subscribe(Customer(), "pro", [], BillingInterval.Monthly, "banktransfer", "")).Message);
+  }
+}
+
+[Test(Catalogue)]
+void an_upgrade_halfway_through_charges_the_difference_for_the_half_left() {
+  runas (Ops) {
+    var sub = Subscribe(Customer(), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    TestClock.Advance(TimeSpan.FromDays(14));
+    ChangePlan(sub, "dedicated", false);
+    var change = sub.Charges.Single(c => c.Kind == ChargeKind.Proration);
+    Assert.Equal(200m, change.Amount);                                        // (500 − 100) × 14/28
+    var order = change.Order!;                                                // an order at once, nothing to ship
+    Assert.Equal(Fulfilment.Digital, order.Fulfilment);
+    Assert.Equal(200m, order.Total);
+    Assert.Equal("Dedicated, the rest of the period", order.Lines.Single().VariantLabel);
+    Assert.True(IsEntitled(Customer(), "feature.ha"));
+    Assert.Equal(100, EntitlementsOf(Customer()).Single(e => e.Key == "unit.storage-gb").Limit);
+  }
+}
+
+[Test(Catalogue)]
+void removing_an_add_on_credits_the_days_left_and_adding_storage_adds_to_the_limit() {
+  runas (Ops) {
+    var sub = Subscribe(Customer(), "pro", ["addon.ha", "addon.storage"], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    Assert.Equal(20, EntitlementsOf(Customer()).Single(e => e.Key == "unit.storage-gb").Limit);   // 10 + 10
+    TestClock.Advance(TimeSpan.FromDays(21));
+    RemoveAddOn(sub, "addon.ha");
+    var credit = sub.Charges.Single(c => c.Kind == ChargeKind.Proration);
+    Assert.Equal(-12.5m, credit.Amount);                                                          // −50 × 7/28
+    Assert.False(credit.Settled);                                                                 // owed until the renewal
+    Assert.False(IsEntitled(Customer(), "feature.ha"));
+    TestClock.Advance(TimeSpan.FromDays(8));
+    Workflow.Settle(sub);
+    var renewal = sub.Charges.Single(c => c.Kind == ChargeKind.Renewal && c.At > sub.StartedAt).Order!;
+    Assert.Equal(107.5m, renewal.Total);                                                          // 100 + 20 − 12.50
+    Assert.Equal("Credit for days not used", renewal.Adjustments.Single().Label);
+    Assert.True(credit.Settled);
+  }
+}
+
+[Test(Catalogue)]
+void a_downgrade_waits_for_the_renewal_which_charges_the_new_period_at_the_new_price() {
+  runas (Ops) {
+    var sub = Subscribe(Customer(), "dedicated", [], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    ChangePlan(sub, "pro", true);
+    Assert.Equal(1, sub.Charges.Count());                                     // nothing charged now
+    Assert.True(IsEntitled(Customer(), "feature.ha"));                          // still Dedicated this period
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(sub);
+    var renewal = sub.Charges.Single(c => c.Kind == ChargeKind.Renewal && c.Amount == 100m);
+    Assert.Contains("Renewal", renewal.Description);
+    Assert.False(IsEntitled(Customer(), "feature.ha"));
+    Assert.Equal(sub.StartedAt.AddDays(56), sub.PeriodEnd);
+  }
+}
+
+[Test(Catalogue)]
+void a_subscription_cancelled_at_the_periods_end_keeps_what_it_grants_until_then() {
+  runas (Ops) {
+    var sub = Subscribe(Customer(), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    CancelSubscription(sub, true);
+    Assert.True(IsEntitled(Customer(), "feature.custom-domain"));
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(sub);
+    Assert.Equal(SubscriptionStatus.Cancelled, sub.Status);
+    Assert.Empty(EntitlementsOf(Customer()));
+    Assert.Equal(1, sub.Charges.Count());                                     // it did not renew
+  }
+}
+
+[Test(Catalogue)]
+void a_retired_plan_is_not_sold_and_a_customer_cannot_subscribe_themselves_yet() {
+  runas (Ops) {
+    SubscriptionPlan.Single(p => p.Key == "free").Retired = true;
+    UnitOfWork.Commit();
+    Assert.Contains("no plan", Assert.Throws<Exception>(() => Subscribe(Customer(), "free", [], BillingInterval.EveryFourWeeks, "banktransfer", "")).Message);
+  }
+  runas (Maja) {
+    Assert.Throws<Exception>(() => Subscribe(Customer(), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", ""));
+  }
+}
+
+[Test(Catalogue)]
+void a_software_plans_first_period_is_an_order_with_nothing_to_ship_taxed_where_the_customer_is() {
+  runas (Ops) {
+    TheShop().VatPercent = 25m; UnitOfWork.Commit();
+    var sub = Subscribe(Customer(), "pro", ["addon.ha"], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    var order = sub.Charges.Single().Order!;
+    Assert.Equal(Fulfilment.Digital, order.Fulfilment);
+    Assert.Equal(150m, order.Total);                                          // 100 + 50, at the subscription's prices
+    Assert.Equal(2, order.Lines.Count());
+    Assert.Equal(30m, order.VatRates.Single().Vat);                           // 25 % inside 150, Sweden's
+    MarkPaid(order, "");
+    Workflow.Settle(order);
+    Assert.Equal(OrderStatus.Delivered, order.Status);                        // paid is delivered: nothing ships
+    Assert.NotNull(Invoice.FirstOrDefault(i => i.Order == order));
+  }
+}
+
+[Test(Catalogue)]
+void a_coffee_refill_ships_each_period_at_the_subscriptions_price() {
+  runas (Ops) {
+    var sub = Subscribe(Customer(), "coffee.refill", [], BillingInterval.EveryFourWeeks, "banktransfer", "flat");
+    var first = sub.Charges.Single().Order!;
+    Assert.Equal(Fulfilment.Deliver, first.Fulfilment);
+    Assert.Equal(135m, first.Lines.Single().Price);                           // the refill price, not the shelf's 150
+    Assert.Equal("Storgatan 1", first.Contact.Single().Street);
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(sub);
+    Assert.Equal(2, sub.Charges.Count(c => c.Order != null));                 // the renewal is an order too
+  }
+}
+
+[Test(Catalogue)]
+void a_credit_bigger_than_the_renewal_pays_all_of_it_and_the_rest_waits_for_the_next() {
+  runas (Ops) {
+    var sub = Subscribe(Customer(), "dedicated", [], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    TestClock.Advance(TimeSpan.FromDays(14));
+    ChangePlan(sub, "pro", false);                                            // (100 − 500) × 14/28 = −200
+    Assert.Null(sub.Charges.Single(c => c.Kind == ChargeKind.Proration).Order);   // a credit is no order
+    TestClock.Advance(TimeSpan.FromDays(15));
+    Workflow.Settle(sub);
+    var renewal = sub.Charges.Single(c => c.Kind == ChargeKind.Renewal && c.At > sub.StartedAt).Order!;
+    Assert.Equal(0m, renewal.Total);                                          // 100 − 100 of the 200
+    var carried = sub.Charges.Single(c => c.Kind == ChargeKind.Proration && !c.Settled);
+    Assert.Equal(-100m, carried.Amount);
+  }
+}
+
+/// Maja buys a bag of coffee, pays with a card and asks the shop to keep it — the one way a card is ever kept. Run as
+/// Maja; staff settle the order after.
+string KeepCard(string visitId, string card) {
+  runas (new Visitor { Id = visitId }) {
+    AddToBag(Variant.First(v => v.Product.Slug == "house-blend"), 1);
+    KeepPaymentMethodFor(true);
+    var reference = PlaceOrder("Maja Berg", "maja@example.test", "", "collect", "keepcard", "", "", "", "").Reference;
+    Assert.True(CheckPayment(OrderLink.From(LinkToMyOrder(reference)), "keepcard-keep-" + card).Paid);
+    return reference;
+  }
+}
+
+[Test(Catalogue)]
+void a_card_kept_at_checkout_pays_each_renewal_with_nobody_there() {
+  var v_keep = "";
+  runas (Maja) { v_keep = KeepCard("v-keep", "good"); }
+  runas (Ops) { Workflow.Settle(Order.Single(o => o.Reference == v_keep)); }
+  runas (Ops) {
+    var card = SavedPaymentMethod.Single(m => m.Account == Customer());
+    Assert.Equal("Visa •••• 4242", card.Label);
+    var sub = Subscribe(Customer(), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    PayWithSaved(sub, card);
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(sub);
+    var renewal = sub.Charges.Single(c => c.Kind == ChargeKind.Renewal && c.At > sub.StartedAt);
+    Workflow.Settle(renewal.Order!);
+    Assert.NotNull(renewal.Order!.PaidAt);                                    // charged, not waiting
+    Assert.Equal("keepcard", renewal.Order!.PaymentMethod);
+    Assert.Equal(SubscriptionStatus.Active, sub.Status);
+  }
+  runas (Maja) {
+    Assert.Equal("Visa •••• 4242", SavedPaymentMethod.Single().Label);      // hers to see by name…
+    Assert.Null(SavedPaymentMethod.Single().Ref);                            // …never the provider's handle
+  }
+}
+
+[Test(Catalogue)]
+void a_refused_renewal_is_past_due_until_a_card_that_works_pays_it() {
+  var v_bad = "";
+  runas (Maja) { v_bad = KeepCard("v-bad", "declined"); }
+  runas (Ops) { Workflow.Settle(Order.Single(o => o.Reference == v_bad)); }
+  runas (Ops) {
+    var bad = SavedPaymentMethod.Single(m => m.Account == Customer());
+    var sub = Subscribe(Customer(), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    PayWithSaved(sub, bad);
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(sub);
+    Assert.Equal(SubscriptionStatus.PastDue, sub.Status);
+    var owed = sub.Charges.Single(c => c.Kind == ChargeKind.Renewal && c.At > sub.StartedAt);
+    Assert.Contains("declined", owed.Problem);
+    Assert.True(IsEntitled(Customer(), "feature.custom-domain"));           // kept while it is owed
+  }
+  var v_good = "";
+  runas (Maja) { v_good = KeepCard("v-good", "good"); }
+  runas (Ops) { Workflow.Settle(Order.Single(o => o.Reference == v_good)); }
+  runas (Ops) {
+    var sub = Subscription.Single(s => s.Customer == Customer());
+    PayWithSaved(sub, SavedPaymentMethod.Single(m => m.Account == Customer() && m.Ref == "good"));
+    TestClock.Advance(TimeSpan.FromDays(4));
+    Workflow.Settle(sub);
+    Assert.Equal(SubscriptionStatus.Active, sub.Status);
+    Assert.NotNull(sub.Charges.Single(c => c.Kind == ChargeKind.Renewal && c.At > sub.StartedAt).Order!.PaidAt);
+  }
+}
+
+// ── what a customer asks of their own subscription ──────────────────────────────────────────────────────────────
+
+[Test(Catalogue)]
+void a_customer_cancels_pauses_and_changes_their_own_plan_by_asking() {
+  Subscription? sub = null;
+  runas (Ops) { sub = Subscribe(Customer(), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", ""); }
+  runas (Maja) {
+    var mine = Subscription.Single();
+    Assert.Equal(RequestState.Done, AskAboutSubscription(mine, RequestKind.CancelAtPeriodEnd, "").State);
+    Assert.Equal(RequestState.Done, AskAboutSubscription(mine, RequestKind.KeepRenewing, "").State);
+    Assert.Equal(RequestState.Done, AskAboutSubscription(mine, RequestKind.Pause, "").State);
+    var again = AskAboutSubscription(mine, RequestKind.Pause, "");
+    Assert.Equal(RequestState.Refused, again.State);
+    Assert.Contains("paused", again.Answer);
+    Assert.Equal(RequestState.Done, AskAboutSubscription(mine, RequestKind.Resume, "").State);
+    Assert.Equal(RequestState.Done, AskAboutSubscription(mine, RequestKind.ChangePlanAtRenewal, "dedicated").State);
+    Assert.Equal(RequestState.Refused, AskAboutSubscription(mine, RequestKind.ChangePlanAtRenewal, "addon.ha").State);
+  }
+  runas (Ops) {
+    var s = Subscription.Single(x => x.Id == sub!.Id);
+    Assert.Equal(SubscriptionStatus.Active, s.Status);
+    Assert.False(s.CancelAtPeriodEnd);
+    Assert.Equal("dedicated", s.NextPlan!.Key);
+    Assert.Equal(1, s.Charges.Count());                                       // an ask charges nothing
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(s);
+    Assert.Equal(500m, s.Charges.Single(c => c.At > s.StartedAt).Amount);    // the new plan, from the renewal
+  }
+}
+
+[Test(Catalogue)]
+void a_customer_cannot_ask_about_someone_elses_subscription_nor_write_their_own() {
+  Subscription? sub = null;
+  runas (Ops) { sub = Subscribe(Customer(), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", ""); }
+  runas (Olle) {
+    Assert.Empty(Subscription.ToList());                                      // not his to see
+    Assert.Throws<Exception>(() => AskAboutSubscription(sub!, RequestKind.CancelAtPeriodEnd, ""));
+  }
+  runas (Maja) {
+    var mine = Subscription.Single();
+    Assert.Throws<Exception>(() => { mine.CancelAtPeriodEnd = true; UnitOfWork.Commit(); });   // only by asking
+  }
+  runas (Ops) { Assert.False(Subscription.Single(x => x.Id == sub!.Id).CancelAtPeriodEnd); }
+}
+
+// ── subscribing from the store ──────────────────────────────────────────────────────────────────────────────────
+
+[Test(Catalogue)]
+void a_customer_subscribes_at_the_checkout_and_the_paid_order_is_the_first_period() {
+  runas (new Visitor { Id = "v-sub" }) {
+    var reference = "";
+    runas (Maja) {
+      var s = ChooseSubscription("coffee.refill", BillingInterval.EveryFourWeeks);
+      Assert.Equal(SignUpState.InBag, s.State);
+      Assert.Equal(135m, CheckoutQuote("flat", "SE").Goods);           // the plan's price, not the shelf's 150
+      reference = PlaceOrder("Maja Berg", "maja@example.test", "", "flat", "keepcard",
+                             "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+      Assert.True(CheckPayment(OrderLink.From(LinkToMyOrder(reference)), "keepcard-keep-good").Paid);
+    }
+    runas (Ops) {
+      var order = Order.Single(o => o.Reference == reference);
+      Workflow.Settle(order);
+      var s = SubscriptionSignUp.Single();
+      Workflow.Settle(s);
+      Assert.Equal(SignUpState.Started, s.State);
+      var sub = Subscription.Single(x => x.Customer == Customer());
+      Assert.Equal("coffee.refill", sub.Items.Single().Plan.Key);
+      Assert.Equal(order.Id, sub.Charges.Single().Order!.Id);                   // the first period IS that order
+      TestClock.Advance(TimeSpan.FromDays(29));
+      Workflow.Settle(sub);
+      var renewal = sub.Charges.Single(c => c.At > sub.StartedAt).Order!;
+      Workflow.Settle(renewal);
+      Assert.NotNull(renewal.PaidAt);                                            // on the card kept at the checkout
+      Assert.Equal(Fulfilment.Deliver, renewal.Fulfilment);
+    }
+  }
+}
+
+[Test(Catalogue)]
+void a_guest_cannot_subscribe_and_a_plan_taken_out_of_the_bag_starts_nothing() {
+  runas (new Visitor { Id = "v-drop" }) {
+    runas (new Visitor { Id = "v-guest" }) { Assert.Contains("Sign in", Assert.Throws<Exception>(() => ChooseSubscription("coffee.refill", BillingInterval.EveryFourWeeks)).Message); }
+    var reference = "";
+    runas (Maja) {
+      var yearly = ChooseSubscription("coffee.refill", BillingInterval.Yearly);
+      Assert.Equal(SignUpState.Dropped, yearly.State);                         // not sold yearly
+      Assert.Contains("not sold", yearly.Answer);
+      var s = ChooseSubscription("coffee.refill", BillingInterval.EveryFourWeeks);
+      RemoveFromBag(s.Line!);
+      AddToBag(Variant.First(v => v.Product.Slug == "house-blend"), 1);
+      reference = PlaceOrder("Maja Berg", "maja@example.test", "", "collect", "keepcard", "", "", "", "").Reference;
+      Assert.True(CheckPayment(OrderLink.From(LinkToMyOrder(reference)), "keepcard-once").Paid);
+    }
+    runas (Ops) {
+      Workflow.Settle(Order.Single(o => o.Reference == reference));
+      foreach (var s in SubscriptionSignUp.ToList()) { Workflow.Settle(s); }
+      Assert.Empty(Subscription.ToList());                                      // a bag of coffee is not a subscription
+      Assert.Equal(150m, Order.Single(o => o.Reference == reference).Lines.Single().Price);
+    }
+  }
+}
+
+// ── what the other system hears ─────────────────────────────────────────────────────────────────────────────────
+
+[Test(Catalogue)]
+void each_period_drawn_is_told_to_the_other_system_signed_and_a_refusal_too() {
+  var bodies = new List<string>();
+  var signatures = new List<string>();
+  Http.Post.Stub((url, body, headers) => {
+    if (url == "https://hooks.example.test/subscriptions") { bodies.Add(body); signatures.Add(headers["X-Osy-Signature"]); }
+    return new HttpResponse { StatusCode = 200, Body = "" };
+  });
+  var good = "";
+  runas (Maja) { good = KeepCard("v-n1", "good"); }
+  runas (Ops) {
+    Workflow.Settle(Order.Single(o => o.Reference == good));
+    var sub = Subscribe(Customer(), "pro", ["addon.ha"], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    PayWithSaved(sub, SavedPaymentMethod.Single(m => m.Account == Customer()));
+    foreach (var n in SubscriptionNotice.ToList()) { Workflow.Settle(n); }
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(sub);
+    var renewal = sub.Charges.Single(c => c.At > sub.StartedAt).Order!;
+    Workflow.Settle(renewal);
+    foreach (var n in SubscriptionNotice.ToList()) { Workflow.Settle(n); }
+    Assert.Equal(["Started", "Renewed"], SubscriptionNotice.OrderBy(n => n.At).ToList().Select(n => n.Kind.ToString()).ToList());
+    Assert.True(SubscriptionNotice.ToList().All(n => n.State == NoticeState.Delivered));
+  }
+  var renewed = JsonSerializer.Deserialize<NoticeBody>(bodies.Last());
+  Assert.Equal("Renewed", renewed.Event);
+  Assert.Equal("Active", renewed.Status);
+  Assert.Equal(150m, renewed.Amount);                                         // 100 + 50, the period drawn
+  Assert.Equal("maja@example.test", renewed.Customer);
+  Assert.Contains(renewed.Entitlements, e => e.Key == "feature.ha");
+  // Signed over "{t}.{body}" with the shared secret — what the receiver checks before believing a word of it.
+  var sig = signatures.Last();
+  var t = sig.Substring(2, sig.IndexOf(",") - 2);
+  Assert.Equal("t=" + t + ",v1=" + Crypto.ToHex(Crypto.HmacSha256(Text.ToBytes("notice-secret"), Text.ToBytes(t + "." + bodies.Last()))), sig);
+}
+
+[Test(Catalogue)]
+void a_refused_period_is_told_and_a_notice_the_endpoint_missed_is_sent_again() {
+  // A stub captures by VALUE (a call can resume in a later deployment), so the endpoint "comes back" by stubbing again.
+  Http.Post.Stub((url, body) => new HttpResponse { StatusCode = 503, Body = "" });
+  var bad = "";
+  runas (Maja) { bad = KeepCard("v-n2", "declined"); }
+  runas (Ops) {
+    Workflow.Settle(Order.Single(o => o.Reference == bad));
+    var sub = Subscribe(Customer(), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    PayWithSaved(sub, SavedPaymentMethod.Single(m => m.Account == Customer()));
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(sub);
+    var failed = SubscriptionNotice.Single(n => n.Kind == NoticeKind.PaymentFailed);
+    Workflow.Settle(failed);
+    Assert.Equal(NoticeState.Sending, failed.State);                           // the endpoint was down
+    Assert.Contains("503", failed.LastError);
+    Assert.Contains("declined", JsonSerializer.Deserialize<NoticeBody>(failed.Body).Problem);
+    Assert.Equal("PastDue", JsonSerializer.Deserialize<NoticeBody>(failed.Body).Status);
+    Http.Post.Stub((url, body) => new HttpResponse { StatusCode = 200, Body = "" });
+    TestClock.Advance(TimeSpan.FromMinutes(16));
+    Workflow.Settle(failed);
+    Assert.Equal(NoticeState.Delivered, SubscriptionNotice.Single(n => n.Id == failed.Id).State);
+  }
+}
+
+[Test(Catalogue)]
+void a_customer_skips_one_and_changes_how_often_and_how_many() {
+  Subscription? sub = null;
+  runas (Ops) { sub = Subscribe(Customer(), "coffee.refill", [], BillingInterval.EveryFourWeeks, "banktransfer", "flat"); }
+  runas (Maja) {
+    var mine = Subscription.Single();
+    Assert.Equal(RequestState.Done, AskAboutSubscription(mine, RequestKind.SkipNext, "").State);
+    var yearly = AskAboutSubscription(mine, RequestKind.ChangeInterval, "", BillingInterval.Yearly);
+    Assert.Equal(RequestState.Refused, yearly.State);
+    Assert.Contains("is not sold every year", yearly.Answer);
+    Assert.Equal(RequestState.Done, AskAboutSubscription(mine, RequestKind.ChangeInterval, "", BillingInterval.EveryTwoWeeks).State);
+    Assert.Equal(RequestState.Done, AskAboutSubscription(mine, RequestKind.ChangeQuantity, "", null, 2).State);
+    Assert.Equal(RequestState.Refused, AskAboutSubscription(mine, RequestKind.ChangeQuantity, "", null, 0).State);
+    Assert.Equal(1, mine.Items.Single().Quantity);                            // this period keeps what it had
+  }
+  runas (Ops) {
+    var s = Subscription.Single(x => x.Id == sub!.Id);
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(s);
+    Assert.Equal(1, s.Charges.Count());                                       // skipped: nothing ordered or charged
+    Assert.Equal(s.StartedAt.AddDays(56), s.PeriodEnd);                      // …and the period moved on
+    TestClock.Advance(TimeSpan.FromDays(28));
+    Workflow.Settle(s);
+    var next = s.Charges.Single(c => c.At > s.StartedAt.AddDays(30));
+    Assert.Equal(140m, next.Amount);                                          // two bags at the two-weekly price
+    Assert.Equal(2, next.Order!.Lines.Single().Quantity);
+    Assert.Equal(BillingInterval.EveryTwoWeeks, s.Interval);
+    Assert.Equal(s.PeriodStart.AddDays(14), s.PeriodEnd);
+  }
+}
+
+// ── a price that changes ────────────────────────────────────────────────────────────────────────────────────────
+
+[Test(Catalogue)]
+void a_higher_price_is_told_first_and_reaches_each_subscriber_at_their_renewal_after_it() {
+  Http.Post.Stub((url, body) => new HttpResponse { StatusCode = 200, Body = "" });
+  runas (Ops) {
+    var sub = Subscribe(Customer(), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    var soon = DateTime.UtcNow.AddDays(10);
+    Assert.Contains("30 days", Assert.Throws<Exception>(() => SchedulePrice("pro", BillingInterval.EveryFourWeeks, 120m, soon, false)).Message);
+    var from = DateTime.UtcNow.AddDays(31);
+    var change = SchedulePrice("pro", BillingInterval.EveryFourWeeks, 120m, from, false);
+    Assert.Equal(1, change.Told);
+    Assert.Contains("a new price from", ShopMail.Single(m => m.To == "maja@example.test" && m.Subject.StartsWith("Pro")).Subject);
+    var notice = SubscriptionNotice.Single(n => n.Kind == NoticeKind.PriceChanging);
+    Assert.Equal(120m, JsonSerializer.Deserialize<NoticeBody>(notice.Body).NewPrice);
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(sub);
+    Assert.Equal(100m, sub.Charges.Single(c => c.At > sub.StartedAt && c.Kind == ChargeKind.Renewal).Amount);   // before the date
+    TestClock.Advance(TimeSpan.FromDays(28));
+    Workflow.Settle(sub);
+    Assert.Equal(120m, sub.Charges.Where(c => c.Kind == ChargeKind.Renewal).OrderByDescending(c => c.At).First().Amount);
+  }
+}
+
+[Test(Catalogue)]
+void existing_subscribers_can_keep_their_price_while_new_ones_pay_the_new_one() {
+  runas (Ops) {
+    var mine = Subscribe(Customer(), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    var change = SchedulePrice("pro", BillingInterval.EveryFourWeeks, 150m, DateTime.UtcNow.AddDays(1), true);   // no notice needed
+    Assert.Equal(1, change.Kept);
+    Assert.Equal(0, change.Told);
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(mine);
+    Assert.Equal(100m, mine.Charges.Single(c => c.At > mine.StartedAt && c.Kind == ChargeKind.Renewal).Amount);
+    var olle = ShopAccount.Single(a => a.Email == "olle@example.test");
+    var theirs = Subscribe(olle, "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    Assert.Equal(150m, theirs.Charges.Single().Amount);
+  }
+}
+
+[Test(Catalogue)]
+void a_lower_price_may_start_at_once() {
+  runas (Ops) {
+    var sub = Subscribe(Customer(), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    Assert.Equal(1, SchedulePrice("pro", BillingInterval.EveryFourWeeks, 80m, DateTime.UtcNow, false).Told);
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(sub);
+    Assert.Equal(80m, sub.Charges.Single(c => c.At > sub.StartedAt && c.Kind == ChargeKind.Renewal).Amount);
+  }
+  runas (Maja) { Assert.Throws<Exception>(() => SchedulePrice("pro", BillingInterval.EveryFourWeeks, 1m, DateTime.UtcNow, false)); }
+}
+
+[Test(Catalogue)]
+void another_system_keeps_a_plan_in_step_and_its_prices_move_only_by_schedule() {
+  runas (Ops) {
+    var input = new PlanInput { Key = "scale", Name = "Scale", Grants = [new PlanGrant { Key = "unit.storage-gb", Limit = 500 }],
+                                Prices = [new PlanStartingPrice { Interval = BillingInterval.EveryFourWeeks, Amount = 900m }] };
+    var plan = UpsertPlan(input);
+    Assert.NotNull(plan.Sells);                                                // sold as its own product
+    Assert.Equal(900m, PlanAmount(plan, BillingInterval.EveryFourWeeks));
+    input.Name = "Scale (2026)";
+    input.Grants = [new PlanGrant { Key = "unit.storage-gb", Limit = 1000 }, new PlanGrant { Key = "feature.ha" }];
+    input.Prices = [new PlanStartingPrice { Interval = BillingInterval.EveryFourWeeks, Amount = 1m }];
+    UpsertPlan(input);
+    var again = SubscriptionPlan.Single(p => p.Key == "scale");
+    Assert.Equal("Scale (2026)", again.Name);
+    Assert.Equal(2, PlanEntitlement.Count(e => e.Plan == again));                // the grants given, exactly
+    Assert.Equal(900m, PlanAmount(again, BillingInterval.EveryFourWeeks));       // a price moves only by SchedulePrice
+  }
+  runas (Maja) { Assert.Throws<Exception>(() => UpsertPlan(new PlanInput { Key = "mine", Name = "Mine" })); }
+}
+
+[Test(Catalogue)]
+void a_control_plane_does_both_over_the_api_with_a_staff_key() {
+  var key = Api.KeyFor(Ops);
+  var made = Api.Post("/api/rest/v1/catalogue/plans",
+    new { input = new { key = "team", name = "Team", kind = "Entitled", grants = new[] { new { key = "feature.sso" } },
+                        prices = new[] { new { interval = "EveryFourWeeks", amount = 300 } } } }, apiKey: key);
+  Assert.True(made.IsSuccess, made.Body);
+  var moved = Api.Post("/api/rest/v1/catalogue/prices",
+    new { planKey = "team", interval = "EveryFourWeeks", amount = 250, from = DateTime.UtcNow.ToString("o"), keepExisting = false }, apiKey: key);
+  Assert.True(moved.IsSuccess, moved.Body);
+  Assert.Equal(401, Api.Post("/api/rest/v1/catalogue/prices", new { planKey = "team" }).StatusCode);   // no key, no door
+  runas (Ops) { Assert.Equal(250m, PlanAmount(SubscriptionPlan.Single(p => p.Key == "team"), BillingInterval.EveryFourWeeks)); }
+}
+
+// A plan bought in a currency the shop SELLS in besides its own: currencies.test.osy (D-SELLCURRENCY1).

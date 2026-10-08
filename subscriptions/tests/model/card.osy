@@ -1,0 +1,37 @@
+using Osysharp.Payments;
+
+/// A card provider that keeps a card — scripted by the card's name: "good" pays, "declined" is refused.
+public class KeepingCard : IPaymentProvider {
+  public string Key { get; } = "keepcard";
+  public string Label { get; } = "Card";
+  public string Description { get; } = "A test card that can be kept.";
+  public bool CapturesLater { get; } = false;
+  public bool IsManual { get; } = false;
+  public bool SavesMethods { get; } = true;
+  public List<string> EventHeaders { get; } = [];
+
+  public bool IsReady() { return true; }
+  public string CurrencyRefusal(string currency, string country, string sellers) { return ""; }
+  public PaymentStart Start(PaymentRequest request) {
+    return new PaymentStart { RedirectUrl = request.ReturnUrl.Replace("{token}", request.SaveMethod ? "keep" : "once"), ProviderRef = "p-" + request.Reference };
+  }
+  /// The token names the card to keep: "keep-good", "keep-declined".
+  public PaymentCheck Check(string reference, long amount, string token) {
+    var check = new PaymentCheck { State = PaymentState.Paid, ProviderRef = "p-" + reference };
+    if (token.StartsWith("keep-")) { check.SavedMethod = token.Substring(5); check.SavedMethodLabel = "Visa •••• 4242"; }
+    return check;
+  }
+  public PaymentCheck ChargeSaved(string savedMethod, PaymentRequest request) {
+    return savedMethod == "good"
+      ? new PaymentCheck { State = PaymentState.Paid, ProviderRef = "r-" + request.Reference }
+      : new PaymentCheck { State = PaymentState.Failed, Message = "Your card was declined." };
+  }
+  public void ForgetMethod(string savedMethod) { }
+  public void Capture(string providerRef, long amount) { }
+  public PaymentRefund Refund(string providerRef, long amount, string reason, string idempotencyKey) {
+    return new PaymentRefund { State = RefundState.Succeeded, RefundRef = "rf-" + providerRef };
+  }
+  public void Cancel(string providerRef) { }
+  public List<Payout> Payouts(DateTime from, DateTime to) { return []; }
+  public List<PaymentEvent> HandleEvent(string body, Dictionary<string, string> headers) { return []; }
+}

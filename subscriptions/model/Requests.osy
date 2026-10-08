@@ -1,0 +1,146 @@
+// What a customer asks of their own subscription. They never write the subscription — they write a REQUEST, and the
+// subscription's shop applies it: the rules of what may change, and when, live in one place (ApplyRequest), and every
+// ask is kept with its answer.
+
+namespace Osysharp.Shop.Subscriptions;
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum RequestKind {
+  /// End it when the period ends — what is paid for is kept until then.
+  [Label("Cancel at the end of the period")] CancelAtPeriodEnd,
+  /// Take back a cancellation that has not happened yet.
+  [Label("Keep renewing")] KeepRenewing,
+  [Label("Pause")] Pause,
+  [Label("Resume")] Resume,
+  /// Another plan from the next renewal — never inside a paid period, so nothing is charged or credited now.
+  [Label("Change plan at renewal")] ChangePlanAtRenewal,
+  /// Nothing ordered or charged for the next period; the one after comes as usual.
+  [Label("Skip the next one")] SkipNext,
+  /// Another cadence from the next renewal — "every two weeks".
+  [Label("Change how often")] ChangeInterval,
+  /// How many of a shipped plan come, from the next delivery.
+  [Label("Change how many")] ChangeQuantity,
+}
+
+public enum RequestState {
+  [Label("Waiting")] Waiting,
+  [Label("Done")] Done,
+  [Label("Refused")] Refused,
+}
+
+public entity SubscriptionRequest {
+  [Required] Subscription Subscription;
+  RequestKind Kind;
+  /// For a plan change: the plan asked for.
+  SubscriptionPlan? Plan;
+  /// For a cadence change: the interval asked for.
+  BillingInterval? Interval;
+  /// For a quantity change: how many.
+  int Quantity = 0;
+  DateTime At;
+  RequestState State;                                 // no default — RequestLife owns it
+  /// Why it was refused — "" when it was done.
+  [MaxLength(300)] string Answer = "";
+  security {
+    // A customer asks about their OWN subscription and nobody else's; what happens is the shop's to decide.
+    allow read when IsAuthenticated where Subscription.Customer == user;
+    allow read when IsShopStaff;
+    allow create when IsAuthenticated where Subscription.Customer == user;
+    allow create when IsShopStaff;
+  }
+}
+
+/// A request is applied as soon as it is made, on the shop's authority — the customer's only write is the ask.
+public workflow RequestLife {
+  Tracks    = SubscriptionRequest.State;
+  Autostart = true;
+  Initial   = Waiting;
+  state Waiting {
+    enter {
+      var answer = ApplyRequest(this.Item);
+      this.Item.Answer = answer;
+      if (answer == "") { goto Done; }
+      goto Refused;
+    }
+  }
+  terminal success Done { }
+  terminal cancel Refused { }
+}
+
+/// What the shop allows a customer to change, and how. Answers "" when done, or why not.
+string ApplyRequest(SubscriptionRequest r) {
+  var sub = r.Subscription;
+  if (sub.Status == SubscriptionStatus.Cancelled) { return "This subscription has ended."; }
+  if (r.Kind == RequestKind.CancelAtPeriodEnd) {
+    sub.CancelAtPeriodEnd = true;
+    Notify(sub, NoticeKind.Changed, null);
+    return "";
+  }
+  if (r.Kind == RequestKind.KeepRenewing) {
+    if (!sub.CancelAtPeriodEnd) { return "It is not set to end."; }
+    sub.CancelAtPeriodEnd = false;
+    Notify(sub, NoticeKind.Changed, null);
+    return "";
+  }
+  if (r.Kind == RequestKind.Pause) {
+    if (sub.Status != SubscriptionStatus.Active) { return $"It is {sub.Status.Label.ToLower()}, not active."; }
+    SubscriptionLife.RaisePause(sub);
+    return "";
+  }
+  if (r.Kind == RequestKind.Resume) {
+    if (sub.Status != SubscriptionStatus.Paused) { return "It is not paused."; }
+    SubscriptionLife.RaiseResume(sub);
+    return "";
+  }
+  if (r.Kind == RequestKind.ChangePlanAtRenewal) {
+    var plan = r.Plan;
+    if (plan == null || plan.Retired || plan.IsAddOn) { return "That plan is not on sale."; }
+    if (!PlanSoldEvery(plan, sub.Interval, sub.Currency)) {
+      return $"{plan.Name} is not sold {sub.Interval.Label.ToLower()}.";
+    }
+    sub.NextPlan = plan;
+    Notify(sub, NoticeKind.Changed, null);
+    return "";
+  }
+  if (r.Kind == RequestKind.SkipNext) {
+    if (sub.Status != SubscriptionStatus.Active) { return $"It is {sub.Status.Label.ToLower()}, not active."; }
+    sub.SkipNext = true;
+    Notify(sub, NoticeKind.Changed, null);
+    return "";
+  }
+  if (r.Kind == RequestKind.ChangeInterval) {
+    if (r.Interval == null) { return "Say how often."; }
+    var every = r.Interval!.Value;
+    // Every plan on it must be sold at that cadence — the next period is charged at its price.
+    foreach (var item in sub.Items.ToList()) {
+      var plan = sub.NextPlan != null && !item.Plan.IsAddOn ? sub.NextPlan! : item.Plan;
+      if (!PlanSoldEvery(plan, every, sub.Currency)) { return $"{plan.Name} is not sold {every.Label.ToLower()}."; }
+    }
+    sub.NextInterval = every;
+    Notify(sub, NoticeKind.Changed, null);
+    return "";
+  }
+  if (r.Kind == RequestKind.ChangeQuantity) {
+    if (r.Quantity < 1 || r.Quantity > 20) { return "Choose between 1 and 20."; }
+    var shipped = sub.Items.ToList().Where(i => i.Plan.Kind == PlanKind.Shipped).ToList();
+    if (shipped.Count == 0) { return "Nothing on this subscription is shipped, so there is nothing to change the number of."; }
+    sub.NextQuantity = r.Quantity;                  // the period being paid for keeps what it had
+    Notify(sub, NoticeKind.Changed, null);
+    return "";
+  }
+  return "That is not something a customer can ask.";
+}
+
+/// The customer asks. Answers what the shop said: "" when it is done, or why not.
+public SubscriptionRequest AskAboutSubscription(Subscription sub, RequestKind kind, string planKey,
+                                                BillingInterval? interval = null, int quantity = 0) {
+  var plan = planKey == "" ? null : SubscriptionPlan.FirstOrDefault(p => p.Key == planKey);
+  var r = new SubscriptionRequest { Subscription = sub, Kind = kind, Plan = plan, Interval = interval, Quantity = quantity,
+                                    At = DateTime.UtcNow };
+  UnitOfWork.Commit();
+  Workflow.Settle(r);
+  return r;
+}

@@ -1,0 +1,187 @@
+// Changing what a plan costs, and keeping the catalogue in step with another system.
+//
+// ⚑ ONE OWNER PER FACT (owner, 2026-09-28, D-SUBPRICE1): a control plane that sells through this shop owns what a plan
+//   IS — its key, name, kind and what it grants — and keeps it here with `UpsertPlan`. The shop owns what it COSTS:
+//   `SchedulePrice` is the one way a price moves, whether staff call it from the desk or a system calls it through the
+//   app's API — so the notice subscribers are owed is given the same way either way.
+
+namespace Osysharp.Shop.Subscriptions;
+
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// What `SchedulePrice` did.
+public class PriceChange {
+  /// Subscribers told of the new price (mailed, and a notice sent).
+  public int Told = 0;
+  /// Subscribers who keep the price they pay.
+  public int Kept = 0;
+}
+
+/// A new price for `planKey` per `interval` in the shop's own currency, in force from `from` — `SchedulePriceIn` for it.
+[Authorize(IsShopStaff)]
+public PriceChange SchedulePrice(string planKey, BillingInterval interval, decimal amount, DateTime from, bool keepExisting) {
+  return SchedulePriceIn(planKey, interval, "", amount, from, keepExisting);
+}
+
+/// One subscriber a price change reaches, and what they would pay per period from it — in their own currency.
+class PriceReach {
+  public Subscription? Sub;
+  public SubscriptionItem? Item;
+  public decimal Price = 0;
+  /// Their price was the shop's own converted (no price of the plan's own in their currency), so the new one is too.
+  public bool Converted = false;
+}
+
+/// A new price for `planKey` per `interval` in `currency` ("" or the shop's own: its own price; else one the shop SELLS
+/// in), in force from `from` — for each subscriber from their first renewal on or after it. It reaches the subscribers
+/// who pay in that currency; a change of the shop's own price reaches too the subscribers in a sold currency where the
+/// plan has no price of its own — theirs was the shop's converted when they agreed it, and is fixed until now: they
+/// are told the new one converted today and rounded by their currency's rule, and pay it from the same day. A HIGHER
+/// price than a subscriber pays needs `PriceNoticeDays` of notice (they are told now, and may stop before it applies),
+/// unless `keepExisting`: then the subscribers there are now keep what they pay, and only new ones pay it. A lower price
+/// may start at once. Every notice is in the subscriber's own currency. Answers how many were told and how many kept.
+[Authorize(IsShopStaff)]
+[SuppressWarning("cost-unbounded-read")]   // the plan's own subscribers on the interval — each must be told — and its prices for one day
+public PriceChange SchedulePriceIn(string planKey, BillingInterval interval, string currency, decimal amount, DateTime from,
+                                   bool keepExisting) {
+  var plan = SubscriptionPlan.FirstOrDefault(p => p.Key == planKey);
+  if (plan == null) { throw new Exception($"There is no plan '{planKey}'."); }
+  if (amount < 0) { throw new Exception("A price cannot be negative."); }
+  var code = OwnOrNull(currency);
+  if (code != null && !ExchangeRate.Any(r => r.Currency == code && r.Sold)) {
+    throw new Exception($"The shop does not sell in {code} — sell in it first, then give the plan a price there.");
+  }
+  var now = DateTime.UtcNow;
+  var own = TheShop().Currency;
+  // Who it reaches, and what each pays from `from` — the plan's own subscribers on this interval, read with their
+  // subscriptions; not every subscription the shop has and each one's items.
+  var held = SubscriptionItem.Where(i => i.Plan == plan && i.KeptPrice == null && i.Subscription.Interval == interval
+                                         && i.Subscription.Status != SubscriptionStatus.Cancelled)
+    .Include(i => i.Subscription).ToList();
+  // A change of the shop's own price reaches a sold currency where the plan has no price of its own — asked once per
+  // currency, not once per subscriber: what it converts to there, absent when it has its own price or no rate.
+  var convertedIn = new Dictionary<string, decimal>();
+  if (code == null) {
+    foreach (var subIn in held.Select(i => OwnIn(i.Subscription.Currency, own)).Where(c => c != null).Distinct().ToList()) {
+      if (PriceInForce(plan, interval, from, subIn) != null) { continue; }
+      var rate = SaleRate(subIn!);
+      if (rate != null) { convertedIn[subIn!] = NicePrice(amount * rate.PerUnit, rate.Rounding); }
+    }
+  }
+  List<PriceReach> reach = [];
+  List<Guid> seen = [];
+  foreach (var item in held) {
+    var sub = item.Subscription;
+    if (seen.Contains(sub.Id)) { continue; }   // one line per subscription, as before
+    seen.Add(sub.Id);
+    var subIn = OwnIn(sub.Currency, own);
+    // A price agreed once in the shop's own currency (moved there from one it stopped selling) moves as a converted
+    // one does: from the day, at the subscriber's next renewal on or after it.
+    if (subIn == code) { reach.Add(new PriceReach { Sub = sub, Item = item, Price = amount, Converted = item.PriceFixed }); continue; }
+    if (code == null && subIn != null && convertedIn.ContainsKey(subIn!)) {
+      reach.Add(new PriceReach { Sub = sub, Item = item, Price = convertedIn[subIn!], Converted = true });
+    }
+  }
+  var noticeDays = App.Setting<SubscriptionSetup>().PriceNoticeDays;
+  if (!keepExisting && from < now.AddDays(noticeDays) && reach.Any(r => r.Price > r.Item!.UnitPrice)) {
+    throw new Exception($"Subscribers must hear of a higher price {noticeDays} days before it applies — the earliest day is "
+      + $"{now.AddDays(noticeDays).ToString("d MMMM yyyy")}, or keep the subscribers there are now on what they pay.");
+  }
+  // A change already scheduled for that very day, in that currency, is replaced, not stacked.
+  var want = code ?? "";
+  foreach (var same in PlanPrice.Where(p => p.Plan == plan && p.Interval == interval && p.EffectiveFrom == from).ToList()
+                         .Where(p => (p.Currency ?? "") == want).ToList()) { same.Delete(); }
+  new PlanPrice { Plan = plan, Interval = interval, Amount = amount, EffectiveFrom = from, Currency = code };
+  var result = new PriceChange();
+  foreach (var r in reach) {
+    var sub = r.Sub!;
+    var item = r.Item!;
+    if (keepExisting) {
+      item.KeptPrice = item.UnitPrice;
+      result.Kept = result.Kept + 1;
+      continue;
+    }
+    if (r.Price == item.UnitPrice) { continue; }
+    // A converted price moves only so: the new one, from the day, at the subscriber's next renewal on or after it.
+    if (r.Converted) { item.NextUnitPrice = r.Price; item.NextPriceFrom = from; }
+    var shop = TheShop();
+    Mail(sub.Customer.Email, App.Setting<ShopSetup>().Mails.Notice($"{plan.Name}: a new price from {from.ToString("d MMMM yyyy")}",
+      $"A new price for {plan.Name}",
+      $"From {from.ToString("d MMMM yyyy")} {plan.Name} costs {MoneyIn(r.Price, sub.Currency, shop)} {interval.Label.ToLower()}"
+      + $", instead of {MoneyIn(item.UnitPrice, sub.Currency, shop)}"
+      + ". It applies from your first renewal on or after that day; what you have paid for already does not change.\n\n"
+      + $"If you would rather stop, you can end your subscription at the end of a period from your account: {App.BaseUrl}/account",
+      "Your subscriptions", $"{App.BaseUrl}/account"));
+    Notify(sub, NoticeKind.PriceChanging, null, r.Price, from);
+    result.Told = result.Told + 1;
+  }
+  UnitOfWork.Commit();
+  return result;
+}
+
+/// A plan as another system describes it — what it IS. Prices are set here only for an interval the plan has no price
+/// for yet; after that they move through `SchedulePrice`, which owes subscribers notice.
+public class PlanInput {
+  public string Key = "";
+  public string Name = "";
+  public string? Description;
+  public PlanKind Kind = PlanKind.Entitled;
+  public bool IsAddOn = false;
+  public bool Retired = false;
+  public List<PlanGrant> Grants = [];
+  public List<PlanStartingPrice> Prices = [];
+}
+
+public class PlanGrant {
+  public string Key = "";
+  public int? Limit;
+}
+
+public class PlanStartingPrice {
+  public BillingInterval Interval;
+  public decimal Amount = 0;
+  /// ISO 4217 — "" (or the shop's own): the plan's own price; a currency the shop SELLS in: its price there.
+  public string Currency = "";
+}
+
+/// Creates the plan `input.Key` names, or brings it in line — name, kind, add-on, retired, and exactly the grants
+/// given. An entitled plan with nothing to sell it as gets its own product (a variant whose stock is not counted), so
+/// its periods are ordinary orders and invoices. Answers the plan.
+[Authorize(IsShopStaff)]
+[SuppressWarning("cost-unbounded-read")]   // one plan's grants, replaced whole
+public SubscriptionPlan UpsertPlan(PlanInput input) {
+  if (input.Key.Trim() == "") { throw new Exception("A plan needs a key."); }
+  if (input.Name.Trim() == "") { throw new Exception("A plan needs a name."); }
+  var plan = SubscriptionPlan.FirstOrDefault(p => p.Key == input.Key);
+  if (plan == null) { plan = new SubscriptionPlan { Key = input.Key, Name = input.Name }; }
+  plan.Name = input.Name;
+  plan.Description = input.Description;
+  plan.Kind = input.Kind;
+  plan.IsAddOn = input.IsAddOn;
+  plan.Retired = input.Retired;
+  var own = TheShop().Currency;
+  if (plan.Sells == null && input.Kind == PlanKind.Entitled) {
+    var first = input.Prices.FirstOrDefault(p => OwnIn(p.Currency, own) == null);
+    var product = new Product { Name = input.Name, Slug = SlugOf("plan-" + input.Key), Price = first == null ? 0m : first.Amount,
+                                Status = ProductStatus.Draft };
+    plan.Sells = new Variant { Product = product, Unlimited = true };
+  }
+  foreach (var g in PlanEntitlement.Where(e => e.Plan == plan).ToList()) { g.Delete(); }
+  foreach (var g in input.Grants) { new PlanEntitlement { Plan = plan, Key = g.Key, Limit = g.Limit }; }
+  foreach (var p in input.Prices) {
+    var code = OwnIn(p.Currency, own);
+    if (code != null && !ExchangeRate.Any(r => r.Currency == code && r.Sold)) {
+      throw new Exception($"{input.Key}: the shop does not sell in {code} — sell in it first, then give the plan a price there.");
+    }
+    var interval = p.Interval;
+    var priced = code == null
+      ? PlanPrice.Any(x => x.Plan == plan && x.Interval == interval && (x.Currency == null || x.Currency == ""))
+      : PlanPrice.Any(x => x.Plan == plan && x.Interval == interval && x.Currency == code);
+    if (!priced) {
+      new PlanPrice { Plan = plan, Interval = p.Interval, Amount = p.Amount, Currency = code };
+    }
+  }
+  UnitOfWork.Commit();
+  return plan;
+}

@@ -1,0 +1,37 @@
+// What a customer HAS, from their active subscriptions — the question another system asks to unlock features.
+namespace Osysharp.Shop.Subscriptions;
+
+using Osysharp.Shop;
+
+/// One thing a customer is entitled to: a feature, or an amount of a unit (the plans' limits added up).
+public class Entitlement {
+  public string Key = "";
+  /// Null: a feature, on or off. Otherwise how much of the unit.
+  public int? Limit;
+}
+
+/// Everything `customer`'s active and past-due subscriptions grant — a feature once, a unit's limits summed over items.
+[SuppressWarning("cost-unbounded-read")]   // one customer's live subscriptions, and the grants of the plans they hold
+public List<Entitlement> EntitlementsOf(ShopAccount customer) {
+  List<Entitlement> all = [];
+  var subs = Subscription.Where(s => s.Customer == customer && (s.Status == SubscriptionStatus.Active || s.Status == SubscriptionStatus.PastDue))
+    .Include(s => s.Items.Plan).ToList();
+  var items = subs.SelectMany(s => s.Items.ToList()).ToList();
+  if (items.Count == 0) { return all; }
+  // Every plan's grants in one read — not one read per item.
+  var planIds = items.Select(i => i.Plan.Id).Distinct().ToList();
+  var grants = PlanEntitlement.Where(g => planIds.Contains(g.Plan.Id)).ToList();
+  foreach (var item in items) {
+    var plan = item.Plan;
+    foreach (var grant in grants.Where(g => g.Plan.Id == plan.Id).ToList()) {
+      var have = all.FirstOrDefault(e => e.Key == grant.Key);
+      int? amount = grant.Limit == null ? null : grant.Limit.Value * item.Quantity;
+      if (have == null) { all.Add(new Entitlement { Key = grant.Key, Limit = amount }); }
+      else if (have.Limit != null && amount != null) { have.Limit = have.Limit.Value + amount.Value; }
+    }
+  }
+  return all.OrderBy(e => e.Key).ToList();
+}
+
+/// Whether `customer` has `key` — a feature, or any amount of a unit.
+public bool IsEntitled(ShopAccount customer, string key) { return EntitlementsOf(customer).Any(e => e.Key == key); }

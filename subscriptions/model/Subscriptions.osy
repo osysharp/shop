@@ -1,0 +1,502 @@
+// A customer's subscription: its items, its period, and every change — each priced, and written to its charges.
+//
+// ⚑ ONLY STAFF, OR ANOTHER SYSTEM ACTING FOR THE SHOP, CHANGE A SUBSCRIPTION IN THIS SLICE. A change writes charges, and
+//   a customer who could write a charge could write a credit. Customer self-service comes as a request the
+//   subscription's workflow applies with the shop's authority — the erasure request's shape (Osysharp.Shop Privacy).
+namespace Osysharp.Shop.Subscriptions;
+
+using Osysharp.Payments;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum SubscriptionStatus {
+  [Label("Active")] Active,
+  [Label("Paused")] Paused,
+  [Label("Past due")] PastDue,
+  [Label("Cancelled")] Cancelled,
+}
+
+public enum ChargeKind {
+  /// A new period, paid for up front.
+  [Label("Renewal")] Renewal,
+  /// A change inside a period: the difference for the days left (negative: a credit).
+  [Label("Change")] Proration,
+}
+
+public entity Subscription {
+  [Required] ShopAccount Customer;
+  BillingInterval Interval;
+  /// The currency it is agreed in and renews in (ISO 4217) — null: the shop's own. A subscription bought in a currency
+  /// the shop SELLS in (D-SELLCURRENCY1) stays in it: its prices, charges, renewal orders, their invoices and every
+  /// price notice are in it, and the books convert each renewal at its own invoice's rate, as any sale in it.
+  [MaxLength(3)] string? Currency;
+  /// Why the renewal that is due waits — its currency is not sold now, or its rate is out of date — or "". It is
+  /// tried again every day; what it grants stays while it waits.
+  [MaxLength(300)] string RenewalWaits = "";
+  /// The shop stopped selling in `Currency` (D-SELLCURRENCY1, owner 2026-09-29): from its first renewal on or after
+  /// this day it renews in the shop's own currency, at each item's `MovedPrice` — converted the day the shop stopped,
+  /// and told to the subscriber then, the price notice's lead time ahead. Null: nothing is moving.
+  DateTime? MovesOn;
+  /// Once the move has applied: the currency it left, and when.
+  [MaxLength(3)] string? MovedFrom;
+  DateTime? MovedAt;
+  SubscriptionStatus Status;                        // no default — SubscriptionLife owns it
+  DateTime StartedAt;
+  DateTime PeriodStart;
+  DateTime PeriodEnd;
+  /// Ends at the period's end instead of renewing.
+  bool CancelAtPeriodEnd = false;
+  DateTime? CancelledAt;
+  /// A plan waiting for the next period — a downgrade that does not take effect at once.
+  SubscriptionPlan? NextPlan;
+  /// A cadence waiting for the next period — "every two weeks from now on".
+  BillingInterval? NextInterval;
+  /// How many of a shipped plan come, from the next period — the one being paid for keeps what it had.
+  int? NextQuantity;
+  /// The next period is skipped: nothing is ordered or charged, and the one after comes as usual.
+  bool SkipNext = false;
+  /// A way to pay the customer kept — each period is charged to it, with nobody there. Null: the order waits to be
+  /// paid as any order does.
+  SavedPaymentMethod? PayWith;
+  /// How each period is paid — a key of the shop's payment providers — and, when a plan ships, how it is delivered (a
+  /// key of the shop's delivery choices). Delivery "" for a subscription that ships nothing.
+  [MaxLength(80)] string PaymentKey = "";
+  [MaxLength(120)] string DeliveryId = "";
+  [ForeignKey(Subscription)] SubscriptionItem[] Items;
+  [ForeignKey(Subscription)] SubscriptionCharge[] Charges;
+  security {
+    allow read when IsAuthenticated where Customer == user;
+    allow read when IsShopStaff;
+    allow create, update when IsShopStaff;
+  }
+}
+
+public entity SubscriptionItem {
+  [Required] Subscription Subscription;
+  [Required] SubscriptionPlan Plan;
+  int Quantity = 1;
+  /// The price per period when it was added — a later price change applies at renewal, never inside a paid period.
+  decimal UnitPrice;
+  /// A price this subscriber keeps whatever the plan's price becomes — set when a change kept existing subscribers
+  /// on theirs (`SchedulePrice(…, keepExisting: true)`). Null: they pay the plan's price at each renewal.
+  decimal? KeptPrice;
+  /// For a subscription in a sold currency where the plan has no price of its own: the shop's own price was converted
+  /// when it was agreed, and that price is FIXED — never converted again at each renewal, as a gift card never is. It
+  /// moves only when the shop's own price does (`SchedulePriceIn`): the new one converted that day, told first, and
+  /// paid from the first renewal on or after `NextPriceFrom`.
+  decimal? NextUnitPrice;
+  DateTime? NextPriceFrom;
+  /// Its price per period in the shop's own currency once the subscription moves there (`Subscription.MovesOn`): what
+  /// it paid in the currency the shop stopped selling, converted at that day's rate and rounded by the shop's own rule
+  /// (`ShopSettings.Rounding`). Null when nothing is moving.
+  decimal? MovedPrice;
+  /// Its price is one agreed once — converted when the subscription moved into the shop's own currency — rather than
+  /// the plan's price in force. It is paid at each renewal until the shop moves the plan's own price (then the new one,
+  /// told first, from `NextPriceFrom`), as a converted price in a sold currency is.
+  bool PriceFixed = false;
+  security {
+    allow read when IsAuthenticated where Subscription.Customer == user;
+    allow read when IsShopStaff;
+    allow create, update, delete when IsShopStaff;
+  }
+}
+
+/// What a subscription has cost — the ledger an invoice and a payment are made from.
+public entity SubscriptionCharge {
+  [Required] Subscription Subscription;
+  ChargeKind Kind;
+  [Required, MaxLength(200)] string Description;
+  decimal Amount;
+  DateTime At;
+  /// Paid, or put on an invoice — set when the charge is settled.
+  bool Settled = false;
+  /// Why the kept way to pay was refused — "" once it went through.
+  [MaxLength(300)] string Problem = "";
+  /// When it was last tried — a refused one is tried again every few days while the subscription is past due.
+  DateTime? TriedAt;
+  /// The shop order it was placed as — invoiced, taxed and paid like any order.
+  Order? Order;
+  security {
+    allow read when IsAuthenticated where Subscription.Customer == user;
+    allow read when IsShopStaff;
+    allow create, update when IsShopStaff;
+  }
+}
+
+public workflow SubscriptionLife {
+  Tracks    = Subscription.Status;
+  Autostart = true;
+  Initial   = Active;
+
+  /// Staff, or another system acting for the shop, end it — now.
+  event Cancel();
+  event Pause();
+  event Resume();
+  /// A period's payment was refused, and the one it owes is paid.
+  event PaymentFailed();
+  event PaymentMade();
+
+  state Active {
+    // Once a day: a period that has ended renews — or, when it was to end, the subscription does.
+    subscribe Cancel() as CancelledNow {
+      Finished {
+        Within = TimeSpan.FromDays(36500);
+        Remind Renewal(After = TimeSpan.FromDays(1), ThenEvery = TimeSpan.FromDays(1)) { RenewIfDue(this.Item); }
+        Unfinished { }
+      }
+    }
+    on CancelledNow() { Notify(this.Item, NoticeKind.Cancelled, null); this.Item.CancelledAt = DateTime.UtcNow; goto Cancelled; }
+    subscribe Pause() as PausedNow;
+    on PausedNow() { Notify(this.Item, NoticeKind.Paused, null); goto Paused; }
+    subscribe PaymentFailed() as Refused;
+    on Refused() { goto PastDue; }
+  }
+  state Paused {
+    subscribe Resume() as ResumedNow;
+    on ResumedNow() { Notify(this.Item, NoticeKind.Resumed, null); goto Active; }
+    subscribe Cancel() as CancelledWhilePaused;
+    on CancelledWhilePaused() { Notify(this.Item, NoticeKind.Cancelled, null); this.Item.CancelledAt = DateTime.UtcNow; goto Cancelled; }
+  }
+  // What it grants stays while it is owed; once a day the payment is looked at — paid, tried again, or given up.
+  state PastDue {
+    subscribe PaymentMade() as Recovered {
+      Finished {
+        Within = TimeSpan.FromDays(36500);
+        Remind Dunning(After = TimeSpan.FromDays(1), ThenEvery = TimeSpan.FromDays(1)) { SettleIfOwed(this.Item); }
+        Unfinished { }
+      }
+    }
+    on Recovered() { goto Active; }
+    subscribe Cancel() as CancelledWhileOwed;
+    on CancelledWhileOwed() { Notify(this.Item, NoticeKind.Cancelled, null); this.Item.CancelledAt = DateTime.UtcNow; goto Cancelled; }
+  }
+  terminal success Cancelled { }
+}
+
+/// Pays each period from a way to pay `sub`'s customer kept (at a checkout that asked to keep it).
+[Authorize(IsShopStaff)]
+public void PayWithSaved(Subscription sub, SavedPaymentMethod method) {
+  if (method.Account != sub.Customer) { throw new Exception("That way to pay is not this customer's."); }
+  sub.PayWith = method;
+  sub.PaymentKey = method.Provider;
+  UnitOfWork.Commit();
+}
+
+/// The card the customer most recently asked the shop to keep with the provider this subscription pays through — how a
+/// subscription started at the checkout finds the card its first order was paid with.
+SavedPaymentMethod? KeptCardFor(Subscription sub) {
+  return SavedPaymentMethod.Where(m => m.Account == sub.Customer && m.Provider == sub.PaymentKey)
+    .OrderByDescending(m => m.SavedAt).FirstOrDefault();
+}
+
+/// Days between tries of a refused payment.
+int RetryDays() { return 3; }
+
+/// The past-due check: the order it owes was paid (by the customer, or by staff) — back to active; the order lapsed
+/// unpaid — the subscription ends; otherwise the kept way to pay is tried again every few days.
+public void SettleIfOwed(Subscription sub) {
+  var owed = sub.Charges.ToList().Where(c => c.Problem != "" && c.Order != null).OrderByDescending(c => c.At).FirstOrDefault();
+  if (owed == null) { SubscriptionLife.RaisePaymentMade(sub); return; }
+  var order = owed.Order!;
+  if (order.PaidAt != null) { owed.Problem = ""; UnitOfWork.Commit(); SubscriptionLife.RaisePaymentMade(sub); return; }
+  if (order.Status != OrderStatus.Reserved) { SubscriptionLife.RaiseCancel(sub); return; }
+  var last = owed.TriedAt ?? DateTime.MinValue;
+  if (sub.PayWith == null || DateTime.UtcNow < last.AddDays(RetryDays())) { return; }
+  var tried = ChargeSavedMethod(order, sub.PayWith!);
+  owed.TriedAt = DateTime.UtcNow;
+  if (tried.State == PaymentState.Paid || tried.State == PaymentState.Authorized) {
+    owed.Problem = "";
+    UnitOfWork.Commit();
+    SubscriptionLife.RaisePaymentMade(sub);
+    return;
+  }
+  if (tried.State == PaymentState.Failed) { owed.Problem = Clip(tried.Message); }
+  UnitOfWork.Commit();
+}
+
+string Clip(string s) {
+  var said = s == "" ? "The payment was refused." : s;
+  return said.Length > 300 ? said.Substring(0, 300) : said;
+}
+
+/// Starts a subscription to `planKey` (and add-ons) for `customer`, billed per `interval`, from now; charges the first period.
+[Authorize(IsShopStaff)]
+public Subscription Subscribe(ShopAccount customer, string planKey, List<string> addOnKeys, BillingInterval interval,
+                              string paymentKey, string deliveryId) {
+  var plan = SubscriptionPlan.FirstOrDefault(p => p.Key == planKey);
+  if (plan == null || plan.Retired) { throw new Exception($"There is no plan '{planKey}' on sale."); }
+  if (plan.IsAddOn) { throw new Exception($"{plan.Name} is an add-on — subscribe to a plan and add it."); }
+  var now = DateTime.UtcNow;
+  // Started by staff or another system: in the shop's own currency.
+  var sub = new Subscription { Customer = customer, Interval = interval, StartedAt = now, PeriodStart = now, PeriodEnd = PeriodAfter(now, interval),
+                               PaymentKey = paymentKey, DeliveryId = deliveryId };
+  AddItem(sub, plan, 1);
+  foreach (var key in addOnKeys) {
+    var addOn = SubscriptionPlan.FirstOrDefault(p => p.Key == key && p.IsAddOn && !p.Retired);
+    if (addOn == null) { throw new Exception($"There is no add-on '{key}' on sale."); }
+    AddItem(sub, addOn, 1);
+  }
+  var first = new SubscriptionCharge { Subscription = sub, Kind = ChargeKind.Renewal, At = now, Amount = PeriodTotal(sub),
+                                       Description = $"{plan.Name}, {interval.Label.ToLower()} — first period" };
+  UnitOfWork.Commit();
+  PlaceAsOrder(sub, first);
+  Notify(sub, NoticeKind.Started, first);
+  UnitOfWork.Commit();
+  return sub;
+}
+
+void AddItem(Subscription sub, SubscriptionPlan plan, int quantity) {
+  new SubscriptionItem { Subscription = sub, Plan = plan, Quantity = quantity, UnitPrice = PlanAmountIn(plan, sub.Interval, sub.Currency, DateTime.UtcNow) };
+}
+
+/// What `item` costs for the period that starts at `at`: in the shop's own currency, the plan's price in force then;
+/// in a sold one, the plan's own price there in force then — else the converted price agreed, as a scheduled change of
+/// the shop's own price last moved it.
+decimal RenewalPrice(Subscription sub, SubscriptionItem item, DateTime at) {
+  var code = OwnOrNull(sub.Currency);
+  if (code == null && !item.PriceFixed) { return PlanAmountAt(item.Plan, sub.Interval, at); }
+  if (code != null) {
+    var listed = PriceInForce(item.Plan, sub.Interval, at, code);
+    if (listed != null) { return listed.Amount; }
+  }
+  if (item.NextUnitPrice != null && item.NextPriceFrom != null && item.NextPriceFrom!.Value <= at) {
+    var next = item.NextUnitPrice!.Value;
+    item.NextUnitPrice = null;
+    item.NextPriceFrom = null;
+    return next;
+  }
+  return item.UnitPrice;
+}
+
+/// Why `sub` cannot be charged in its currency now — "" when it can: the shop sells in it, at a fresh rate.
+public string CurrencyWait(Subscription sub) {
+  var code = OwnOrNull(sub.Currency);
+  if (code == null || SaleRate(code) != null) { return ""; }
+  if (sub.MovesOn != null) {
+    return $"The shop no longer sells in {code} — it moves to {TheShop().Currency} on {sub.MovesOn!.Value.ToString("d MMMM yyyy")}, and the renewal waits until then.";
+  }
+  return ExchangeRate.Any(r => r.Currency == code && r.Sold)
+    ? $"The rate for {code} is out of date — the renewal waits for a fresh one."
+    : $"The shop does not sell in {code} now — the renewal waits until it does.";
+}
+
+/// What a whole period costs at the items' prices.
+public decimal PeriodTotal(Subscription sub) {
+  return sub.Items.ToList().Sum(i => i.UnitPrice * i.Quantity);
+}
+
+/// The share of the current period still to come — 1 at its start, 0 at its end.
+public decimal PeriodLeft(Subscription sub) {
+  var total = (sub.PeriodEnd - sub.PeriodStart).TotalSeconds;
+  var left = (sub.PeriodEnd - DateTime.UtcNow).TotalSeconds;
+  if (total <= 0 || left <= 0) { return 0m; }
+  return Math.Min(1m, (decimal)(left / total));
+}
+
+/// Charges (or credits) `plan`'s difference for the days left. A charge for something sold is an order at once, with
+/// nothing to ship — what ships comes with the next renewal. A credit waits, and comes off the next renewal's order.
+void Prorate(Subscription sub, SubscriptionPlan plan, decimal perPeriodDifference, string description) {
+  var amount = Math.Round(perPeriodDifference * PeriodLeft(sub), 2, MidpointRounding.AwayFromZero);
+  if (amount == 0) { return; }
+  var charge = new SubscriptionCharge { Subscription = sub, Kind = ChargeKind.Proration, At = DateTime.UtcNow, Amount = amount, Description = description };
+  UnitOfWork.Commit();
+  if (amount > 0 && plan.Sells != null) {
+    PlaceLines(sub, charge, [new ChargeLine { Variant = plan.Sells!, Quantity = 1, Price = amount, Label = description }], "");
+  }
+}
+
+/// Moves to another plan. At once: the difference for the days left is charged (or credited). `atPeriodEnd`: the change
+/// waits for the renewal, and nothing is charged now — how a downgrade is usually made.
+[Authorize(IsShopStaff)]
+public void ChangePlan(Subscription sub, string planKey, bool atPeriodEnd) {
+  var plan = SubscriptionPlan.FirstOrDefault(p => p.Key == planKey);
+  if (plan == null || plan.Retired || plan.IsAddOn) { throw new Exception($"There is no plan '{planKey}' on sale."); }
+  if (atPeriodEnd) { sub.NextPlan = plan; UnitOfWork.Commit(); return; }
+  var current = sub.Items.ToList().FirstOrDefault(i => !i.Plan.IsAddOn);
+  var old = current == null ? 0m : current.UnitPrice * current.Quantity;
+  var next = PlanAmountIn(plan, sub.Interval, sub.Currency, DateTime.UtcNow);
+  if (current != null) { current.Delete(); }
+  AddItem(sub, plan, 1);
+  sub.NextPlan = null;
+  Prorate(sub, plan, next - old, $"{plan.Name}, the rest of the period");
+  Notify(sub, NoticeKind.Changed, null);
+  UnitOfWork.Commit();
+}
+
+/// Adds an add-on now, charged for the days left.
+[Authorize(IsShopStaff)]
+public void AddAddOn(Subscription sub, string addOnKey) {
+  var addOn = SubscriptionPlan.FirstOrDefault(p => p.Key == addOnKey && p.IsAddOn && !p.Retired);
+  if (addOn == null) { throw new Exception($"There is no add-on '{addOnKey}' on sale."); }
+  if (sub.Items.ToList().Any(i => i.Plan == addOn)) { return; }
+  AddItem(sub, addOn, 1);
+  Prorate(sub, addOn, PlanAmountIn(addOn, sub.Interval, sub.Currency, DateTime.UtcNow), $"{addOn.Name}, the rest of the period");
+  Notify(sub, NoticeKind.Changed, null);
+  UnitOfWork.Commit();
+}
+
+/// Takes an add-on off now, crediting the days left.
+[Authorize(IsShopStaff)]
+public void RemoveAddOn(Subscription sub, string addOnKey) {
+  var item = sub.Items.ToList().FirstOrDefault(i => i.Plan.Key == addOnKey && i.Plan.IsAddOn);
+  if (item == null) { return; }
+  var price = item.UnitPrice * item.Quantity;
+  var plan = item.Plan;
+  item.Delete();
+  Prorate(sub, plan, -price, $"{plan.Name} removed for the rest of the period");
+  Notify(sub, NoticeKind.Changed, null);
+  UnitOfWork.Commit();
+}
+
+/// Ends it: now (`atPeriodEnd` false — what was paid is not credited) or when the period ends.
+[Authorize(IsShopStaff)]
+public void CancelSubscription(Subscription sub, bool atPeriodEnd) {
+  if (atPeriodEnd) { sub.CancelAtPeriodEnd = true; UnitOfWork.Commit(); return; }
+  SubscriptionLife.RaiseCancel(sub);
+  UnitOfWork.Commit();
+}
+
+/// Staff pause it: nothing is sent or charged until it is resumed, and its subscriber is told. Answers "" or why not.
+[Authorize(IsShopStaff)]
+public string PauseSubscription(Subscription sub) {
+  if (sub.Status != SubscriptionStatus.Active) { return "Only an active subscription can be paused."; }
+  SubscriptionLife.RaisePause(sub);
+  UnitOfWork.Commit();
+  return "";
+}
+
+/// Staff resume a paused one: it goes on from where it was, and its subscriber is told. Answers "" or why not.
+[Authorize(IsShopStaff)]
+public string ResumeSubscription(Subscription sub) {
+  if (sub.Status != SubscriptionStatus.Paused) { return "It is not paused."; }
+  SubscriptionLife.RaiseResume(sub);
+  UnitOfWork.Commit();
+  return "";
+}
+
+/// Staff take back a stop at the period's end: it renews as usual.
+[Authorize(IsShopStaff)]
+public void KeepSubscription(Subscription sub) {
+  sub.CancelAtPeriodEnd = false;
+  UnitOfWork.Commit();
+}
+
+/// Renews a subscription whose period has ended: applies a waiting plan, starts the next period at the prices now,
+/// and charges it — or ends the subscription when it was set to end. Runs daily from its workflow; safe to run twice.
+public void RenewIfDue(Subscription sub) {
+  var now = DateTime.UtcNow;
+  if (now < sub.PeriodEnd) { return; }
+  if (sub.CancelAtPeriodEnd) { SubscriptionLife.RaiseCancel(sub); return; }
+  // The notice given when the shop stopped selling in its currency has run: from this renewal on, the shop's own.
+  if (sub.MovesOn != null && now >= sub.MovesOn!.Value) { ApplyCurrencyMove(sub, now); }
+  // Renewed in ITS currency, or not yet: a period is never charged in another one. Tried again tomorrow.
+  var waits = CurrencyWait(sub);
+  if (waits != sub.RenewalWaits) { sub.RenewalWaits = waits; UnitOfWork.Commit(); }
+  if (waits != "") { return; }
+  if (sub.SkipNext) {
+    // A period passes with nothing ordered — the customer asked to skip it.
+    sub.SkipNext = false;
+    sub.PeriodStart = sub.PeriodEnd;
+    sub.PeriodEnd = PeriodAfter(sub.PeriodStart, sub.Interval);
+    Notify(sub, NoticeKind.Skipped, null);
+    UnitOfWork.Commit();
+    return;
+  }
+  if (sub.NextInterval != null) {
+    sub.Interval = sub.NextInterval!.Value;
+    sub.NextInterval = null;
+    // A new cadence is a price agreed anew — each item's in its currency, at the new interval, from today.
+    foreach (var item in sub.Items.ToList()) {
+      item.UnitPrice = PlanAmountIn(item.Plan, sub.Interval, sub.Currency, sub.PeriodEnd);
+      item.NextUnitPrice = null;
+      item.NextPriceFrom = null;
+      item.PriceFixed = false;
+    }
+  }
+  if (sub.NextQuantity != null) {
+    foreach (var item in sub.Items.ToList().Where(i => i.Plan.Kind == PlanKind.Shipped)) { item.Quantity = sub.NextQuantity!.Value; }
+    sub.NextQuantity = null;
+  }
+  if (sub.NextPlan != null) {
+    var base0 = sub.Items.ToList().FirstOrDefault(i => !i.Plan.IsAddOn);
+    if (base0 != null) { base0.Delete(); }
+    AddItem(sub, sub.NextPlan, 1);
+    sub.NextPlan = null;
+  }
+  foreach (var item in sub.Items.ToList()) {
+    // The price in force on the day the new period starts, in the subscription's currency — or the one this subscriber
+    // keeps.
+    item.UnitPrice = item.KeptPrice ?? RenewalPrice(sub, item, sub.PeriodEnd);
+  }
+  sub.PeriodStart = sub.PeriodEnd;
+  sub.PeriodEnd = PeriodAfter(sub.PeriodStart, sub.Interval);
+  var renewal = new SubscriptionCharge { Subscription = sub, Kind = ChargeKind.Renewal, At = now, Amount = PeriodTotal(sub),
+                                         Description = $"Renewal, {sub.PeriodStart.ToString("d MMM yyyy")} – {sub.PeriodEnd.ToString("d MMM yyyy")}" };
+  UnitOfWork.Commit();
+  PlaceAsOrder(sub, renewal);
+}
+
+/// Places a renewal as a shop order — each item that is sold as something, at the price the subscription holds, taxed,
+/// invoiced and paid as the shop does every order. A subscription whose plans sell nothing is charged and orders nothing.
+/// Credits waiting from changes come off it.
+void PlaceAsOrder(Subscription sub, SubscriptionCharge charge) {
+  var items = sub.Items.ToList().Where(i => i.Plan.Sells != null).ToList();
+  if (items.Count == 0) { return; }
+  var shipsSomething = items.Any(i => i.Plan.Kind == PlanKind.Shipped);
+  PlaceLines(sub, charge, items.Select(i => new ChargeLine { Variant = i.Plan.Sells!, Quantity = i.Quantity, Price = i.UnitPrice }).ToList(),
+             shipsSomething ? sub.DeliveryId : "");
+}
+
+class ChargeLine {
+  public Variant? Variant;
+  public int Quantity = 1;
+  public decimal Price = 0;
+  public string? Label;
+}
+
+/// One order for `charge`: `lines` at the subscription's prices (agreed rows only the shop writes), delivered by
+/// `deliveryId` ("" ships nothing), less every credit the subscription is still owed. A credit larger than the order
+/// is used up to its total and the rest carried to the next one.
+void PlaceLines(Subscription sub, SubscriptionCharge charge, List<ChargeLine> lines, string deliveryId) {
+  // In the subscription's currency — the bag is bought in it, so the order, its invoice and its payment are too.
+  var waits = CurrencyWait(sub);
+  if (waits != "") { throw new Exception(waits); }
+  var currency = OwnOrNull(sub.Currency);
+  var bag = new Bag { VisitId = "renewal-" + Security.RandomHex(16), Currency = currency };   // a bag nobody else can name
+  foreach (var cl in lines) {
+    var line = new BagLine { Bag = bag, Variant = cl.Variant!, Quantity = cl.Quantity, PriceWhenAdded = cl.Price };
+    new AgreedLinePrice { Line = line, Price = cl.Price, Label = cl.Label, Currency = currency };
+  }
+  UnitOfWork.Commit();
+  var owed = sub.Charges.ToList().Where(c => c.Kind == ChargeKind.Proration && c.Amount < 0 && !c.Settled).ToList();
+  var credit = -owed.Sum(c => c.Amount);
+  List<Adjustment> credits = [];
+  if (credit > 0) { credits.Add(new Adjustment { Label = "Credit for days not used", Amount = credit, Source = "subscription-credit" }); }
+  var receipt = PlaceOrderForAccount(bag, sub.Customer, sub.PaymentKey, deliveryId, credits);
+  var order = Order.Where(o => o.Reference == receipt.Reference).Include(o => o.Adjustments).FirstOrDefault();
+  charge.Order = order;
+  charge.Settled = true;
+  var used = order == null ? 0m : order.Adjustments.ToList().Where(a => a.Source == "subscription-credit").Sum(a => a.Amount);
+  if (used > 0) {
+    foreach (var c in owed) { c.Settled = true; c.Order = order; }
+    if (credit > used) {
+      new SubscriptionCharge { Subscription = sub, Kind = ChargeKind.Proration, At = DateTime.UtcNow, Amount = used - credit,
+                               Description = "Credit carried to the next period" };
+    }
+  }
+  bag.Delete();
+  UnitOfWork.Commit();
+  if (sub.PayWith == null) { sub.PayWith = KeptCardFor(sub); }
+  if (order != null && sub.PayWith != null && order.Status == OrderStatus.Reserved) {
+    var paid = ChargeSavedMethod(order, sub.PayWith!);
+    charge.TriedAt = DateTime.UtcNow;
+    if (paid.State == PaymentState.Failed) {
+      charge.Problem = Clip(paid.Message);
+      Notify(sub, NoticeKind.PaymentFailed, charge);
+      UnitOfWork.Commit();
+      SubscriptionLife.RaisePaymentFailed(sub);
+    }
+    UnitOfWork.Commit();
+  }
+}

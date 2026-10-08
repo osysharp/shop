@@ -1,0 +1,23 @@
+// What the Rail look asks of a store, shown: its bag's Check out opens the store's own checkout page
+// (`appPage "/checkout"`).
+
+using Osysharp.Shop;
+
+[TestFixture]
+void Window() {
+  new ShopSettings { Name = "Rail test store", Currency = "SEK", CurrencySymbol = "kr", SymbolAfter = true, OrderPrefix = "T-" };
+  var p = new Product { Name = "Velvet cape", Slug = "velvet-cape", Price = 900m };
+  new Variant { Product = p, Stock = 3 };
+}
+
+[Test(Window)]
+void the_looks_check_out_opens_the_stores_checkout_page() {
+  runas (new Visitor { Id = "v-rail" }) {
+    Assert.Equal("", AddToBag(Variant.Single(), 1));
+    Ui.Visit("/");
+    Ui.Click("Bag, 1 item(s)");                       // the shell's bag button: its words, and how many
+    Ui.Click("Check out");
+    Assert.OnPage("/checkout");
+    Assert.Visible("Checkout — period clothes for the stage");
+  }
+}

@@ -1,0 +1,71 @@
+// THE DIRECTION — "the rail".
+//
+// Brief: people who buy second-hand on purpose — a 1970s shearling, a tooled saddle bag — want the thrill of the rail:
+// every piece one of a kind, gone when it is gone, priced like a find. The shop should feel alive, not archival.
+//
+// Looked at in the category: vintage boutiques (sepia, serif, "curated" — the cream-and-serif default in a costume),
+// charity-shop chains (cheerful, cluttered, primary colours), and resale apps (grey cards, badges, a marketplace).
+// Three directions written for this shop:
+//   1. The archive — museum labels, sepia photographs. REJECTED: it treats clothes as relics, and it is the default.
+//   2. Marketplace — dense cards and filters. REJECTED: it is a platform, not a shop with a point of view.
+//   3. The rail — CHOSEN: a deep bottle-green ground like a shop's painted wall, off-white type in a characterful
+//      grotesk set big and tight, photographs left warm, and ONE accent — the yellow of a price tag — kept for the
+//      price and the one thing to press.
+
+namespace Osysharp.Shop.Looks.Rail;
+
+/// The rail — a bottle-green wall, a characterful grotesk set big and tight, finds pinned at an angle, a price-tag yellow.
+look Rail {
+  Label = "Rail";
+  Theme = RailTheme;
+}
+
+theme RailTheme {
+  Colors {
+    Bg            = "#17291F";
+    OnBg          = "#F3F1EA";
+    Surface       = "#1F3629";
+    OnSurface     = "#F3F1EA";
+    Muted         = "#26402F";
+    TextMuted     = "#9DB0A2";
+    TextSecondary = "#CBD6CC";
+    Border        = "#2F4B39";
+    Primary       = Palette.From("#F5C518");   // the price tag — the ONE accent
+    OnPrimary     = "#17291F";
+    OnImage       = "#FFFFFF";
+    Scrim         = "rgb(10 20 14 / 0.6)";
+    // Raised panels and wells in this look's own paper — a menu or a dialog, a field's well — and statuses that read
+    // on its dark ground. Left at the floor they follow the visitor's system instead: dark menus and pale statuses
+    // inside a look that stays as it is.
+    Elevated = Colors.Surface;
+    Sunken   = Colors.Muted;
+    Danger   = "#FF6B5E";   // errors and refusals, set for this look's dark ground
+    Success  = "#4CC38A";   // done, paid, in stock, set for this look's dark ground
+    Warning  = "#F0A030";   // a caution that is not yet a refusal, set for this look's dark ground
+    Waiting  = "#A5A8D0";   // pending — held, not yet paid, set for this look's dark ground
+  }
+  Font {
+    Display = "\"Bricolage Grotesque\", system-ui, sans-serif";
+    Sans    = "\"Bricolage Grotesque\", system-ui, sans-serif";
+  }
+  FontSize {
+    Mega    = "clamp(64px, 12vw, 190px)";
+    Hero    = "clamp(40px, 6vw, 84px)";
+    Title   = "30px";
+    Lead    = "19px";
+    Body    = "16px";
+    Label   = "13px";
+    Caption = "12px";
+  }
+  // `Headline` — the weight a store's own page headings are set in (Checkout, Your bag, Paid.).
+  FontWeight { Light = 400; Black = 800; Headline = 400; }
+  Radius { Card = "14px"; Md = "10px"; Lg = "18px"; Pill = "999px"; }
+  Shadow { Raised = "none"; Floating = "0 20px 44px -22px rgb(0 0 0 / 0.55)"; }
+  Motion {
+    Lift = "transform 280ms cubic-bezier(.2,.8,.2,1), opacity 280ms ease";
+    Fade = "opacity 220ms ease";
+  }
+}
+
+animation RailRiseIn  { Duration = "560ms"; Easing = EaseOut; from { Opacity = 0; TranslateY = "20px"; } to { Opacity = 1; TranslateY = "0"; } }
+animation RailSurface { Duration = "900ms"; from { Opacity = 0; TranslateY = "32px"; } to { Opacity = 1; TranslateY = "0"; } }

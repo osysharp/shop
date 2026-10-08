@@ -1,0 +1,185 @@
+// The front of the rail: the line, with the finds pinned beside it at an angle; the rail itself; and how a piece gets
+// here. It is a region staff arrange — what is written here is how it stands until they do.
+
+namespace Osysharp.Shop.Looks.Rail;
+
+using Osysharp.Ui;
+using Osysharp.Blocks;
+using Osysharp.Storage;
+using Osysharp.Shop;
+using Osysharp.Shop.Looks;
+using Osysharp.Site.Looks;
+
+[AllowAnonymous]
+component RailFront() : FrontPage {
+  render {
+    Stack(gap: 0) {
+      Region("front", allow: [Hero, ProductRow, CategoryTiles, PictureWithWords, Quote, SignUp, Banner, PhotoGallery, RailSteps]) {
+        Hero(title: "Worn once.\nLoved twice.",
+             words: "Jackets, denim, knits and leather — every piece one of one, washed, mended where it needed it, and priced like a find.",
+             photo: "/_osy/files/public/products/shearling_leather_jacket_1.jpg",
+             second: "/_osy/files/public/products/floral_tea_dress_1.jpg",
+             button: "See what's just in", link: "/shop");
+        ProductRow(title: "Just in", count: 8, more: "The whole rail", link: "/shop");
+        RailSteps();
+      }
+    }
+  }
+}
+
+/// The line, set big and tight, with its photographs pinned to the wall beside it — and, beside them, the rail's latest
+/// find, so the wall always shows something that came in. Without a photograph the words take the whole width: a wall
+/// with only a stranger's find pinned to it would be a hero about nothing.
+[AllowAnonymous]
+component RailHero(string title, Markdown words = "", Picture photo = "", Picture second = "", string button = "Shop now",
+                   PageLink link = "/", Color ground = Colors.Surface) : Hero {
+  live var listed = Product.Include(p => p.Images).Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard).OrderBy(p => p.Rank).ToList();
+  // The latest find whose photograph is not already pinned.
+  live var latest = listed.Where(p => p.Images.Count() > 0 && !photo.EndsWith(CoverPhoto(p.Images)) && !second.EndsWith(CoverPhoto(p.Images)))
+    .Take(1).ToList();
+  render {
+    RailSection {
+      Box(display: Display.Grid, cols: photo == "" && second == "" ? "1fr" : "repeat(auto-fit, minmax(320px, 1fr))", gap: 10, py: 14,
+          align: Align.Center, label: "Hero: " + title) {
+        Stack(gap: 6, animation: RailRiseIn) {
+          Text(title, fontFamily: Font.Display, fontSize: FontSize.Mega, fontWeight: FontWeight.Black,
+               lineHeight: "0.86", letterSpacing: "-0.04em", whiteSpace: WhiteSpace.PreLine);
+          if (words != "") {
+            Text(words, fontSize: FontSize.Lead, lineHeight: "1.5", color: Colors.TextSecondary, maxW: "560px");
+          }
+          if (button != "") { Row { Link(href: link, label: button) { RailPill(button + " →"); } } }
+        }
+        if (photo != "" || second != "") {
+          Box(position: Position.Relative, h: "560px") {
+            if (photo != "" && second != "") {
+              RailPinned(photo, title, "0", "6%", "-4deg", 1);
+              RailPinned(second, title, "22%", "46%", "5deg", 2);
+              foreach (var p in latest) { RailPinned(File.Url(CoverPhoto(p.Images)), p.Name, "52%", "10%", "-2deg", 3); }
+            } else {
+              RailPinned(photo != "" ? photo : second, title, "0", "8%", "-4deg", 1);
+              foreach (var p in latest) { RailPinned(File.Url(CoverPhoto(p.Images)), p.Name, "30%", "44%", "4deg", 2); }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// A photograph pinned to the wall at an angle — a white border, rising a little under the pointer.
+[Composable]
+component RailPinned(string photo, string alt, string top, string left, string tilt, int layer) {
+  variants {
+    base { Position = Position.Absolute; W = "46%"; P = 2; Bg = Colors.OnBg; Shadow = Shadow.Floating; Transition = Motion.Lift;
+           Hover { TranslateY = "-6px"; } }
+  }
+  render {
+    Box(top: top, left: left, rotate: tilt, z: layer) {
+      Image(picture: photo, alt: alt, w: "100%", aspectRatio: "4 / 5", objectFit: ObjectFit.Cover);
+    }
+  }
+}
+
+/// The one yellow thing to press.
+[Composable]
+component RailPill(string label) {
+  variants {
+    base { Bg = Colors.Primary; Color = Colors.OnPrimary; Px = 6; Py = 3; Rounded = Radius.Pill; FontWeight = FontWeight.Semibold;
+           Transition = Motion.Lift; Hover { TranslateY = "-2px"; } }
+  }
+  render { Text(label); }
+}
+
+/// The rail: what came in last, under a heading, with a link to the rest.
+[AllowAnonymous]
+component RailProductRow(string title = "New in", Category? shelf = null, int count = 4, string more = "See them all",
+                         PageLink link = "/search") : ProductRow {
+  live var listed = Product.Include(p => p.Images).Include(p => p.Variants)
+    .Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard).OrderBy(p => p.Rank).ToList();
+  // The pieces this row shows — a computed of the read above, so the grid is handed one list, not a new one per render.
+  live var shown = listed.Where(p => shelf == null || (p.Category != null && p.Category.Id == shelf.Id)).Take(count).ToList();
+  render {
+    RailSection {
+      Stack(gap: 0, pt: 10, pb: 16) {
+        RailSectionHead(title, linkLabel: more, to: link);
+        RailGrid(shown);
+      }
+    }
+  }
+}
+
+/// The shelves as rounded photographs with their names on them — each shelf's own picture, or the first piece on it.
+[AllowAnonymous]
+component RailShelves(string title = "The shelves") : CategoryTiles {
+  live var shelves = Category.Where(c => c.Parent == null).OrderBy(c => c.Rank).ToList();
+  live var pieces = Product.Include(p => p.Images).Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard).OrderBy(p => p.Rank).ToList();
+  render {
+    RailSection {
+      Stack(gap: 0, pt: 10, pb: 16) {
+        RailSectionHead(title);
+        Box(display: Display.Grid, cols: "repeat(auto-fill, minmax(220px, 1fr))", gap: 4, label: "Shelves: " + title) {
+          foreach (var c in shelves) {
+            RailShelfTile(c.Name, "/shop/" + c.Slug, c.Picture ?? RailShelfCover(c.Id, pieces));
+          }
+        }
+      }
+    }
+  }
+}
+
+/// The cover of the first piece on a shelf, or "".
+string RailShelfCover(Guid shelf, List<Product> pieces) {
+  return CoverPhoto(pieces.Where(p => p.Category != null && p.Category.Id == shelf).Take(1).SelectMany(p => p.Images).ToArray());
+}
+
+/// A shelf as a rounded photograph with its name on it.
+[Composable]
+component RailShelfTile(string name, string to, string photo) {
+  variants { base { Display = Display.Block; Color = Colors.OnImage; TextDecoration = TextDecoration.None; Transition = Motion.Lift;
+                    Hover { TranslateY = "-4px"; } } }
+  render {
+    Link(href: to, label: name) {
+      Box(position: Position.Relative, overflow: Overflow.Hidden, rounded: Radius.Card, bg: Colors.Surface) {
+        Image(src: File.Url(photo), alt: name, w: "100%", aspectRatio: "4 / 5", objectFit: ObjectFit.Cover);
+        Box(position: Position.Absolute, inset: "0", bgImage: "linear-gradient(180deg, rgb(0 0 0 / 0) 55%, rgb(0 0 0 / 0.45) 100%)");
+        Text(name, position: Position.Absolute, left: "20px", bottom: "16px", fontFamily: Font.Display, fontSize: FontSize.Title,
+             fontWeight: FontWeight.Black, color: Colors.OnImage);
+      }
+    }
+  }
+}
+
+/// How a piece gets onto the rail, in three steps on the shop's painted wall — the Rail's own block.
+[Block("How a piece gets here")]
+[AllowAnonymous]
+component RailSteps(
+    [Label("First step"), MaxLength(60)] string first = "Picked one by one",
+    [Label("Words under the first step"), MaxLength(240)] string firstWords = "Nothing comes in by the bale. Every piece is chosen for its cloth, its cut and how much wear it has left.",
+    [Label("Second step"), MaxLength(60)] string second = "Washed and mended",
+    [Label("Words under the second step"), MaxLength(240)] string secondWords = "Buttons sewn back on, seams closed, leather fed. If it cannot be made right, it does not go on the rail.",
+    [Label("Third step"), MaxLength(60)] string third = "Gone when it's gone",
+    [Label("Words under the third step"), MaxLength(240)] string thirdWords = "There is one of each. Put it in your bag and it is held for you for three days while you pay.") {
+  render {
+    Box(bg: Colors.Surface, label: "How a piece gets here") {
+      RailSection {
+        Box(display: Display.Grid, cols: "repeat(auto-fit, minmax(240px, 1fr))", gap: 8, py: 16) {
+          RailStep("01", first, firstWords);
+          RailStep("02", second, secondWords);
+          RailStep("03", third, thirdWords);
+        }
+      }
+    }
+  }
+}
+
+/// One step of how a piece gets here, rising in as it scrolls into view.
+[Composable]
+component RailStep(string number, string title, string body) {
+  render {
+    Stack(gap: 3, animation: RailSurface, animationTimeline: AnimationTimeline.View) {
+      Text(number, color: Colors.Primary, fontWeight: FontWeight.Black);
+      Text(title, fontSize: FontSize.Title, fontWeight: FontWeight.Black, lineHeight: "1.05");
+      Text(body, color: Colors.TextSecondary, lineHeight: "1.6");
+    }
+  }
+}

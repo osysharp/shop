@@ -1,0 +1,126 @@
+// The frame — the kit's StorefrontShell: the rails across the top, and the bag sliding in from the side, always one tap
+// away. The menu, the strip across the top and the words in the footer are the
+// store's to arrange at the page desk; what is written here is what they show until staff do.
+
+namespace Osysharp.Shop.Looks.Rail;
+
+using Osysharp.Ui;
+using Osysharp.Blocks;
+using Osysharp.Pages;
+using Osysharp.Storage;
+using Osysharp.Shop;
+using Osysharp.Shop.Looks;
+using Osysharp.Site.Looks;
+
+[Composable]
+component RailShopFrame() : ShopFrame {
+  string visitId = Visitor.Id;
+  live var bag = Bag.Include(b => b.Lines).SingleOrDefault(b => b.VisitId == visitId);
+  live var inBag = bag == null ? 0 : bag.Lines.Sum(l => l.Quantity);
+  live var menu = SiteMenu("menu", [
+      // Seven, not eight: with the brand centred, eight shelves ran into it at 1440 ("Sal" against a twelve-letter name); knitwear
+      // is still a shelf of the shop, one step in. Staff can put it back at the desk.
+      new NavItem { Label = "Just in", To = "/shop", Exact = true },
+      new NavItem { Label = "Jackets", To = "/shop/jackets-coats" },
+      new NavItem { Label = "Denim", To = "/shop/denim" },
+      new NavItem { Label = "Dresses", To = "/shop/dresses-tops" },
+      new NavItem { Label = "Bags", To = "/shop/bags" },
+      new NavItem { Label = "Shoes", To = "/shop/shoes-boots" },
+      new NavItem { Label = "Sale", To = "/sale" },
+  ]);
+  live var shop = ShopSettings.FirstOrDefault();
+  live var chrome = new AppChrome {
+    Product = shop?.Name ?? "",
+    Tagline = "Second-hand clothing · Göteborg",
+    Home = "/",
+    Nav = menu,
+  };
+
+  render {
+    StorefrontShell(chrome, bagCount: inBag) {
+      // The live site version's look and variant, and — while staff preview the site — the banner saying so.
+      SiteLook();
+      ShopVisitSync();
+      slot actions { ShopAccountButton(); }
+      Slot;
+      slot promo {
+        Region("announcement", allow: [Announcement]) {
+          Announcement(words: "A demo of Osy# — nothing here is for sale and no money moves. Pay with the test card 4242 4242 4242 4242.");
+        }
+      }
+      slot bag { RailBag(); }
+      slot footer {
+        StoreFooter(chrome) {
+          slot about {
+            Region("footer", allow: [FooterWords, FooterLink, OpeningHours, Address, FooterSignUp]) {
+              FooterWords(words: "Second-hand clothing, bags and boots, picked one at a time, washed, mended where it needs it, and priced like a find.");
+            }
+          }
+        }
+        Box(px: 6, pb: 6) { ShopPolicyLinks(); }
+      }
+    }
+  }
+}
+
+/// What the bag panel holds: the finds, the total, and the way to check out.
+[Composable]
+[AllowAnonymous]
+component RailBag() {
+  string visitId = Visitor.Id;
+  live var bag = Bag.Include(b => b.Lines.Variant.Product).SingleOrDefault(b => b.VisitId == visitId);
+  live var covers = ProductImage.Where(i => i.Rank == 0).ToList();
+  live var shop = ShopSettings.FirstOrDefault();
+
+  action Remove(BagLine line) { RemoveFromBag(line); }
+  action Pay() { Navigation.Go("/checkout"); }
+
+  render {
+    Stack(gap: 5, p: 5) {
+      if (bag == null || bag.Lines.Count() == 0) {
+        Text("Nothing in the bag yet.", color: Colors.TextSecondary);
+      } else {
+        foreach (var line in bag.Lines) {
+          Row(gap: 4, align: Align.Center, label: line.Variant.Product.Name) {
+            Image(src: File.Url(covers.Where(c => c.Product.Id == line.Variant.Product.Id).OrderBy(c => c.Rank).Select(c => c.Path).FirstOrDefault() ?? ""),
+                  alt: line.Variant.Product.Name, w: "76px", aspectRatio: "4 / 5", objectFit: ObjectFit.Cover, rounded: Radius.Md);
+            Stack(gap: 1, grow: 1, minW: "0") {
+              Text(line.Variant.Product.Name, fontWeight: FontWeight.Semibold);
+              ShopLineNote(line);
+              Text(LookPrice((line.Variant.Price ?? line.Variant.Product.Price) * line.Quantity, shop), color: Colors.Primary);
+            }
+            IconButton("Remove " + line.Variant.Product.Name, () => Remove(line)) { Icon(Icons.Close); }
+          }
+        }
+        Row(justify: Justify.Between, align: Align.Baseline, pt: 3, borderTW: 1, border: Colors.Border) {
+          Text("Total", color: Colors.TextMuted);
+          Text(LookPrice(bag.Lines.Sum(l => (l.Variant.Price ?? l.Variant.Product.Price) * l.Quantity), shop), fontSize: FontSize.Title,
+               fontWeight: FontWeight.Black);
+        }
+        Button("Check out", onPress: Pay, tone: Tone.Primary, size: Size.Lg);
+        Text("Every piece is one of one — it is held for you for three days once you check out.", fontSize: FontSize.Label,
+             color: Colors.TextMuted);
+      }
+    }
+  }
+}
+
+/// A page's content column.
+component RailSection() : ShopSection {
+  variants { base { W = "100%"; MaxW = "1400px"; Mx = "auto"; Px = 5; Laptop { Px = 10; } } }
+  render { Box { Slot; } }
+}
+
+/// Something that is not here, set big and tight like the rail's headings.
+component RailNotFound(string message, string linkLabel = "", string to = "") : NotFound {
+  render {
+    RailSection {
+      Stack(gap: 3, py: 20) {
+        Text(message, fontSize: FontSize.Hero, fontWeight: FontWeight.Black, letterSpacing: "-0.03em");
+        if (linkLabel != "" && to != "") {
+          Row { Link(href: to, label: linkLabel) { Text(linkLabel + " →", color: Colors.TextSecondary); } }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,105 @@
+// The frame — the kit's SplitShell: one photograph pinned to half the screen, chosen for the page, while the page
+// scrolls beside it. On a product page it is that piece. The menu, the strip across the top and the words in the footer
+// are the store's to arrange at the page desk; what is written here is what they show until staff do.
+
+namespace Osysharp.Shop.Looks.Fitting;
+
+using Osysharp.Ui;
+using Osysharp.Blocks;
+using Osysharp.Pages;
+using Osysharp.Storage;
+using Osysharp.Shop;
+using Osysharp.Shop.Looks;
+using Osysharp.Site.Looks;
+
+/// Which piece's photograph holds the pinned half for a route: a product page shows its own piece, a shelf a piece from
+/// it, the front page the shearling.
+string FittingArtSlug(string path) {
+  if (path.StartsWith("/p/")) { return path.Substring(3); }
+  if (path.StartsWith("/shop/shoes-boots")) { return "western-leather-boots"; }
+  if (path.StartsWith("/shop/bags")) { return "tooled-leather-saddle-bag"; }
+  if (path.StartsWith("/shop/denim")) { return "faded-denim-trucker-jacket"; }
+  if (path.StartsWith("/shop/knitwear")) { return "striped-wool-jumper"; }
+  if (path.StartsWith("/shop/dresses-tops")) { return "rose-print-tea-dress"; }
+  if (path.StartsWith("/shop")) { return "rust-twill-jacket"; }
+  return "shearling-collar-leather-jacket";
+}
+
+[Composable]
+component FittingFrame() : ShopFrame {
+  string visitId = Visitor.Id;
+  live var path = Navigation.CurrentPath ?? "";
+  live var artSlug = FittingArtSlug(path);
+  live var art = Product.Include(p => p.Images).Where(p => p.Slug == artSlug).ToList();
+  live var bag = Bag.Include(b => b.Lines).SingleOrDefault(b => b.VisitId == visitId);
+  live var inBag = bag == null ? 0 : bag.Lines.Sum(l => l.Quantity);
+  live var menu = SiteMenu("menu", [
+      new NavItem { Label = "Just in", To = "/shop", Exact = true },
+      new NavItem { Label = "Jackets", To = "/shop/jackets-coats" },
+      new NavItem { Label = "Denim", To = "/shop/denim" },
+      new NavItem { Label = "Knitwear", To = "/shop/knitwear" },
+      new NavItem { Label = "Dresses", To = "/shop/dresses-tops" },
+      new NavItem { Label = "Bags", To = "/shop/bags" },
+      new NavItem { Label = "Shoes", To = "/shop/shoes-boots" },
+      new NavItem { Label = "Sale", To = "/sale" },
+  ]);
+  live var shop = ShopSettings.FirstOrDefault();
+  live var chrome = new AppChrome { Product = shop?.Name ?? "", Home = "/", Nav = menu };
+
+  action OpenBag() { Navigation.Go("/bag"); }
+
+  render {
+    SplitShell(chrome) {
+      SiteLook();
+      ShopVisitSync();
+      Slot;
+      slot art {
+        foreach (var p in art) {
+          Image(src: File.Url(CoverPhoto(p.Images)), alt: p.Name, w: "100%", h: "100%", objectFit: ObjectFit.Cover, objectPosition: "center 25%");
+        }
+      }
+      slot promo {
+        Region("announcement", allow: [Announcement]) {
+          Announcement(words: "A demo of Osy# — nothing here is for sale and no money moves. Pay with the test card 4242 4242 4242 4242.");
+        }
+      }
+      slot actions { ShopAccountButton(); Button(inBag == 0 ? "Bag" : $"Bag ({inBag})", onPress: OpenBag, tone: Tone.Primary); }
+      slot footer {
+        EditorialFooter(chrome) {
+          slot about {
+            Region("footer", allow: [FooterWords, FooterLink, OpeningHours, Address, FooterSignUp]) {
+              FooterWords(words: "Second-hand clothing, bags and boots, picked one at a time, washed, mended where it needs it, and priced like a find.");
+            }
+          }
+        }
+        Box(px: 6, pb: 6) { ShopPolicyLinks(); }
+      }
+    }
+  }
+}
+
+/// The footer's words, set as the editorial footer sets a blurb — a paragraph a size up, never wider than a column.
+[Composable]
+component FittingFooterWords(string words) : FooterWords {
+  render { Text(words, fontSize: FontSize.Subhead, lineHeight: "1.6", maxW: "420px"); }
+}
+
+/// A page's content column — inside the split's half, so narrower margins than a full-width shell.
+component FittingSection() : ShopSection {
+  variants { base { W = "100%"; Px = 5; Laptop { Px = 8; } } }
+  render { Box { Slot; } }
+}
+
+/// Something that is not here.
+component FittingNotFound(string message, string linkLabel = "", string to = "") : NotFound {
+  render {
+    FittingSection {
+      Stack(gap: 3, py: 20) {
+        Text(message, fontSize: FontSize.Hero, fontWeight: FontWeight.Light);
+        if (linkLabel != "" && to != "") {
+          Row { Link(href: to, label: linkLabel) { Text(linkLabel + " →", color: Colors.TextSecondary); } }
+        }
+      }
+    }
+  }
+}

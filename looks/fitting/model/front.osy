@@ -1,0 +1,76 @@
+// The front of the fitting room: the line in italic beside the pinned shearling, then what is new, two across. It is a
+// region staff arrange — what is written here is how it stands until they do.
+
+namespace Osysharp.Shop.Looks.Fitting;
+
+using Osysharp.Ui;
+using Osysharp.Blocks;
+using Osysharp.Storage;
+using Osysharp.Shop;
+using Osysharp.Shop.Looks;
+using Osysharp.Site.Looks;
+
+[AllowAnonymous]
+component FittingFront() : FrontPage {
+  render {
+    Stack(gap: 0) {
+      Region("front", allow: [Hero, ProductRow, CategoryTiles, PictureWithWords, Quote, SignUp, Banner, PhotoGallery]) {
+        Hero(title: "Second hand, first choice.",
+             words: "Sixteen pieces, each the only one of its kind — a shearling from the seventies, a tooled saddle bag, a tea dress with its buttons all there.",
+             button: "See the rail", link: "/shop");
+        ProductRow(title: "New in", count: 6, more: "Shop all", link: "/shop");
+      }
+    }
+  }
+}
+
+/// The season's line in italic, a sentence, and an amber pill — the photograph is the pinned half beside it.
+[Composable]
+component FittingHero(string title, Markdown words = "", Picture photo = "", Picture second = "", string button = "Shop now",
+                     PageLink link = "/", Color ground = Colors.Surface) : Hero {
+  render {
+    FittingSection {
+      Stack(gap: 6, pt: 14, pb: 12, animation: FittingRiseIn, label: "Hero: " + title) {
+        Text(title, fontFamily: Font.Display, fontStyle: FontStyle.Italic, fontSize: FontSize.Mega,
+             lineHeight: "0.92", letterSpacing: "-0.02em");
+        if (words != "") {
+          Text(words, fontSize: FontSize.Lead, lineHeight: "1.6", color: Colors.TextSecondary, maxW: "520px");
+        }
+        if (button != "") { Row(gap: 5, align: Align.Center) { Link(href: link, label: button) { FittingPill(button); } } }
+      }
+    }
+  }
+}
+
+/// The call to action: an amber pill, the colour of the fitting-room bulb.
+[Composable]
+component FittingPill(string label) {
+  variants { base { Bg = Colors.Primary; Color = Colors.OnPrimary; Px = 6; Py = 3; Rounded = Radius.Pill; FontWeight = FontWeight.Semibold;
+                    Transition = Motion.Lift; Hover { TranslateY = "-2px"; } } }
+  render { Text(label); }
+}
+
+/// What is new — two across: the fitting room's grid sits in half a screen, so its cards stay large.
+[AllowAnonymous]
+component FittingProductRow(string title = "New in", Category? shelf = null, int count = 4, string more = "See them all",
+                           PageLink link = "/search") : ProductRow {
+  live var listed = Product.Include(p => p.Images).Include(p => p.Variants)
+    .Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard).OrderBy(p => p.Rank).ToList();
+  // The pieces this row shows — a computed of the read above, so the grid is handed one list, not a new one per render.
+  live var shown = listed.Where(p => shelf == null || (p.Category != null && p.Category.Id == shelf.Id)).Take(count).ToList();
+  render {
+    FittingSection {
+      Stack(gap: 0, pb: 16) {
+        FittingSectionHead(title, linkLabel: more, to: link);
+        FittingTwoAcross(shown);
+      }
+    }
+  }
+}
+
+/// Two across.
+[Composable]
+component FittingTwoAcross(List<Product> products) {
+  variants { base { Display = Display.Grid; Cols = "repeat(2, minmax(0, 1fr))"; Gap = 5; } }
+  render { Box { foreach (var p in products) { FittingCard(p, products.IndexOf(p)); } } }
+}

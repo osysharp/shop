@@ -1,0 +1,54 @@
+// THE DIRECTION — "the fitting room".
+//
+// Brief: the thrift shop for a customer who wants to take their time with a piece — see it large, read about it,
+// imagine it on — the way you do in a fitting room with one good light.
+//
+// Looked at: vintage dealers' sites (dark rooms, a spotlit piece, a warm serif), resale apps (grey grids), and
+// second-hand bookshops (dense, warm, cluttered). Three directions written:
+//   1. The bookshop — dense and warm. REJECTED: it buries the one piece a customer came for.
+//   2. Resale grid. REJECTED: a marketplace, not a shop.
+//   3. The fitting room — CHOSEN: a dark chocolate ground, warm pale type, Young Serif for display, the piece's own
+//      photograph pinned to half the screen, and ONE accent — amber, like the fitting-room bulb — for what to press.
+
+namespace Osysharp.Shop.Looks.Fitting;
+
+/// The fitting room — a dark chocolate ground, Young Serif in italic, the piece pinned to half the screen, an amber accent.
+look Fitting {
+  Label = "Fitting room";
+  Theme = FittingTheme;
+}
+
+theme FittingTheme {
+  Colors {
+    Bg = "#24170F"; OnBg = "#F3E8DB"; Surface = "#2E1F16"; OnSurface = "#F3E8DB"; Muted = "#3A281C";
+    TextMuted = "#B9A695"; TextSecondary = "#E2D3C2"; Border = "#46321F";
+    Primary = Palette.From("#F2A541");   // amber, the fitting-room bulb — the ONE accent
+    OnPrimary = "#24170F"; OnImage = "#FFFFFF"; Scrim = "rgb(0 0 0 / 0.5)";
+    // Raised panels and wells in this look's own paper — a menu or a dialog, a field's well — and statuses that read
+    // on its dark ground. Left at the floor they follow the visitor's system instead: dark menus and pale statuses
+    // inside a look that stays as it is.
+    Elevated = Colors.Surface;
+    Sunken   = Colors.Muted;
+    Danger   = "#FF6B5E";   // errors and refusals, set for this look's dark ground
+    Success  = "#4CC38A";   // done, paid, in stock, set for this look's dark ground
+    Warning  = "#F5B738";   // a caution that is not yet a refusal, set for this look's dark ground
+    Waiting  = "#A5A8D0";   // pending — held, not yet paid, set for this look's dark ground
+  }
+  Font {
+    Display = "\"Young Serif\", Georgia, serif"; Sans = "\"Hanken Grotesk\", system-ui, sans-serif";
+  }
+  FontSize {
+    Mega = "clamp(60px, 10vw, 170px)"; Hero = "clamp(40px, 5.5vw, 84px)"; Title = "26px";
+    Lead = "18px"; Body = "15px"; Label = "12px"; Caption = "12px";
+  }
+  // `Headline` — the weight a store's own page headings are set in (Checkout, Your bag, Paid.): Young Serif's one weight.
+  FontWeight { Light = 400; Headline = 400; }
+  Radius { Card = "0"; Md = "999px"; Lg = "0"; Pill = "999px"; }
+  Shadow { Raised = "none"; Floating = "0 18px 40px -24px rgb(0 0 0 / 0.35)"; }
+  Motion {
+    Lift = "transform 280ms cubic-bezier(.2,.8,.2,1), opacity 280ms ease";
+    Fade = "opacity 220ms ease";
+  }
+}
+
+animation FittingRiseIn { Duration = "560ms"; Easing = EaseOut; from { Opacity = 0; TranslateY = "16px"; } to { Opacity = 1; TranslateY = "0"; } }

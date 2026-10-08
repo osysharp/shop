@@ -1,0 +1,82 @@
+// The reviews' settings section — DECLARED on `ReviewSettings` (D-SETTINGSTIER1), with no page code in the kit:
+// announced to the shop's staff and nobody else, its switch saved only when Save is pressed (and then deciding whether
+// the next review waits), who changed it said under it, and the switch the organisation's when it sets it.
+
+using Osysharp.Shop.Reviews;
+using Osysharp.Shop;
+using Osysharp.Ui;
+
+[Test(Shop)]
+void the_kit_announces_its_reviews_section_to_staff_only() {
+  runas (Desk) {
+    var link = AnnouncedSettings().Single(l => l.To == "/settings/reviews");
+    Assert.Equal("Reviews", link.Label);
+    Assert.Equal("Shop", link.Group);
+  }
+  runas (Maja) { Assert.False(AnnouncedSettings().Any(l => l.To == "/settings/reviews")); }
+}
+
+[Test(Shop)]
+void staff_switch_reviews_to_go_up_at_once_and_it_holds_only_after_save() {
+  Ui.Viewport(1280, 860);
+  Ui.SignInAs(Desk);
+  Ui.Visit("/settings/reviews");
+  Assert.Visible("Off, a review waits in the desk until somebody publishes it.", within: "Moderation");
+  Assert.Hidden("Changed by");
+  Ui.Click("Publish new reviews at once");
+  Assert.Visible("Unsaved changes");
+  runas (Desk) { Assert.False(ReviewsGoLiveAtOnce()); }               // nothing is saved before Save
+  Ui.Shot("reviews-settings-unsaved");
+  Ui.Click("Save");
+  Assert.Visible("Reviews saved.");
+  Assert.Visible("Changed by anna@shop.test", within: "Moderation");
+  runas (Desk) { Assert.True(ReviewsGoLiveAtOnce()); }
+
+  Ui.Viewport(390, 844);
+  Ui.Visit("/settings/reviews");
+  Assert.Checked("Publish new reviews at once");
+  Assert.NoOverflow();
+  Ui.Shot("reviews-settings-phone");
+
+  // …and it decides: the next review goes straight up.
+  MajaBoughtBeans();
+  runas (Maja) { WriteReview(Beans(), 5, "Bright and sweet", "Like blackcurrant jam on toast."); }
+  runas (Desk) { Assert.Equal(ReviewState.Published, ProductReview.Single().State); }
+}
+
+[Test(Shop)]
+void a_customer_is_refused_the_reviews_settings_page() {
+  Ui.SignInAs(Maja);
+  Ui.Visit("/settings/reviews");
+  Assert.Hidden("Publish new reviews at once");
+}
+
+// ── the organisation's lock, from `[OrgPolicy(OrgPolicyMode.Lock)]` alone ──────────────────────────────────────────
+
+/// What a pretend organisation sets — one row per setting key, written by a fixture.
+entity PretendOrgSets {
+  [Required, MaxLength(200)] string Setting;
+  security { allow read, create when IsAnonymous || IsAuthenticated; }
+}
+
+/// A stand-in for the org layer's package: the organisation sets whatever a fixture wrote down.
+public class PretendOrganization : IOrgPolicySource {
+  public bool Sets(string setting) { return PretendOrgSets.Any(s => s.Setting == setting); }
+}
+
+[TestFixture]
+void ShopInAGroupThatReadsFirst() {
+  Shop();
+  new PretendOrgSets { Setting = "Osysharp.Shop.Reviews.ReviewSettings.PublishAtOnce" };
+}
+
+[Test(ShopInAGroupThatReadsFirst)]
+void the_organisation_setting_moderation_locks_the_switch_and_says_so() {
+  runas (Desk) { Assert.True(SetByOrganization<ReviewSettings>(s => s.PublishAtOnce)); }
+  Ui.Viewport(1280, 860);
+  Ui.SignInAs(Desk);
+  Ui.Visit("/settings/reviews");
+  Assert.Visible("Set by your organization", within: "Moderation");
+  Assert.Disabled("Publish new reviews at once");
+  Ui.Shot("reviews-settings-org-locked");
+}

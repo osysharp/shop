@@ -1,0 +1,14 @@
+// The reviews' desk as a page of the kit — it stands in the store's own working shell and puts itself in its
+// navigation, beside the shop's desk (Osysharp.Shop's DeskPages.osy). A store writes nothing to have it.
+
+namespace Osysharp.Shop.Reviews;
+
+using Osysharp.Ui;
+using Osysharp.Shop;
+
+/// Every review waiting first, each with Publish and Hide, and whether new ones go live at once.
+[Page("/staff/reviews")] [Layout(WorkspaceFrame)] [Authorize(IsShopStaff)] [Render(CSR)] [Title("Reviews")]
+[Nav("Reviews", Order = 60)]
+public component ReviewsDeskPage() {
+  render { Stack(gap: 6, w: "100%", maxW: "1200px") { PageTitle("Reviews"); DeskReviews(); } }
+}

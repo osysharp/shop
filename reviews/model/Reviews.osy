@@ -1,0 +1,302 @@
+// Product reviews. A customer who BOUGHT a product rates it (1–5) and says why; staff read it before anyone else does
+// (or the shop publishes at once — its setting); the product page shows the published ones with their average, and a
+// search engine reads the same average from the product's structured data.
+//
+// ⚑ WHO MAY WRITE IS THE ENTITY'S RULE, not the page's. `allow create … where Author == user && HasBought(Product)`
+//   refuses a review from anyone who has not paid for the product, and from anyone writing in someone else's name,
+//   however the row arrives — the page, a function, the API.
+//
+// ⚑ A REVIEW'S STATE IS ITS WORKFLOW'S (`ReviewLifecycle` tracks it), so no code a customer can reach may write it:
+//   a review is published by staff approving it (or by the shop's publish-at-once setting), never by its author. And
+//   after it is written its words change only through the workflow too — `Revise`, which only the author may raise —
+//   so an approved review edited later goes back to waiting instead of changing under the approval.
+
+namespace Osysharp.Shop.Reviews;
+
+using Osysharp.Shop;
+using Osysharp.Seo;
+using Osysharp.Workflow;
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+public enum ReviewState {
+  [Label("Waiting")] Waiting,
+  [Label("Published")] Published,
+  [Label("Hidden")] Hidden,
+}
+
+/// The shop's say over reviews. One row, made the first time the settings page or the desk asks for it; none means
+/// "wait". A SETTINGS SECTION (D-SETTINGSTIER1): the settings area lists "Reviews" for the shop's staff and draws its
+/// page at `/settings/reviews` from the fields below — `ReviewSettingsPage`, which an app takes over by name.
+[Settings("Reviews", Route = "/settings/reviews", Group = "Shop", Order = 70, Icon = Icons.Star, Authorize = IsShopStaff,
+          Hint = "Whether a new review waits for staff to read it, or goes up at once.",
+          Description = "What happens to a review a customer writes. Only a customer who paid for the product can write one, and staff can hide any review with a reason its author reads.",
+          Saved = "Reviews saved.")]
+[SettingsGroup("Moderation", "Whether a new review, or a change to one, waits for somebody to read it before it is on the product page.")]
+public entity ReviewSettings {
+  /// New reviews (and edits) go live without staff reading them first. Staff can still hide one. An organisation that
+  /// requires every review to be read first may set it for every shop it runs.
+  [Setting("Publish new reviews at once", Group = "Moderation",
+           Hint = "Off, a review waits in the desk until somebody publishes it. On, it goes up as it is written — hide one if it should not be there.")]
+  [OrgPolicy(OrgPolicyMode.Lock)] bool PublishAtOnce = false;
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update when IsShopStaff;
+  }
+}
+
+/// The caller has paid for `product`: a line of it on one of their orders that was paid and not given back.
+policy HasBought(Product product) => OrderLine.Any(l => l.Order.Account == user && l.Variant.Product == product
+  && (l.Order.Status == OrderStatus.Paid || l.Order.Status == OrderStatus.Picking || l.Order.Status == OrderStatus.Packed
+      || l.Order.Status == OrderStatus.Fulfilled || l.Order.Status == OrderStatus.Delivered));
+
+/// A customer's reviews, as a list on the shop's own account (an extension member, D-COMPOSE1 S4) — what an erasure removes.
+partial entity ShopAccount { [ForeignKey(Author)] ProductReview[] Reviews; }
+
+/// One customer's review of one product — one each, which they may change.
+// SECURITY-INVARIANT(review-only-a-verified-buyer-never-self-published): a review is created only by the customer it
+//   names (`Author == user`) and only for a product that customer has PAID for (`HasBought`); its `State` is tracked by
+//   ReviewLifecycle, so no customer-reachable code writes it — published only by staff's `Approve` (or the shop's
+//   publish-at-once setting); and after creation nobody writes the row directly: the author changes it through
+//   `Revise`, which only the author may raise. Failure modes: fake reviews from people who never bought, a review
+//   posted in another customer's name, a customer publishing or re-wording an approved review past moderation, or one
+//   customer editing another's. Guarded by reviews.test.osy (a_customer_who_did_not_buy_it_is_refused,
+//   nobody_writes_in_another_customers_name, a_customer_cannot_publish_their_own_review,
+//   another_customer_cannot_change_it_and_its_author_only_through_revise).
+[Unique(Product, Author)]
+public entity ProductReview {
+  [Required, Immutable] Product Product;
+  [Required, Immutable] ShopAccount Author;
+  /// How the review is signed — "Maja B." — set by the workflow from the account's name, never typed.
+  [MaxLength(60)] string? ShownAs;
+  [Range(1, 5)] int Rating;
+  [Required, MaxLength(120)] string Title;
+  [Required, MaxLength(2000)] string Text;
+  ReviewState State;                                  // no default — ReviewLifecycle owns it
+  DateTime WrittenAt;
+  DateTime? EditedAt;
+  DateTime? PublishedAt;
+  /// Why staff hid it — shown to its author, and on the desk.
+  [MaxLength(300)] string? HiddenReason;
+  security {
+    // Anyone reads a published review; its author reads their own in any state; staff read them all.
+    allow read when IsAnonymous || IsAuthenticated where State == ReviewState.Published || Author == user;
+    allow read when IsShopStaff;
+    allow create when IsAuthenticated where Author == user && HasBought(Product);
+    allow delete when IsShopStaff;
+  }
+}
+
+/// A review's life: it waits for staff (or goes live at once), is published, and may be hidden with a reason.
+public workflow ReviewLifecycle {
+  Tracks    = ProductReview.State;
+  Autostart = true;
+  Initial   = Waiting;
+
+  /// Staff publish a waiting review — or put a hidden one back.
+  [Authorize(u => ShopRoleGrant.Any(g => g.Member == u && g.Role == ShopRole.Staff))]
+  event Approve();
+
+  /// Staff take a review off the product page, saying why.
+  [Authorize(u => ShopRoleGrant.Any(g => g.Member == u && g.Role == ShopRole.Staff))]
+  event Hide(string reason);
+
+  /// The author changes their review. A published one waits for staff again (unless the shop publishes at once).
+  [Authorize(u => u == this.Item.Author)]
+  event Revise(int rating, string title, string text);
+
+  state Waiting {
+    enter {
+      this.Item.ShownAs = SignatureOf(this.Item.Author);
+      if (ReviewSettings.Any(s => s.PublishAtOnce)) { goto Published; }
+    }
+    subscribe Approve() as Approved;
+    subscribe Hide() as HiddenWhileWaiting;
+    subscribe Revise() as RevisedWhileWaiting;
+    on Approved() { goto Published; }
+    on HiddenWhileWaiting(string reason) { this.Item.HiddenReason = reason; goto Hidden; }
+    on RevisedWhileWaiting(int rating, string title, string text) {
+      Reword(this.Item, rating, title, text);
+      goto Waiting;
+    }
+  }
+
+  state Published {
+    enter { this.Item.PublishedAt = DateTime.UtcNow; this.Item.HiddenReason = null; }
+    subscribe Hide() as HiddenOnceLive;
+    subscribe Revise() as RevisedOnceLive;
+    on HiddenOnceLive(string reason) { this.Item.HiddenReason = reason; goto Hidden; }
+    on RevisedOnceLive(int rating, string title, string text) {
+      Reword(this.Item, rating, title, text);
+      if (ReviewSettings.Any(s => s.PublishAtOnce)) { goto Published; }
+      goto Waiting;
+    }
+  }
+
+  state Hidden {
+    subscribe Approve() as Reinstated;
+    subscribe Revise() as RevisedWhileHidden;
+    on Reinstated() { goto Published; }
+    // Changed after it was hidden: staff read it again — unless the shop publishes at once, where it stays hidden
+    // until staff put it back (an edit must not undo a hiding).
+    on RevisedWhileHidden(int rating, string title, string text) {
+      Reword(this.Item, rating, title, text);
+      if (ReviewSettings.Any(s => s.PublishAtOnce)) { goto Hidden; }
+      goto Waiting;
+    }
+  }
+}
+
+/// A review's new words, from the workflow.
+void Reword(ProductReview review, int rating, string title, string text) {
+  review.Rating = rating;
+  review.Title = title;
+  review.Text = text;
+  review.EditedAt = DateTime.UtcNow;
+}
+
+/// How a review is signed: the first name and the initial of the last — "Maja B." — or "A customer".
+public string SignatureOf(ShopAccount author) {
+  var name = (author.Name ?? "").Trim();
+  if (name == "") { return "A customer"; }
+  var parts = name.Split(' ').Where(p => p != "").ToList();
+  if (parts.Count == 1) { return parts[0]; }
+  return $"{parts[0]} {parts[parts.Count - 1].Substring(0, 1)}.";
+}
+
+/// Why `rating`, `title` and `text` cannot be a review — "" when they can.
+public string ReviewProblem(int rating, string title, string text) {
+  if (rating < 1 || rating > 5) { return "Give it one to five stars."; }
+  if (title.Trim() == "") { return "Give your review a title."; }
+  if (title.Trim().Length > 120) { return "Keep the title to 120 characters."; }
+  if (text.Trim() == "") { return "Say a little about it."; }
+  if (text.Trim().Length > 2000) { return "Keep the review to 2,000 characters."; }
+  return "";
+}
+
+// ── what a product page asks ─────────────────────────────────────────────────────────────────────────────────
+
+/// A product's published reviews, newest first — the newest `take` of them (a product page shows a page at a time;
+/// `ReviewSummaryOf` says how many there are in all).
+[AllowAnonymous]
+public List<ProductReview> PublishedReviews(Product product, int take = 20) {
+  return ProductReview.Where(r => r.Product == product && r.State == ReviewState.Published)
+    .OrderByDescending(r => r.PublishedAt).ThenBy(r => r.Id).Take(take).ToList();
+}
+
+/// The average of a product's published reviews and how many there are.
+public class ReviewSummary {
+  /// Rounded to one decimal — 4.3. 0 when there are none.
+  public decimal Average = 0;
+  public int Count = 0;
+}
+
+/// What customers make of `product`, counting published reviews only.
+[AllowAnonymous]
+public ReviewSummary ReviewSummaryOf(Product product) {
+  // Counted and summed in ONE read — not every rating fetched to add up here.
+  var totals = ProductReview.Where(r => r.Product == product && r.State == ReviewState.Published)
+    .GroupBy(r => new() { Product = r.Product.Id })
+    .Select(g => new RatingTotals { Count = g.Count(), Stars = g.Sum(r => r.Rating) }).Take(1).ToList();
+  if (totals.Count == 0 || totals[0].Count == 0) { return new ReviewSummary(); }
+  var t = totals[0];
+  return new ReviewSummary { Average = Math.Round((decimal)t.Stars / t.Count, 1), Count = t.Count };
+}
+
+/// How many published reviews a product has and their stars added up — one row of `ReviewSummaryOf`'s read.
+class RatingTotals {
+  public int Count = 0;
+  public int Stars = 0;
+}
+
+/// Whether the signed-in customer has paid for `product`.
+[AllowAnonymous]
+public bool BoughtIt(Product product) {
+  var me = Session.CurrentUser;
+  if (me == null) { return false; }
+  return OrderLine.Any(l => l.Order.Account == me && l.Variant.Product == product
+    && (l.Order.Status == OrderStatus.Paid || l.Order.Status == OrderStatus.Picking || l.Order.Status == OrderStatus.Packed
+        || l.Order.Status == OrderStatus.Fulfilled || l.Order.Status == OrderStatus.Delivered));
+}
+
+/// The signed-in customer's own review of `product`, in whatever state, or null.
+[AllowAnonymous]
+public ProductReview? MyReview(Product product) {
+  var me = Session.CurrentUser;
+  if (me == null) { return null; }
+  return ProductReview.FirstOrDefault(r => r.Product == product && r.Author == me);
+}
+
+/// The signed-in customer writes their review of `product`. Answers it — waiting for staff, or published when the
+/// shop publishes at once. Throws the sentence to show when it cannot be written. Reachable from a public product page;
+/// the review's own `security { }` decides who may write it.
+[AllowAnonymous]
+public ProductReview WriteReview(Product product, int rating, string title, string text) {
+  var me = Session.CurrentUser;
+  if (me == null) { throw new Exception("Sign in to write a review."); }
+  var problem = ReviewProblem(rating, title, text);
+  if (problem != "") { throw new Exception(problem); }
+  if (!BoughtIt(product)) { throw new Exception("Reviews are written by customers who bought it."); }
+  if (ProductReview.Any(r => r.Product == product && r.Author == me)) {
+    throw new Exception("You have reviewed it already — change your review instead.");
+  }
+  var review = new ProductReview { Product = product, Author = me, Rating = rating, Title = title.Trim(), Text = text.Trim(),
+                                   WrittenAt = DateTime.UtcNow };
+  UnitOfWork.Commit();
+  return review;
+}
+
+/// The author changes their review. A published one waits for staff again, unless the shop publishes at once. Only the
+/// author may raise the change (`ReviewLifecycle.Revise`).
+[AllowAnonymous]
+public void ReviseReview(ProductReview review, int rating, string title, string text) {
+  var problem = ReviewProblem(rating, title, text);
+  if (problem != "") { throw new Exception(problem); }
+  ReviewLifecycle.RaiseRevise(review, rating, title.Trim(), text.Trim());
+}
+
+// ── the desk ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Staff publish a review.
+[Authorize(IsShopStaff)]
+public void ApproveReview(ProductReview review) {
+  if (review.State == ReviewState.Published) { return; }
+  ReviewLifecycle.RaiseApprove(review);
+}
+
+/// Staff take a review off the page, saying why — its author sees the reason.
+[Authorize(IsShopStaff)]
+public void HideReview(ProductReview review, string reason) {
+  if (reason.Trim() == "") { throw new Exception("Say why it is hidden — its author reads it."); }
+  if (review.State == ReviewState.Hidden) { return; }
+  ReviewLifecycle.RaiseHide(review, reason.Trim());
+}
+
+/// Whether the shop publishes reviews without reading them first.
+[AllowAnonymous]
+public bool ReviewsGoLiveAtOnce() { return ReviewSettings.Any(s => s.PublishAtOnce); }
+
+/// Staff choose whether reviews wait for them or go live at once.
+[Authorize(IsShopStaff)]
+public void SetReviewsGoLiveAtOnce(bool atOnce) {
+  var settings = ReviewSettings.FirstOrDefault();
+  if (settings == null) { new ReviewSettings { PublishAtOnce = atOnce }; }
+  else { settings.PublishAtOnce = atOnce; }
+  UnitOfWork.Commit();
+}
+
+/// The add-on, found by the shop: rates a product for its structured data, and forgets an erased customer's reviews.
+public class ProductReviews : IShopAddOn {
+  public string Key() { return "reviews"; }
+
+  /// schema.org `aggregateRating` from the published reviews — none when there are none (a rating of nothing is
+  /// not a rating a search engine may show).
+  public SeoRating? Rating(Product product) {
+    var summary = ReviewSummaryOf(product);
+    return summary.Count == 0 ? null : new SeoRating { Value = summary.Average, Count = summary.Count };
+  }
+
+  /// A customer's words are theirs: erased with them.
+  public void CustomerErased(ShopAccount account) {
+    foreach (var r in account.Reviews.ToList()) { r.Delete(); }
+  }
+}

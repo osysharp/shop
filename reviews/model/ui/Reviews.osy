@@ -1,0 +1,205 @@
+// Reviews on the page: what a product page shows (the average, the published reviews, and the form for a customer
+// who bought it), and the desk where staff read them first. Written once in the theme's tokens — `Font.Display` for
+// the headline and the stars, `Colors.TextMuted` for what is quiet — so a store's theme dresses them.
+
+namespace Osysharp.Shop.Reviews;
+
+using Osysharp.Shop;
+using Osysharp.Ui;
+
+/// A product page's reviews: the average and how many, the published reviews twenty at a time, and — for a signed-in customer who
+/// bought it — a form to write theirs, or their own review with where it stands and a way to change it. Anyone else
+/// sees no form. `heading` is the section's title.
+[Composable]
+[AllowAnonymous]
+public component ProductReviewsPanel(Product product, string heading = "Reviews") {
+  List<ProductReview> reviews = [];
+  ReviewSummary summary = new ReviewSummary();
+  ProductReview? mine = null;
+  bool bought = false;
+  bool writing = false;
+  int rating = 0;
+  string title = "";
+  string text = "";
+  string problem = "";
+  string said = "";
+  int shown = 20;
+
+  on mount { Load(); }
+
+  action Load() {
+    reviews = PublishedReviews(product, shown);
+    summary = ReviewSummaryOf(product);
+    mine = MyReview(product);
+    bought = BoughtIt(product);
+  }
+  action Start() {
+    writing = true; problem = ""; said = "";
+    if (mine != null) { rating = mine.Rating; title = mine.Title; text = mine.Text; }
+  }
+  action Stop() { writing = false; problem = ""; }
+  action More() { shown = shown + 20; reviews = PublishedReviews(product, shown); }
+  action Pick(int stars) { rating = stars; }
+  action Send() {
+    problem = "";
+    try {
+      if (mine == null) { WriteReview(product, rating, title, text); }
+      else { ReviseReview(mine, rating, title, text); }
+      writing = false;
+      Load();
+      said = mine != null && mine.State == ReviewState.Published
+        ? "Thank you — your review is up."
+        : "Thank you — the shop reads every review before it goes up.";
+    }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+
+  render {
+    Stack(gap: 6, label: heading) {
+      Stack(gap: 2) {
+        Text(heading, fontFamily: Font.Display, fontSize: FontSize.Title, fontWeight: FontWeight.Bold, lineHeight: "1");
+        if (summary.Count > 0) {
+          Row(gap: 3, align: Align.Center, wrap: Wrapping.Wrap, label: "Average rating") {
+            Text("★★★★★".Substring(0, (int)Math.Floor(summary.Average)) + "☆☆☆☆☆".Substring(0, 5 - (int)Math.Floor(summary.Average)),
+                 fontSize: FontSize.Heading, label: $"{summary.Average.ToString("0.#")} out of 5");
+            Text($"{summary.Average.ToString("0.#")} out of 5 · {summary.Count} {(summary.Count == 1 ? "review" : "reviews")}", fontWeight: FontWeight.Semibold);
+          }
+        } else {
+          Text("No reviews yet.", color: Colors.TextMuted);
+        }
+      }
+
+      if (said != "") { Text(said, role: UiRole.Status, fontWeight: FontWeight.Semibold); }
+
+      // The author's own review, where it stands — including a waiting or hidden one nobody else sees.
+      if (mine != null && !writing) {
+        Stack(gap: 2, p: 4, bg: Colors.Surface, label: "Your review") {
+          Text("Your review", fontSize: FontSize.Label, color: Colors.TextMuted);
+          Text("★★★★★".Substring(0, mine.Rating) + "☆☆☆☆☆".Substring(0, 5 - mine.Rating) + "  " + mine.Title, fontWeight: FontWeight.Semibold);
+          Text(mine.State == ReviewState.Published ? "Published."
+               : mine.State == ReviewState.Hidden ? $"Hidden by the shop: {mine.HiddenReason}"
+               : "Waiting for the shop to read it.", fontSize: FontSize.Label, color: Colors.TextMuted);
+          Row() { Button("Change your review", onPress: Start, tone: Tone.Ghost, size: Size.Sm); }
+        }
+      }
+
+      if (mine == null && bought && !writing) {
+        Row() { Button("Write a review", onPress: Start, tone: Tone.Primary); }
+      }
+
+      if (writing) {
+        Stack(gap: 4, label: "Your review") {
+          Row(gap: 1, role: UiRole.RadioGroup, label: "Rating") {
+            foreach (var n in Enumerable.Range(1, 5)) { StarChoice(n, rating >= n, rating == n, () => Pick(n)); }
+          }
+          Field("Title", value: title, placeholder: "In a line");
+          TextAreaField("Your review", value: text, rows: 5, placeholder: "What was it like?");
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+          Row(gap: 3) {
+            Button(mine == null ? "Send the review" : "Save the change", onPress: Send, tone: Tone.Primary);
+            Button("Not now", onPress: Stop, tone: Tone.Ghost);
+          }
+        }
+      }
+
+      if (reviews.Count > 0) {
+        Stack(gap: 0, label: "What customers say") {
+          foreach (var r in reviews) { ReviewEntry(r); }
+        }
+        if (summary.Count > reviews.Count) {
+          Row() { Button($"Show more reviews ({summary.Count - reviews.Count} more)", onPress: More, tone: Tone.Ghost); }
+        }
+      }
+    }
+  }
+}
+
+/// One star of the rating a customer is giving — filled up to the one they chose.
+[Composable]
+component StarChoice(int stars, bool lit, bool chosen, Action onPress) {
+  variants {
+    base { Px = 1; Py = 1; Cursor = Cursor.Pointer; Bg = "transparent"; BorderW = 0;
+           Focus { OutlineW = 2; OutlineColor = Colors.OnBg; OutlineOffset = "2px"; OutlineStyle = OutlineStyle.Solid; } }
+  }
+  render {
+    Pressable(onClick: onPress, label: stars == 1 ? "1 star" : $"{stars} stars", role: UiRole.Radio, checked: chosen) {
+      Text(lit ? "★" : "☆", fontSize: FontSize.Title, lineHeight: "1");
+    }
+  }
+}
+
+/// A published review: its stars and title, what it says, who wrote it and when.
+[Composable]
+[AllowAnonymous]
+public component ReviewEntry(ProductReview review) {
+  render {
+    Stack(gap: 2, py: 5, borderTW: 1, border: Colors.Border, label: review.Title) {
+      Text("★★★★★".Substring(0, review.Rating) + "☆☆☆☆☆".Substring(0, 5 - review.Rating), label: $"{review.Rating} out of 5");
+      Text(review.Title, fontFamily: Font.Display, fontSize: FontSize.Heading, fontWeight: FontWeight.Semibold);
+      Text(review.Text, lineHeight: "1.6");
+      Text($"{review.ShownAs ?? "A customer"} · {(review.PublishedAt ?? review.WrittenAt).ToString("d MMMM yyyy")}",
+           fontSize: FontSize.Label, color: Colors.TextMuted);
+    }
+  }
+}
+
+/// The reviews, for staff: every one waiting first, each with Publish and Hide, and whether new ones go live at once.
+[Composable]
+[Authorize(IsShopStaff)]
+public component DeskReviews() {
+  live var reviews = ProductReview.Include(r => r.Product).OrderBy(r => r.State).ThenByDescending(r => r.WrittenAt).ToList();
+  bool atOnce = false;
+  ProductReview? hiding = null;
+  string reason = "";
+  string problem = "";
+
+  on mount { atOnce = ReviewsGoLiveAtOnce(); }
+
+  action SetAtOnce() { SetReviewsGoLiveAtOnce(atOnce); }
+  action Publish(ProductReview r) { ApproveReview(r); }
+  action AskHide(ProductReview r) { hiding = r; reason = ""; problem = ""; }
+  action CloseHide() { hiding = null; }
+  action Hide() {
+    problem = "";
+    try { HideReview(hiding!, reason); hiding = null; }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+
+  render {
+    Stack(gap: 4) {
+      Switch("Publish new reviews at once", value: atOnce, onToggle: SetAtOnce);
+      Text(atOnce ? "Reviews go up as they are written; hide one if it should not be there."
+                  : "Reviews wait here until you publish them.", fontSize: FontSize.Label, color: Colors.TextMuted);
+      if (reviews.Count == 0) { Text("No reviews yet.", color: Colors.TextMuted); }
+      foreach (var r in reviews) {
+        Row(justify: Justify.Between, align: Align.Start, gap: 4, py: 3, borderTW: 1, border: Colors.Border, wrap: Wrapping.Wrap,
+            label: $"{r.Product.Name}: {r.Title}") {
+          Stack(gap: 1, basis: "420px", grow: 1) {
+            Text($"{r.Product.Name} · {r.Rating} of 5 · {r.State.Label}", fontSize: FontSize.Label, color: Colors.TextMuted);
+            Strong(r.Title);
+            Text(r.Text);
+            Text($"{r.ShownAs ?? "A customer"} · {r.WrittenAt.ToString("d MMM yyyy")}"
+                 + (r.HiddenReason == null ? "" : $" · hidden: {r.HiddenReason}"),
+                 fontSize: FontSize.Label, color: Colors.TextMuted);
+          }
+          Row(gap: 2) {
+            if (r.State != ReviewState.Published) { Button("Publish", onPress: () => Publish(r), tone: Tone.Primary, size: Size.Sm); }
+            if (r.State != ReviewState.Hidden) { Button("Hide…", onPress: () => AskHide(r), size: Size.Sm); }
+          }
+        }
+      }
+    }
+    if (hiding != null) {
+      Dialog("Hide this review", onDismiss: CloseHide, subtitle: "It comes off the product page. Its author sees why.") {
+        Stack(gap: 4) {
+          Field("Why", value: reason, placeholder: "It is about the delivery, not the coffee");
+          if (problem != "") { Alert(problem, tone: Tone.Danger); }
+          Row(gap: 3, justify: Justify.End) {
+            Button("Not now", onPress: CloseHide);
+            Button("Hide it", onPress: Hide, tone: Tone.Primary);
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,14 @@
+// The producer's test project for Osysharp.Shop.Reviews — a small shop with the add-on listed, as a store lists it.
+app ReviewsKitTests {
+  model "model/**/*.osy";
+  tests "**/*.test.osy";
+  use Osysharp.Shop.Reviews@0;
+  use Osysharp.Shop@0 { egress "api.resend.com"; secret "ResendApiKey"; }
+  use Osysharp.Payments@0;
+  use Osysharp.Delivery@0;
+  use Osysharp.Seo@0;
+  use Osysharp.Workflow;
+  use Osysharp.Ui;
+  // A change trail — so the reviews' settings section says who last changed it.
+  use Osysharp.Observability;
+}

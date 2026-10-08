@@ -1,0 +1,65 @@
+// Reviews through the screen: a customer who bought the beans writes one on the product page, staff publish it on the
+// desk, and the page shows it with the average. A customer who did not buy them is offered no form.
+
+using Osysharp.Shop.Reviews;
+using Osysharp.Shop;
+
+[Test(Shop)]
+void a_buyer_writes_a_review_staff_publish_it_and_it_shows_with_the_average() {
+  MajaBoughtBeans();
+  Ui.SignInAs(Maja);
+  Ui.Visit("/p/beans");
+  Assert.Visible("No reviews yet.");
+  Ui.Click("Write a review");
+  Ui.Click("4 stars");
+  Assert.Checked("4 stars");
+  Ui.Fill("Title", "Bright and sweet");
+  Ui.Fill("Your review", "Like blackcurrant jam on toast.");
+  Ui.Click("Send the review");
+  Assert.Visible("the shop reads every review before it goes up");
+  Assert.Visible("Waiting for the shop to read it.", within: "Your review");
+  Assert.Visible("No reviews yet.");                                   // it waits: nothing published
+
+  Ui.SignOut();
+  Ui.SignInAs(Desk);
+  Ui.Visit("/reviews");
+  Assert.Visible("Bright and sweet");
+  Ui.Click("Publish", within: "Beans: Bright and sweet");
+  Assert.Visible("Published", within: "Beans: Bright and sweet");
+
+  Ui.SignOut();
+  Ui.Visit("/p/beans");                                                // a visitor, signed out
+  Assert.Visible("4 out of 5 · 1 review");
+  Assert.Visible("Like blackcurrant jam on toast.", within: "What customers say");
+  Assert.Visible("Maja B.", within: "What customers say");
+  Assert.Hidden("Write a review");
+}
+
+[Test(Shop)]
+void a_customer_who_did_not_buy_it_sees_the_reviews_and_no_form() {
+  MajaBoughtBeans();
+  runas (Maja) { WriteReview(Beans(), 5, "Bright and sweet", "Like blackcurrant jam on toast."); }
+  runas (Desk) { ApproveReview(ProductReview.Single()); }
+  Ui.SignInAs(Olle);
+  Ui.Visit("/p/beans");
+  Assert.Visible("5 out of 5 · 1 review");
+  Assert.Visible("Bright and sweet");
+  Assert.Hidden("Write a review");
+  Assert.Hidden("Send the review");
+}
+
+[Test(Shop)]
+void staff_hide_a_review_with_a_reason_its_author_reads() {
+  MajaBoughtBeans();
+  runas (Maja) { WriteReview(Beans(), 2, "Late", "The bag came a week late."); }
+  Ui.SignInAs(Desk);
+  Ui.Visit("/reviews");
+  Ui.Click("Hide…", within: "Beans: Late");
+  Ui.Fill("Why", "It is about the delivery — we have written to you.");
+  Ui.Click("Hide it");
+  Assert.Visible("hidden: It is about the delivery", within: "Beans: Late");
+  Ui.SignOut();
+  Ui.SignInAs(Maja);
+  Ui.Visit("/p/beans");
+  Assert.Visible("Hidden by the shop: It is about the delivery", within: "Your review");
+}

@@ -1,0 +1,23 @@
+// The pages a store writes around the kit's components — as bare as a page can be, so the tests drive the components.
+using Osysharp.Shop.Reviews;
+using Osysharp.Shop;
+using Osysharp.Ui;
+
+[Page("/")] [AllowAnonymous] component KitHome() { render { Text("Reviews test shop"); } }
+[Page("/account/sign-in")] [AllowAnonymous] component KitSignIn() { render { ShopSignIn(); } }
+[Page("/reviews")] component KitReviews() { render { DeskReviews(); } }
+
+/// A product page reduced to what reviews add: the name, and the reviews under it.
+[Page("/p/{slug}")]
+[AllowAnonymous]
+component KitProduct(string slug) {
+  live var product = Product.SingleOrDefault(p => p.Slug == slug);
+  render {
+    Stack(gap: 4, p: 6) {
+      if (product != null) {
+        Text(product.Name);
+        ProductReviewsPanel(product);
+      }
+    }
+  }
+}

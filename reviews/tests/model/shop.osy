@@ -1,0 +1,18 @@
+using Osysharp.Delivery;
+using Osysharp.Shop.Reviews;
+using Osysharp.Payments;
+using Osysharp.Shop;
+
+app.Auth = new PasswordAuth { LoginField = Email, PasswordField = PasswordHash };
+app.AuthBootstrap = new AuthBootstrap {
+  Role = ShopRole.Authenticator,
+  Login = ShopLogin, Signup = ShopSignup,
+  PasswordResetRequest = ShopRequestPasswordReset, PasswordReset = ShopResetPassword,
+  PasswordChange = ShopChangePassword, EmailChange = ShopChangeEmail,
+  EmailVerify = ShopConfirmEmail, EmailVerifyCode = ShopConfirmEmailCode,
+};
+
+app.Shop = new ShopSetup {
+  Payments = [ new ManualPayment { Key = "banktransfer", Label = "Bank transfer", Instructions = "IBAN SE00" } ],
+  Delivery = [ new CollectInStore { Address = "the shop" }, new FlatRateDelivery { Price = 4900 } ],
+};

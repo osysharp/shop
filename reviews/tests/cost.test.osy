@@ -1,0 +1,74 @@
+// WHAT A PRODUCT PAGE'S REVIEWS COST AS THEY GROW — the average is counted and summed in the read, and the page reads
+// a page of reviews, so a product with thirty reviews costs what one with two does. Each test compares one act on two
+// products of different sizes; reading every rating, or every review, turns it red with both numbers.
+
+using Osysharp.Shop.Reviews;
+using Osysharp.Shop;
+
+[TestFixture]
+void Reviewed() {
+  new ShopSettings { Name = "Grounds & Grapes", Currency = "SEK", CurrencySymbol = "kr", SymbolAfter = true, OrderPrefix = "GG-" };
+  var tea = new Product { Name = "Tea", Slug = "tea", Price = 90m };
+  var cake = new Product { Name = "Cake", Slug = "cake", Price = 60m };
+  var beans = new Product { Name = "Beans", Slug = "beans", Price = 200m };
+  new ReviewSettings { PublishAtOnce = true };   // each review goes up as it is written
+  var hash = Security.HashPassword("reader-pass-1");
+  for (var i = 1; i <= 30; i++) {
+    var who = new ShopAccount { Email = $"reader{i}@example.test", PasswordHash = hash, Name = $"Reader {i}" };
+    new ShopRoleGrant { Member = who, Role = ShopRole.Customer };
+    var at = new DateTime(2026, 1, 1).AddDays(i);
+    new ProductReview { Product = beans, Author = who, ShownAs = $"Reader {i}.", Rating = 1 + i % 5, Title = $"Beans {i}",
+                        Text = "Good beans.", WrittenAt = at };
+    if (i <= 21) {
+      new ProductReview { Product = cake, Author = who, ShownAs = $"Reader {i}.", Rating = 4, Title = $"Cake {i}",
+                          Text = "Good cake.", WrittenAt = at };
+    }
+    if (i <= 2) {
+      new ProductReview { Product = tea, Author = who, ShownAs = $"Reader {i}.", Rating = 5, Title = $"Tea {i}",
+                          Text = "Good tea.", WrittenAt = at };
+    }
+  }
+}
+
+Product Called(string slug) { return Product.Single(p => p.Slug == slug); }
+
+/// ⭐ THE AVERAGE READS THE SAME FOR TWO REVIEWS AND FOR THIRTY — counted and summed in the read, not every rating
+/// fetched to add up.
+[Test(Reviewed)]
+void the_average_reads_the_same_however_many_reviews_a_product_has() {
+  var tea = Called("tea");
+  var beans = Called("beans");
+  ReviewSummaryOf(Called("cake"));   // the first read sets up what every later one reuses — not what this compares
+  var mark = Cost.Mark();
+  var two = ReviewSummaryOf(tea);
+  var twoRows = Cost.RowsReadSince(mark);
+  mark = Cost.Mark();
+  var thirty = ReviewSummaryOf(beans);
+  var thirtyRows = Cost.RowsReadSince(mark);
+  Log.Information("The average: " + twoRows + " rows read for two reviews, " + thirtyRows + " for thirty");
+  Assert.Equal(2, two.Count);
+  Assert.Equal(5m, two.Average);
+  Assert.Equal(30, thirty.Count);
+  Assert.Equal(3m, thirty.Average);   // ratings 2,3,4,5,1 six times over: 90 / 30
+  Assert.Equal(twoRows, thirtyRows);
+}
+
+/// ⭐ THE PRODUCT PAGE READS A PAGE OF REVIEWS — the newest twenty, newest first, the same for twenty-one as for thirty;
+/// the rest are a "Show more" away.
+[Test(Reviewed)]
+void the_product_page_reads_a_page_of_reviews_however_many_there_are() {
+  var cake = Called("cake");
+  var beans = Called("beans");
+  PublishedReviews(Called("tea"));
+  var mark = Cost.Mark();
+  var some = PublishedReviews(cake);
+  var someRows = Cost.RowsReadSince(mark);
+  mark = Cost.Mark();
+  var more = PublishedReviews(beans);
+  var moreRows = Cost.RowsReadSince(mark);
+  Log.Information("A page of reviews: " + someRows + " rows read of twenty-one, " + moreRows + " of thirty");
+  Assert.Equal(20, some.Count);
+  Assert.Equal(20, more.Count);
+  Assert.Equal(someRows, moreRows);
+  Assert.Equal(30, PublishedReviews(beans, 40).Count);   // …and the rest are there to ask for
+}

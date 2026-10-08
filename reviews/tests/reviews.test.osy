@@ -1,0 +1,263 @@
+// Reviews through a real shop: only a customer who paid for the product writes one, staff publish it, and the product
+// page — and its search-engine data — count the published ones alone.
+
+using Osysharp.Shop.Reviews;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[TestFixture]
+void Shop() {
+  new ShopSettings { Name = "Grounds & Grapes", Currency = "SEK", CurrencySymbol = "kr", SymbolAfter = true, OrderPrefix = "GG-" };
+  var beans = new Product { Name = "Beans", Slug = "beans", Price = 200m };
+  new Variant { Product = beans, Stock = 50 };
+  var tea = new Product { Name = "Tea", Slug = "tea", Price = 90m };
+  new Variant { Product = tea, Stock = 50 };
+  var anna = new ShopAccount { Email = "anna@shop.test", PasswordHash = Security.HashPassword("desk-pass-1") };
+  new ShopRoleGrant { Member = anna, Role = ShopRole.Staff };
+  var maja = new ShopAccount { Email = "maja@example.test", PasswordHash = Security.HashPassword("maja-pass-1"), Name = "Maja Berg" };
+  new ShopRoleGrant { Member = maja, Role = ShopRole.Customer };
+  var ines = new ShopAccount { Email = "ines@example.test", PasswordHash = Security.HashPassword("ines-pass-1"), Name = "Ines" };
+  new ShopRoleGrant { Member = ines, Role = ShopRole.Customer };
+  var olle = new ShopAccount { Email = "olle@example.test", PasswordHash = Security.HashPassword("olle-pass-1"), Name = "Olle Ek" };
+  new ShopRoleGrant { Member = olle, Role = ShopRole.Customer };
+}
+
+principal Desk => ShopAccount.Single(s => s.Email == "anna@shop.test");
+principal Maja => ShopAccount.Single(s => s.Email == "maja@example.test");
+principal Ines => ShopAccount.Single(s => s.Email == "ines@example.test");
+principal Olle => ShopAccount.Single(s => s.Email == "olle@example.test");
+
+Product Beans() { return Product.Single(p => p.Slug == "beans"); }
+Product Tea() { return Product.Single(p => p.Slug == "tea"); }
+
+/// The signed-in caller orders one of `product` from `visit`; answers the order's reference.
+string Order(string visit, Product product) {
+  runas (new Visitor { Id = visit }) {
+    AddToBag(Variant.Single(v => v.Product == product), 1);
+    return PlaceOrder("A Customer", "someone@example.test", "", "flat", "banktransfer", "Storgatan 1", "11122", "Stockholm", "SE").Reference;
+  }
+}
+
+/// The desk marks an order paid, as when the transfer arrives.
+void Paid(string reference) {
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    MarkPaid(order, "");
+    Workflow.Settle(order);
+  }
+}
+
+/// Maja buys the beans and pays for them.
+void MajaBoughtBeans() {
+  var reference = "";
+  runas (Maja) { reference = Order("v-maja", Beans()); }
+  Paid(reference);
+}
+
+[Test(Shop)]
+void a_buyer_writes_a_review_that_waits_until_staff_publish_it() {
+  MajaBoughtBeans();
+  runas (Maja) {
+    var mine = WriteReview(Beans(), 5, "Bright and sweet", "Like blackcurrant jam on toast.");
+    Assert.Equal(ReviewState.Waiting, mine.State);
+    Assert.Equal("Maja B.", mine.ShownAs);                             // signed by the workflow, never typed
+    Assert.Equal("Bright and sweet", MyReview(Beans()).Title);        // she sees her own while it waits
+  }
+  Assert.Equal(0, PublishedReviews(Beans()).Count);                  // nobody else does yet
+  Assert.Equal(0, ProductReview.Count());
+  Assert.Equal(0, ReviewSummaryOf(Beans()).Count);
+  runas (Desk) { ApproveReview(ProductReview.Single()); }
+  var shown = PublishedReviews(Beans());
+  Assert.Equal(1, shown.Count);
+  Assert.Equal("Like blackcurrant jam on toast.", shown[0].Text);
+  Assert.Equal(5m, ReviewSummaryOf(Beans()).Average);
+  Assert.NotNull(shown[0].PublishedAt);
+}
+
+[Test(Shop)]
+void a_customer_who_did_not_buy_it_is_refused() {
+  runas (Olle) {
+    Assert.False(BoughtIt(Beans()));
+    Assert.Contains("customers who bought it", Assert.Throws<Exception>(() => WriteReview(Beans(), 5, "Great", "Never tried it.")).Message);
+    // …and the entity refuses it however the row arrives, not only through the function.
+    Assert.Denied(() => {
+      new ProductReview { Product = Beans(), Author = ShopAccount.Single(a => a.Email == "olle@example.test"), Rating = 5,
+                          Title = "Great", Text = "Never tried it.", WrittenAt = DateTime.UtcNow };
+      UnitOfWork.Commit();
+    });
+  }
+  // An order that is placed but not paid is not a purchase either.
+  var unpaid = "";
+  runas (Olle) { unpaid = Order("v-olle", Beans()); }
+  runas (Olle) {
+    Assert.False(BoughtIt(Beans()));
+    Assert.Throws<Exception>(() => WriteReview(Beans(), 4, "Good", "Still waiting for it."));
+  }
+  // Maja paid for the beans, not the tea.
+  MajaBoughtBeans();
+  runas (Maja) { Assert.Throws<Exception>(() => WriteReview(Tea(), 3, "Fine", "I had the beans.")); }
+  runas (Desk) { Assert.Equal(0, ProductReview.Count()); }
+}
+
+[Test(Shop)]
+void nobody_writes_in_another_customers_name() {
+  MajaBoughtBeans();
+  var ines = "";
+  runas (Ines) { ines = Order("v-ines", Beans()); }
+  Paid(ines);
+  ShopAccount? maja = null;
+  runas (Desk) { maja = ShopAccount.Single(a => a.Email == "maja@example.test"); }   // Ines cannot read Maja's account
+  runas (Ines) {                                                        // Ines bought the beans too — and signs as Maja
+    Assert.Denied(() => {
+      new ProductReview { Product = Beans(), Author = maja!, Rating = 1,
+                          Title = "Awful", Text = "Not really Maja.", WrittenAt = DateTime.UtcNow };
+      UnitOfWork.Commit();
+    });
+  }
+  runas (Desk) { Assert.Equal(0, ProductReview.Count()); }
+}
+
+[Test(Shop)]
+void a_customer_cannot_publish_their_own_review() {
+  MajaBoughtBeans();
+  runas (Maja) {
+    var mine = WriteReview(Beans(), 5, "Bright and sweet", "Like blackcurrant jam on toast.");
+    Assert.Denied(() => ReviewLifecycle.RaiseApprove(mine));   // the event is staff's
+    Assert.Denied(() => ApproveReview(mine));                  // …and so is the function
+  }
+  runas (Desk) { Assert.Equal(ReviewState.Waiting, ProductReview.Single().State); }
+  Assert.Equal(0, PublishedReviews(Beans()).Count);
+}
+
+[Test(Shop)]
+void another_customer_cannot_change_it_and_its_author_only_through_revise() {
+  MajaBoughtBeans();
+  runas (Maja) { WriteReview(Beans(), 5, "Bright and sweet", "Like blackcurrant jam on toast."); }
+  runas (Desk) { ApproveReview(ProductReview.Single()); }
+  runas (Olle) {
+    var hers = PublishedReviews(Beans()).Single();                        // he can read it: it is published
+    Assert.Denied(() => { hers.Title = "Awful"; UnitOfWork.Commit(); });
+    Assert.Denied(() => ReviewLifecycle.RaiseRevise(PublishedReviews(Beans()).Single(), 1, "Awful", "Not his to say."));
+    Assert.Denied(() => ReviseReview(PublishedReviews(Beans()).Single(), 1, "Awful", "Not his to say."));
+  }
+  runas (Maja) {
+    // Not even the author rewrites an approved review past the moderation…
+    Assert.Denied(() => { var mine = MyReview(Beans()); mine.Title = "Changed quietly"; UnitOfWork.Commit(); });
+    // …she revises it, and it waits for staff again.
+    ReviseReview(MyReview(Beans()), 4, "Still good", "A little flatter in the second week.");
+    Assert.Equal(ReviewState.Waiting, MyReview(Beans()).State);
+  }
+  Assert.Equal(0, PublishedReviews(Beans()).Count);
+  runas (Desk) { ApproveReview(ProductReview.Single()); }
+  Assert.Equal("Still good", PublishedReviews(Beans()).Single().Title);
+  Assert.Equal(4m, ReviewSummaryOf(Beans()).Average);
+}
+
+[Test(Shop)]
+void one_review_each_and_its_words_are_bounded() {
+  MajaBoughtBeans();
+  runas (Maja) {
+    Assert.Contains("one to five", Assert.Throws<Exception>(() => WriteReview(Beans(), 6, "Too good", "Six stars.")).Message);
+    Assert.Contains("title", Assert.Throws<Exception>(() => WriteReview(Beans(), 4, " ", "No title.")).Message);
+    WriteReview(Beans(), 4, "Good", "Solid.");
+    Assert.Contains("already", Assert.Throws<Exception>(() => WriteReview(Beans(), 5, "Again", "Twice.")).Message);
+  }
+  runas (Desk) { Assert.Equal(1, ProductReview.Count()); }
+}
+
+[Test(Shop)]
+void staff_hide_a_review_with_a_reason_and_the_average_counts_published_ones_only() {
+  MajaBoughtBeans();
+  var ines = "";
+  runas (Ines) { ines = Order("v-ines", Beans()); }
+  Paid(ines);
+  runas (Maja) { WriteReview(Beans(), 5, "Bright and sweet", "Like blackcurrant jam on toast."); }
+  runas (Ines) { WriteReview(Beans(), 2, "Not for me", "Too sour, and the bag was late."); }
+  runas (Desk) { foreach (var r in ProductReview.ToList()) { ApproveReview(r); } }
+  Assert.Equal(3.5m, ReviewSummaryOf(Beans()).Average);
+  Assert.Equal(2, ReviewSummaryOf(Beans()).Count);
+  runas (Desk) {
+    var late = ProductReview.Single(r => r.Title == "Not for me");
+    Assert.Contains("Say why", Assert.Throws<Exception>(() => HideReview(late, " ")).Message);
+    HideReview(late, "It is about the delivery — we have written to her.");
+  }
+  Assert.Equal(5m, ReviewSummaryOf(Beans()).Average);
+  Assert.Equal(1, ReviewSummaryOf(Beans()).Count);
+  runas (Ines) {
+    var mine = MyReview(Beans());
+    Assert.Equal(ReviewState.Hidden, mine.State);
+    Assert.Contains("delivery", mine.HiddenReason);                        // she is told why
+  }
+}
+
+[Test(Shop)]
+void a_shop_that_publishes_at_once_needs_no_approval_and_can_still_hide_one() {
+  runas (Desk) { SetReviewsGoLiveAtOnce(true); }
+  MajaBoughtBeans();
+  runas (Maja) {
+    var mine = WriteReview(Beans(), 4, "Good", "Solid.");
+    Assert.Equal(ReviewState.Published, mine.State);
+  }
+  Assert.Equal(1, PublishedReviews(Beans()).Count);
+  runas (Desk) { HideReview(ProductReview.Single(), "Off topic."); }
+  runas (Maja) {
+    ReviseReview(MyReview(Beans()), 4, "Good coffee", "On topic now.");       // an edit does not undo the hiding
+    Assert.Equal(ReviewState.Hidden, MyReview(Beans()).State);
+  }
+}
+
+[Test(Shop)]
+void the_products_structured_data_carries_the_published_average() {
+  Assert.DoesNotContain("AggregateRating", ProductStructuredData(Beans()).ToJson());   // no reviews: no rating
+  MajaBoughtBeans();
+  var ines = "";
+  runas (Ines) { ines = Order("v-ines", Beans()); }
+  Paid(ines);
+  runas (Maja) { WriteReview(Beans(), 5, "Bright", "Jam."); }
+  runas (Ines) { WriteReview(Beans(), 4, "Good", "Solid."); }
+  Assert.DoesNotContain("AggregateRating", ProductStructuredData(Beans()).ToJson());   // waiting ones do not count
+  runas (Desk) { foreach (var r in ProductReview.ToList()) { ApproveReview(r); } }
+  var json = ProductStructuredData(Beans()).ToJson();
+  Assert.Contains("\"aggregateRating\"", json);
+  Assert.Contains("\"ratingValue\":4.5", json);
+  Assert.Contains("\"reviewCount\":2", json);
+}
+
+[Test(Shop)]
+void an_erased_customers_reviews_go_with_them() {
+  MajaBoughtBeans();
+  runas (Maja) { WriteReview(Beans(), 5, "Bright and sweet", "Like blackcurrant jam on toast."); }
+  runas (Desk) {
+    ApproveReview(ProductReview.Single());
+    var order = Order.Single();                                           // it arrived: nothing left to deliver
+    MarkSent(order, "PostNord 1");
+    Workflow.Settle(order);
+    MarkDelivered(order);
+    Workflow.Settle(order);
+  }
+  runas (Maja) { EraseMyAccount(); }
+  runas (Desk) {
+    Workflow.Settle(ShopErasure.Single());
+    Assert.Equal(0, ProductReview.Count());
+  }
+  Assert.Equal(0, ReviewSummaryOf(Beans()).Count);
+}
+
+/// A second review of one product by one customer, written past `WriteReview`'s own check — refused by the table itself.
+void ASecondReviewByHand() {
+  var me = ShopAccount.Single(a => a.Email == "maja@example.test");
+  new ProductReview { Product = Beans(), Author = me, Rating = 4, Title = "Again", Text = "Twice.", WrittenAt = DateTime.UtcNow };
+  UnitOfWork.Commit();
+}
+
+/// ⭐ ONE REVIEW A CUSTOMER AND PRODUCT IS THE TABLE'S RULE (`[Unique(Product, Author)]`), not only `WriteReview`'s: a write
+/// that goes around the function is refused too. Nothing else showed the rule — it once compiled away unseen.
+[Test(Shop)]
+void the_table_holds_one_review_a_customer_and_product() {
+  MajaBoughtBeans();
+  runas (Maja) {
+    WriteReview(Beans(), 5, "Great", "Lovely beans.");
+    Assert.Throws<Exception>(() => ASecondReviewByHand());
+  }
+  runas (Desk) { Assert.Equal(1, ProductReview.Count(r => r.Product == Beans())); }
+}

@@ -1,0 +1,55 @@
+// THE DIRECTION — "the swap sheet".
+//
+// Brief: the thrift shop for the customer who hunts — who wants every piece listed with its size and condition, and
+// to be first to the new ones.
+//
+// Looked at: clothing-swap sheets and auction catalogues (numbered lots, typewritten), resale apps (filters, badges),
+// and army-surplus stores (stencils, olive). Three directions written:
+//   1. Army surplus. REJECTED: a costume.
+//   2. Resale app. REJECTED: a marketplace.
+//   3. The swap sheet — CHOSEN: white, black IBM Plex Sans Condensed with Plex Mono for lot numbers, sizes and
+//      prices, the shelves always open in a column, and ONE accent — signal red — for the thing to press.
+
+namespace Osysharp.Shop.Looks.Swap;
+
+/// The swap sheet — white, a condensed grotesk with mono lot labels, the shelves open in a column, a signal-red accent.
+look Swap {
+  Label = "Swap sheet";
+  Theme = SwapTheme;
+}
+
+theme SwapTheme {
+  Colors {
+    Bg = "#FFFFFF"; OnBg = "#111111"; Surface = "#F4F4F4"; OnSurface = "#111111"; Muted = "#EDEDED";
+    TextMuted = "#6B6B6B"; TextSecondary = "#2B2B2B"; Border = "#DADADA";
+    Primary = Palette.From("#E10600");   // signal red — the ONE accent
+    OnPrimary = "#FFFFFF"; OnImage = "#FFFFFF"; Scrim = "rgb(0 0 0 / 0.5)";
+    // Raised panels and wells in this look's own paper — a menu or a dialog, a field's well — and statuses that read
+    // on its light ground. Left at the floor they follow the visitor's system instead: dark menus and pale statuses
+    // inside a look that stays as it is.
+    Elevated = Colors.Bg;
+    Sunken   = Colors.Muted;
+    Danger   = "#B42318";   // errors and refusals, set for this look's light ground
+    Success  = "#1E6B45";   // done, paid, in stock, set for this look's light ground
+    Warning  = "#8A5300";   // a caution that is not yet a refusal, set for this look's light ground
+    Waiting  = "#55587F";   // pending — held, not yet paid, set for this look's light ground
+  }
+  Font {
+    Display = "\"IBM Plex Sans Condensed\", system-ui, sans-serif"; Sans = "\"IBM Plex Sans Condensed\", system-ui, sans-serif";
+    Mono = "\"IBM Plex Mono\", ui-monospace, monospace";
+  }
+  FontSize {
+    Mega = "clamp(60px, 10vw, 170px)"; Hero = "clamp(40px, 5.5vw, 84px)"; Title = "26px";
+    Lead = "18px"; Body = "15px"; Label = "12px"; Caption = "12px";
+  }
+  // `Headline` — the weight a store's own page headings are set in (Checkout, Your bag, Paid.).
+  FontWeight { Light = 400; Headline = 600; }
+  Radius { Card = "0"; Md = "0"; Lg = "0"; Pill = "0"; }
+  Shadow { Raised = "none"; Floating = "0 18px 40px -24px rgb(0 0 0 / 0.35)"; }
+  Motion {
+    Lift = "transform 280ms cubic-bezier(.2,.8,.2,1), opacity 280ms ease";
+    Fade = "opacity 220ms ease";
+  }
+}
+
+animation SwapRiseIn { Duration = "560ms"; Easing = EaseOut; from { Opacity = 0; TranslateY = "16px"; } to { Opacity = 1; TranslateY = "0"; } }

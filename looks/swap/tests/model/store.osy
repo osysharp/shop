@@ -1,0 +1,50 @@
+// The store: it wears the Swap look, and serves the bag page the look takes a customer to (`appPage "/bag"`).
+using Osysharp.Shop;
+using Osysharp.Shop.Looks;
+using Osysharp.Payments;
+using Osysharp.Delivery;
+
+app.Look = Swap;
+
+app.Auth = new PasswordAuth { LoginField = Email, PasswordField = PasswordHash };
+app.AuthBootstrap = new AuthBootstrap {
+  Role = ShopRole.Authenticator,
+  Login = ShopLogin, Signup = ShopSignup,
+  PasswordResetRequest = ShopRequestPasswordReset, PasswordReset = ShopResetPassword,
+  PasswordChange = ShopChangePassword, EmailChange = ShopChangeEmail,
+  EmailVerify = ShopConfirmEmail, EmailVerifyCode = ShopConfirmEmailCode,
+};
+
+app.Shop = new ShopSetup {
+  Payments = [ new ManualPayment { Key = "banktransfer", Label = "Bank transfer", Instructions = "IBAN SE00" } ],
+  Delivery = [ new CollectInStore { Address = "the workshop" } ],
+};
+
+/// Every page in the look's frame.
+[Layout]
+[AllowAnonymous]
+component Store() {
+  render { ShopFrame { Outlet; } }
+}
+
+[Page("/")]
+[Layout(Store)]
+[AllowAnonymous]
+component Home() {
+  render { Text("Packets swapped each spring"); }
+}
+
+/// The customer's account — the shop kit's panel, on the store's own page (the shop's `appPage "/account"`).
+[Page("/account")]
+[Layout(Store)]
+component Account() {
+  render { ShopAccountPanel(); }
+}
+
+/// The store's own bag page — the look sends a customer here, and the store decides what it is.
+[Page("/bag")]
+[Layout(Store)]
+[AllowAnonymous]
+component BagPage() {
+  render { Text("Your bag — packets swapped each spring"); }
+}

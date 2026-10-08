@@ -1,0 +1,22 @@
+// Osysharp.Shop.Looks.Swap — a LOOK for a shop (D-SITEFRAME1 part 2): "the swap sheet". White, black IBM Plex Sans Condensed with Plex Mono for lot numbers, sizes and prices, the shelves
+// always open in a column, and one accent — signal red — for the thing to press. The catalogue is the front page.
+//
+// It draws the general site contract (`Osysharp.Site.Looks`) and the shop's (`Osysharp.Shop.Looks`): the frame around
+// every page, the front page, the listings, a piece's page, and the blocks staff arrange. It carries NO data and NO logic
+// of its own — a store installs it beside others and staff pick it per version of the site.
+package Osysharp.Shop.Looks.Swap {
+  version     "0.1.1";
+  minPlatform "0.9.0";
+  summary     "a shop look — the swap sheet: white, a condensed grotesk and mono lot labels, the shelves in a column, signal red.";
+  model "model/**/*.osy";
+  use Osysharp.Ui;
+  use Osysharp.Blocks;
+  use Osysharp.Storage;
+  use Osysharp.Shop@0;
+  use Osysharp.Site.Looks@0;
+  use Osysharp.Pages@0;
+  // The frame sends a customer to the bag, which is the store's own page.
+  appPage "/bag";
+  // The producer's test project: a store that wears the look, and the page the look asks it to serve.
+  tests "tests";
+}

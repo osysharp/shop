@@ -1,0 +1,22 @@
+// Osysharp.Shop.Looks.Loud — a LOOK for a shop (D-SITEFRAME1 part 2): "loud". A hot yellow ground, black Archivo Black at poster size in capitals, a ticker of news across the top, and one
+// accent — electric blue, carrying white text — for the current shelf and the thing to press.
+//
+// It draws the general site contract (`Osysharp.Site.Looks`) and the shop's (`Osysharp.Shop.Looks`): the frame around
+// every page, the front page, the listings, a piece's page, and the blocks staff arrange. It carries NO data and NO logic
+// of its own — a store installs it beside others and staff pick it per version of the site.
+package Osysharp.Shop.Looks.Loud {
+  version     "0.1.1";
+  minPlatform "0.9.0";
+  summary     "a shop look — loud: hot yellow, black poster type in capitals, a ticker, an electric-blue accent.";
+  model "model/**/*.osy";
+  use Osysharp.Ui;
+  use Osysharp.Blocks;
+  use Osysharp.Storage;
+  use Osysharp.Shop@0;
+  use Osysharp.Site.Looks@0;
+  use Osysharp.Pages@0;
+  // The frame sends a customer to the bag, which is the store's own page.
+  appPage "/bag";
+  // The producer's test project: a store that wears the look, and the page the look asks it to serve.
+  tests "tests";
+}

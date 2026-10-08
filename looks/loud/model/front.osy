@@ -1,0 +1,68 @@
+// The front of Loud: one line and a count, then every piece in the shop, newest first — the catalogue IS the page.
+// It is a region staff arrange — what is written here is how it stands until they do.
+
+namespace Osysharp.Shop.Looks.Loud;
+
+using Osysharp.Ui;
+using Osysharp.Blocks;
+using Osysharp.Storage;
+using Osysharp.Shop;
+using Osysharp.Shop.Looks;
+using Osysharp.Site.Looks;
+
+[AllowAnonymous]
+component LoudFront() : FrontPage {
+  render {
+    LoudSection {
+      Stack(gap: 0, pt: 10, pb: 16) {
+        Region("front", allow: [Hero, ProductRow, CategoryTiles, PictureWithWords, Quote, SignUp, Banner, PhotoGallery, LoudEveryPiece]) {
+          Hero(title: "One of each", words: "Sixteen finds. When it is gone, it is gone.", button: "", link: "/shop");
+          LoudEveryPiece();
+        }
+      }
+    }
+  }
+}
+
+/// The front's opening line: the title at poster size beside a count of the pieces and a sentence — no photograph.
+[AllowAnonymous]
+component LoudHero(string title, Markdown words = "", Picture photo = "", Picture second = "", string button = "Shop now",
+                   PageLink link = "/", Color ground = Colors.Surface) : Hero {
+  live var all = Product.Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard).Count();
+  render {
+    Box(display: Display.Grid, cols: "repeat(auto-fit, minmax(280px, 1fr))", gap: 6, pb: 8, borderBW: 1, border: Colors.Border,
+        align: Align.End, animation: LoudRiseIn, label: "Hero: " + title) {
+      Text(title, fontFamily: Font.Display, fontSize: FontSize.Mega, lineHeight: "0.86", textTransform: TextTransform.Uppercase);
+      Stack(gap: 2) {
+        Text($"{all} PIECES · ONE OF EACH", fontFamily: Font.Mono, fontSize: FontSize.Label, color: Colors.TextMuted);
+        if (words != "") { Text(words, color: Colors.TextSecondary, maxW: "420px"); }
+        if (button != "") { Row { Link(href: link, label: button) { Text(button + " →", color: Colors.OnBg, fontWeight: FontWeight.Semibold); } } }
+      }
+    }
+  }
+}
+
+/// Every piece in the shop, newest first — the catalogue as the page. Loud's own block.
+[Block("Every piece")]
+[AllowAnonymous]
+component LoudEveryPiece() {
+  live var all = Product.Include(p => p.Images).Include(p => p.Variants)
+    .Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard).OrderBy(p => p.Rank).ToList();
+  render { Box(pt: 6, label: "Every piece") { LoudGrid(all); } }
+}
+
+/// A row of the shop's pieces under a heading — Loud's grid, with the count and a link off to the right.
+[AllowAnonymous]
+component LoudProductRow(string title = "New in", Category? shelf = null, int count = 4, string more = "See them all",
+                          PageLink link = "/search") : ProductRow {
+  live var listed = Product.Include(p => p.Images).Include(p => p.Variants)
+    .Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard).OrderBy(p => p.Rank).ToList();
+  // The pieces this row shows — a computed of the read above, so the grid is handed one list, not a new one per render.
+  live var shown = listed.Where(p => shelf == null || (p.Category != null && p.Category.Id == shelf.Id)).Take(count).ToList();
+  render {
+    Stack(gap: 0, pt: 8, pb: 8) {
+      LoudSectionHead(title, linkLabel: more, to: link);
+      LoudGrid(shown);
+    }
+  }
+}

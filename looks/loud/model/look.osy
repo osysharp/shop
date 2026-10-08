@@ -1,0 +1,54 @@
+// THE DIRECTION — "loud".
+//
+// Brief: the thrift shop as a party — second-hand as the fun choice, not the worthy one, for a customer who wants the
+// shop to shout about a find.
+//
+// Looked at: charity-shop windows (hand-painted signs, yellow and red), gig posters (black type on flat colour), and
+// resale drops (a ticker, a countdown). Three directions written:
+//   1. Hand-painted window. REJECTED: needs lettering this shop does not have.
+//   2. Countdown drop. REJECTED: a sale gimmick on pieces that are one of one anyway.
+//   3. Loud — CHOSEN: a hot yellow ground, black Archivo Black at poster size, a ticker of news, and ONE accent —
+//      electric blue, carrying white text — for the current shelf and the thing to press.
+
+namespace Osysharp.Shop.Looks.Loud;
+
+/// Loud — a hot yellow ground, black poster type in capitals, a ticker of news, an electric-blue accent.
+look Loud {
+  Label = "Loud";
+  Theme = LoudTheme;
+}
+
+theme LoudTheme {
+  Colors {
+    Bg = "#FFE14D"; OnBg = "#0A0A0A"; Surface = "#FFF3A8"; OnSurface = "#0A0A0A"; Muted = "#FFEA80";
+    TextMuted = "#5A5220"; TextSecondary = "#2A2710"; Border = "#0A0A0A";
+    Primary = Palette.From("#1F3BFF");   // electric blue — the ONE accent
+    OnPrimary = "#FFFFFF"; OnImage = "#FFFFFF"; Scrim = "rgb(0 0 0 / 0.5)";
+    // Raised panels and wells in this look's own paper — a menu or a dialog, a field's well — and statuses that read
+    // on its light ground. Left at the floor they follow the visitor's system instead: dark menus and pale statuses
+    // inside a look that stays as it is.
+    Elevated = Colors.Surface;
+    Sunken   = Colors.Muted;
+    Danger   = "#A3001B";   // errors and refusals, set for this look's light ground
+    Success  = "#0B5D2E";   // done, paid, in stock, set for this look's light ground
+    Warning  = "#6E3A00";   // a caution that is not yet a refusal, set for this look's light ground
+    Waiting  = "#3D3F6E";   // pending — held, not yet paid, set for this look's light ground
+  }
+  Font {
+    Display = "\"Archivo Black\", system-ui, sans-serif"; Sans = "system-ui, sans-serif"; Mono = "ui-monospace, monospace";
+  }
+  FontSize {
+    Mega = "clamp(60px, 10vw, 170px)"; Hero = "clamp(40px, 5.5vw, 84px)"; Title = "26px";
+    Lead = "18px"; Body = "15px"; Label = "12px"; Caption = "12px";
+  }
+  // `Headline` — the weight a store's own page headings are set in (Checkout, Your bag, Paid.).
+  FontWeight { Light = 400; Headline = 600; }
+  Radius { Card = "0"; Md = "0"; Lg = "0"; Pill = "0"; }
+  Shadow { Raised = "none"; Floating = "0 18px 40px -24px rgb(0 0 0 / 0.35)"; }
+  Motion {
+    Lift = "transform 280ms cubic-bezier(.2,.8,.2,1), opacity 280ms ease";
+    Fade = "opacity 220ms ease";
+  }
+}
+
+animation LoudRiseIn { Duration = "560ms"; Easing = EaseOut; from { Opacity = 0; TranslateY = "16px"; } to { Opacity = 1; TranslateY = "0"; } }

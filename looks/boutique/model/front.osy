@@ -1,0 +1,128 @@
+// The front of the boutique: a hello and two pieces side by side, what is new, and the three shelves as rounded tiles.
+// It is a region staff arrange — what is written here is how it stands until they do.
+
+namespace Osysharp.Shop.Looks.Boutique;
+
+using Osysharp.Ui;
+using Osysharp.Blocks;
+using Osysharp.Storage;
+using Osysharp.Shop;
+using Osysharp.Shop.Looks;
+using Osysharp.Site.Looks;
+
+[AllowAnonymous]
+component BoutiqueFront() : FrontPage {
+  render {
+    Stack(gap: 0) {
+      Region("front", allow: [Hero, ProductRow, CategoryTiles, PictureWithWords, Quote, SignUp, Banner, PhotoGallery]) {
+        Hero(title: "Hej! Knit season is here.",
+             words: "Cardigans to live in, a dress for the dark evenings and a sneaker that goes with all of it. Try it on at home — returns are free for 30 days.",
+             photo: "/_osy/files/public/products/rib_knit_cardigan_1.jpg", second: "/_osy/files/public/products/cotton_cardigan_1.jpg",
+             button: "Shop knitwear", link: "/shop/knitwear");
+        ProductRow(title: "New in", count: 8, more: "Shop all", link: "/shop");
+        CategoryTiles(title: "The shelves");
+      }
+    }
+  }
+}
+
+/// The hello: a big soft headline and a sentence on the left, two photographs staggered on the right.
+[Composable]
+component BoutiqueHero(string title, Markdown words = "", Picture photo = "", Picture second = "", string button = "Shop now",
+                       PageLink link = "/", Color ground = Colors.Surface) : Hero {
+  render {
+    BoutiqueSection {
+      // Without a photograph the words take the whole width rather than leaving half the hero empty.
+      Box(display: Display.Grid, cols: photo == "" && second == "" ? "1fr" : "repeat(auto-fit, minmax(320px, 1fr))", gap: 8, py: 12,
+          align: Align.Center, label: "Hero: " + title) {
+        Stack(gap: 5, animation: BoutiqueRiseIn) {
+          Text(title, fontFamily: Font.Display, fontSize: FontSize.Mega, lineHeight: "0.95", letterSpacing: "-0.02em");
+          if (words != "") {
+            Text(words, fontSize: FontSize.Lead, lineHeight: "1.55", color: Colors.TextSecondary, maxW: "520px");
+          }
+          if (button != "") { Row { Link(href: link, label: button) { BoutiquePill(button); } } }
+        }
+        Box(display: Display.Grid, cols: "1fr 1fr", gap: 3, align: Align.Start) {
+          if (photo != "") { BoutiqueRounded(photo, title, "0"); }
+          if (second != "") { BoutiqueRounded(second, title, "48px"); }
+        }
+      }
+    }
+  }
+}
+
+/// A photograph with round corners, dropped a little so two sit staggered.
+[Composable]
+component BoutiqueRounded(string photo, string alt, string drop) {
+  render {
+    Box(mt: drop, overflow: Overflow.Hidden, rounded: Radius.Lg, shadow: Shadow.Floating) {
+      Image(picture: photo, alt: alt, w: "100%", aspectRatio: "3 / 4", objectFit: ObjectFit.Cover);
+    }
+  }
+}
+
+/// The tomato pill.
+[Composable]
+component BoutiquePill(string label) {
+  variants { base { Bg = Colors.Primary; Color = Colors.OnPrimary; Px = 6; Py = 3; Rounded = Radius.Pill; FontWeight = FontWeight.Semibold;
+                    Transition = Motion.Lift; Hover { TranslateY = "-2px"; } } }
+  render { Text(label); }
+}
+
+/// What is new: a heading in the serif, a link off to the right, and the grid.
+[AllowAnonymous]
+component BoutiqueProductRow(string title = "New in", Category? shelf = null, int count = 4, string more = "See them all",
+                             PageLink link = "/search") : ProductRow {
+  live var listed = Product.Include(p => p.Images).Include(p => p.Variants)
+    .Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard).OrderBy(p => p.Rank).ToList();
+  // The pieces this row shows — a computed of the read above, so the grid is handed one list, not a new one per render.
+  live var shown = listed.Where(p => shelf == null || (p.Category != null && p.Category.Id == shelf.Id)).Take(count).ToList();
+  render {
+    BoutiqueSection {
+      Stack(gap: 0, pt: 8, pb: 12) {
+        BoutiqueSectionHead(title, linkLabel: more, to: link);
+        BoutiqueGrid(shown);
+      }
+    }
+  }
+}
+
+/// The shelves as rounded photographs with their names on them. A shelf with a picture of its own shows that.
+[AllowAnonymous]
+component BoutiqueShelves(string title = "The shelves") : CategoryTiles {
+  live var shelves = Category.Where(c => c.Parent == null).OrderBy(c => c.Rank).ToList();
+  live var pieces = Product.Include(p => p.Images)
+    .Where(p => p.Slug == "jersey-pencil-midi-dress" || p.Slug == "metallic-leather-sneaker" || p.Slug == "croc-embossed-leather-tote").ToList();
+  render {
+    BoutiqueSection {
+      Box(display: Display.Grid, cols: "repeat(auto-fit, minmax(260px, 1fr))", gap: 4, pb: 16, label: "Shelves: " + title) {
+        foreach (var c in shelves) {
+          BoutiqueShelfTile(c.Name, "/shop/" + c.Slug, c.Picture ?? BoutiqueShelfPhoto(c.Slug, pieces));
+        }
+      }
+    }
+  }
+}
+
+/// The photograph the boutique puts on a shelf's tile: the dress, the sneaker, the tote.
+string BoutiqueShelfPhoto(string shelf, List<Product> pieces) {
+  var slug = shelf == "clothing" ? "jersey-pencil-midi-dress" : shelf == "shoes" ? "metallic-leather-sneaker" : "croc-embossed-leather-tote";
+  return CoverPhoto(pieces.Where(p => p.Slug == slug).SelectMany(p => p.Images).ToArray());
+}
+
+/// A shelf as a rounded photograph with its name on it.
+[Composable]
+component BoutiqueShelfTile(string name, string to, string photo) {
+  variants { base { Display = Display.Block; Color = Colors.OnImage; TextDecoration = TextDecoration.None; Transition = Motion.Lift;
+                    Hover { TranslateY = "-4px"; } } }
+  render {
+    Link(href: to, label: name) {
+      Box(position: Position.Relative, overflow: Overflow.Hidden, rounded: Radius.Card) {
+        Image(src: File.Url(photo), alt: name, w: "100%", aspectRatio: "4 / 5", objectFit: ObjectFit.Cover);
+        Box(position: Position.Absolute, inset: "0", bgImage: "linear-gradient(180deg, rgb(0 0 0 / 0) 55%, rgb(0 0 0 / 0.45) 100%)");
+        Text(name, position: Position.Absolute, left: "20px", bottom: "16px", fontFamily: Font.Display, fontSize: FontSize.Title,
+             color: Colors.OnImage);
+      }
+    }
+  }
+}

@@ -1,0 +1,70 @@
+// THE DIRECTION — "the boutique".
+//
+// Brief: the same shop for a customer who wants it to feel like a small shop with a person in it — warm, a little
+// playful, the bag always one tap away.
+//
+// Looked at in the category: neighbourhood boutiques online (a painted colour ground, a friendly serif, handwritten
+// notes), department-store clean (white and black), and Scandinavian pastel lifestyle shops (powder colours, soft
+// type, rounded everything). Three directions written for this shop:
+//   1. Painted wall in terracotta. REJECTED: the cream-and-clay default wearing a new name.
+//   2. Pastel lifestyle — rounded pills, soft shadows. REJECTED: it drifts towards a template.
+//   3. The boutique — CHOSEN: a powder-blue ground, navy type, Fraunces (a soft serif with a little wobble) for
+//      display, Hanken Grotesk to read, and ONE accent — tomato red — for the price that is on sale and the thing to
+//      press.
+
+namespace Osysharp.Shop.Looks.Boutique;
+
+/// A small shop with a person in it — powder blue, navy, a soft serif, round corners, the bag always one tap away.
+look Boutique {
+  Label = "Boutique";
+  Theme = BoutiqueTheme;
+}
+
+theme BoutiqueTheme {
+  Colors {
+    Bg            = "#DCE7F2";
+    OnBg          = "#14213D";
+    Surface       = "#EEF4FA";
+    OnSurface     = "#14213D";
+    Muted         = "#CFDDEC";
+    TextMuted     = "#566584";
+    TextSecondary = "#2C3A5A";
+    Border        = "#BCCDE0";
+    Primary       = Palette.From("#E4432D");   // tomato — the ONE accent
+    OnPrimary     = "#FFFFFF";
+    OnImage       = "#FFFFFF";
+    Scrim         = "rgb(20 33 61 / 0.45)";
+    // Raised panels and wells in this look's own paper — a menu or a dialog, a field's well — and statuses that read
+    // on its light ground. Left at the floor they follow the visitor's system instead: dark menus and pale statuses
+    // inside a look that stays as it is.
+    Elevated = Colors.Surface;
+    Sunken   = Colors.Muted;
+    Danger   = "#B42318";   // errors and refusals, set for this look's light ground
+    Success  = "#1E6B45";   // done, paid, in stock, set for this look's light ground
+    Warning  = "#8A5300";   // a caution that is not yet a refusal, set for this look's light ground
+    Waiting  = "#55587F";   // pending — held, not yet paid, set for this look's light ground
+  }
+  Font {
+    Display = "\"Fraunces\", Georgia, serif";
+    Sans    = "\"Hanken Grotesk\", system-ui, sans-serif";
+  }
+  FontSize {
+    Mega    = "clamp(56px, 8vw, 128px)";
+    Hero    = "clamp(38px, 5vw, 72px)";
+    Title   = "26px";
+    Lead    = "18px";
+    Body    = "15px";
+    Label   = "12px";
+    Caption = "12px";
+  }
+  // `Headline` — the weight a store's own page headings are set in: Fraunces at its regular weight.
+  FontWeight { Light = 400; Headline = 400; }
+  Radius { Card = "18px"; Md = "12px"; Lg = "22px"; Pill = "999px"; }
+  Shadow { Raised = "none"; Floating = "0 20px 40px -24px rgb(20 33 61 / 0.35)"; }
+  Motion {
+    Lift = "transform 300ms cubic-bezier(.2,.8,.2,1), opacity 300ms ease";
+    Fade = "opacity 220ms ease";
+  }
+}
+
+animation BoutiqueRiseIn { Duration = "560ms"; Easing = EaseOut; from { Opacity = 0; TranslateY = "16px"; } to { Opacity = 1; TranslateY = "0"; } }

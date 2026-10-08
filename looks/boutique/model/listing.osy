@@ -1,0 +1,108 @@
+// The listings: a shelf's name large in the serif, its sub-shelves as a quiet row of links, and the grid — four across on
+// a wide screen, two on a phone; each piece's photograph tall, its second photograph under the pointer.
+
+namespace Osysharp.Shop.Looks.Boutique;
+
+using Osysharp.Ui;
+using Osysharp.Storage;
+using Osysharp.Shop;
+using Osysharp.Shop.Looks;
+
+component BoutiqueListing(string title, string lead, List<Product> products, List<Category> shelves, string current) : ListingPage {
+  render {
+    BoutiqueSection {
+      Stack(gap: 0, pt: 14, pb: 20) {
+        Stack(gap: 3, pb: 8, animation: BoutiqueRiseIn) {
+          Text(title, fontFamily: Font.Display, fontSize: FontSize.Hero, lineHeight: "1", letterSpacing: "-0.02em");
+          if (lead != "") { Text(lead, fontSize: FontSize.Lead, color: Colors.TextSecondary, maxW: "560px"); }
+        }
+        Row(gap: 5, wrap: Wrapping.Wrap, pb: 8, borderBW: 1, border: Colors.Border, label: "Shelves") {
+          foreach (var s in shelves) {
+            Link(href: "/shop/" + s.Slug, label: s.Name) {
+              Text(s.Name, fontSize: FontSize.Body, color: s.Slug == current ? Colors.OnBg : Colors.TextMuted, pb: 3);
+            }
+          }
+          Text($"{products.Count} {(products.Count == 1 ? "piece" : "pieces")}", fontSize: FontSize.Label,
+               color: Colors.TextMuted, ml: "auto");
+        }
+        Box(pt: 8) {
+          if (products.Count == 0) {
+            Stack(gap: 3, py: 12) {
+              Text("Nothing here right now.", fontSize: FontSize.Title, fontWeight: FontWeight.Light);
+              Slot("empty");
+            }
+          } else {
+            BoutiqueGrid(products);
+          }
+        }
+      }
+    }
+  }
+}
+
+/// The grid every listing uses: four across on a wide screen, two on a phone.
+component BoutiqueGrid(List<Product> products) : ProductGrid {
+  variants { base { Display = Display.Grid; Cols = "repeat(2, minmax(0, 1fr))"; Gap = 4;
+                    Laptop { Cols = "repeat(4, minmax(0, 1fr))"; Gap = 6; } } }
+  render {
+    Box {
+      foreach (var p in products) { BoutiqueCard(p, products.IndexOf(p)); }
+    }
+  }
+}
+
+/// A piece as a listing shows it: the photograph tall, the second photograph on hover, then the name and the price.
+[AllowAnonymous]
+component BoutiqueCard(Product product, int index) {
+  live var shop = ShopSettings.FirstOrDefault();
+  variants {
+    base { Display = Display.Block; Color = Colors.OnBg; TextDecoration = TextDecoration.None;
+           Focus { OutlineW = 1; OutlineColor = Colors.OnBg; OutlineOffset = "4px"; OutlineStyle = OutlineStyle.Solid; } }
+  }
+  render {
+    Link(href: "/p/" + product.Slug, label: product.Name, animation: BoutiqueRiseIn, animationDelay: (index % 8 * 60) + "ms") {
+      Stack(gap: 3) {
+        Box(position: Position.Relative, overflow: Overflow.Hidden, bg: Colors.Surface, rounded: Radius.Card) {
+          Image(src: File.Url(CoverPhoto(product.Images)), alt: product.Name, w: "100%", aspectRatio: "3 / 4", objectFit: ObjectFit.Cover);
+          if (product.Images.Count() > 1) { BoutiqueSecondPhoto(LookSecondCover(product.Images), product.Name); }
+          if (Sold(product.Variants)) { BoutiqueTag("Sold out"); }
+        }
+        Stack(gap: 1) {
+          Text(product.Name, fontSize: FontSize.Body);
+          Text(LookPrice(product.Price, shop), fontSize: FontSize.Body, color: Colors.TextMuted);
+        }
+      }
+    }
+  }
+}
+
+/// The second photograph, laid over the first and shown under the pointer.
+[Composable]
+component BoutiqueSecondPhoto(string photo, string alt) {
+  variants { base { Position = Position.Absolute; Inset = "0"; Opacity = 0; Transition = Motion.Fade;
+                    inside BoutiqueCard.Hover { Opacity = 1; } } }
+  render { Box { Image(src: File.Url(photo), alt: alt, w: "100%", h: "100%", objectFit: ObjectFit.Cover); } }
+}
+
+/// A small mark on a photograph.
+[Composable]
+component BoutiqueTag(string label) {
+  render {
+    Box(position: Position.Absolute, top: "12px", left: "12px", px: 2, py: 1, bg: Colors.Bg) {
+      Text(label, fontSize: FontSize.Label, letterSpacing: "0.06em");
+    }
+  }
+}
+
+/// A section's opening: a heading set light, and an optional link off to the right.
+[Composable]
+component BoutiqueSectionHead(string title, string linkLabel = "", string to = "") {
+  render {
+    Row(justify: Justify.Between, align: Align.Baseline, gap: 4, wrap: Wrapping.Wrap, pb: 8) {
+      Text(title, fontFamily: Font.Display, fontSize: FontSize.Title);
+      if (linkLabel != "" && to != "") {
+        Link(href: to, label: linkLabel) { Text(linkLabel + " →", fontSize: FontSize.Body, color: Colors.TextSecondary); }
+      }
+    }
+  }
+}

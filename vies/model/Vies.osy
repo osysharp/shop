@@ -1,0 +1,32 @@
+namespace Osysharp.Shop.Vies;
+
+using Osysharp.Http;
+using Osysharp.Shop;
+
+/// What VIES answers (`POST /check-vat-number`).
+public class ViesResponse {
+  [ExternalName("valid")] public bool Valid;
+  [ExternalName("name")] public string? Name;
+  [ExternalName("address")] public string? Address;
+}
+
+/// The EU's VAT register, as the shop's VAT-number check:
+///
+///     app.Shop = new ShopSetup { …, VatNumbers = new ViesCheck() };
+///     use Osysharp.Shop.Vies@0 { egress "ec.europa.eu"; }    // in app.osy
+public class ViesCheck : IVatNumberCheck {
+  public string BaseUrl = "https://ec.europa.eu/taxation_customs/vies/rest-api";
+
+  public VatNumberResult Check(string country, string number) {
+    var body = "{\"countryCode\":" + JsonSerializer.Serialize(country) + ",\"vatNumber\":" + JsonSerializer.Serialize(number) + "}";
+    var r = Http.Post(BaseUrl + "/check-vat-number", body, "application/json");
+    if (!r.IsSuccess) { throw new ExternalServiceException($"VIES could not check the number ({r.StatusCode})."); }
+    var answer = JsonSerializer.Deserialize<ViesResponse>(r.Body);
+    // A member state may withhold the name and address; VIES then answers "---".
+    return new VatNumberResult {
+      Valid = answer.Valid,
+      Name = answer.Name == null || answer.Name == "---" ? "" : answer.Name.Trim(),
+      Address = answer.Address == null || answer.Address == "---" ? "" : answer.Address.Trim(),
+    };
+  }
+}

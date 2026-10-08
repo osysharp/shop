@@ -1,0 +1,32 @@
+using Osysharp.Http;
+using Osysharp.Shop;
+using Osysharp.Shop.Vies;
+
+[Test]
+void a_number_is_checked_with_its_country_and_the_company_named() {
+  var posted = new List<string>();
+  var urls = new List<string>();
+  Http.Post.Stub((url, body) => {
+    urls.Add(url); posted.Add(body);
+    return new HttpResponse { StatusCode = 200, Body = "{\"countryCode\":\"DE\",\"vatNumber\":\"123456789\",\"valid\":true,\"name\":\"Muster GmbH \",\"address\":\"Hauptstraße 1\"}" };
+  });
+  var result = new ViesCheck().Check("DE", "123456789");
+  Assert.Equal("https://ec.europa.eu/taxation_customs/vies/rest-api/check-vat-number", urls[0]);
+  Assert.Equal("{\"countryCode\":\"DE\",\"vatNumber\":\"123456789\"}", posted[0]);
+  Assert.True(result.Valid);
+  Assert.Equal("Muster GmbH", result.Name);
+}
+
+[Test]
+void a_withheld_name_is_empty_and_an_invalid_number_is_not_valid() {
+  Http.Post.Stub((url, body) => new HttpResponse { StatusCode = 200, Body = "{\"valid\":false,\"name\":\"---\",\"address\":\"---\"}" });
+  var result = new ViesCheck().Check("FR", "00000000000");
+  Assert.False(result.Valid);
+  Assert.Equal("", result.Name);
+}
+
+[Test]
+void an_unreachable_register_says_so() {
+  Http.Post.Stub((url, body) => new HttpResponse { StatusCode = 503, Body = "" });
+  Assert.Throws<ExternalServiceException>(() => new ViesCheck().Check("DE", "123456789"));
+}

@@ -1,0 +1,17 @@
+// The producer's test project for Osysharp.Shop.BankId — every call to BankID is stubbed.
+app ShopBankIdKitTests {
+  tests "**/*.test.osy";
+  // Osysharp.Shop.BankId, the package under test, is not written: it arrives by itself because this app uses
+  // Shop and BankId, which it completes (`osy lock` includes it and says so).
+  use Osysharp.BankId@0 {
+    egress     "appapi2.bankid.com";
+    egress     "appapi2.test.bankid.com";
+    clientCert "BankIdCert";
+    serverCa   "BankIdCa";
+  }
+  use Osysharp.Shop@0 { egress "api.resend.com"; secret "ResendApiKey"; }
+  use Osysharp.Seo@0;
+  use Osysharp.Http;
+}
+
+app.Secrets = [ new Secret("BankIdCert"), new Secret("BankIdCa") ];

@@ -1,0 +1,39 @@
+// sv (Svenska): the words of Osysharp.Shop.BankId, translated.
+// Written and kept in step with the source by `osy translate`: a new text arrives as `=> null`, a text
+// whose source changed keeps its old translation in a `was` clause. The words are yours to edit.
+// Source language: en.
+
+translations sv {
+  // ── BankIdFailed ──
+  /// BankIdFailed · message
+  /// shown through BankIdFailed()
+  message "BankID could not confirm who you are. Try again." => "BankID kunde inte bekräfta vem du är. Försök igen.";
+  /// BankIdFailed · message
+  /// shown through BankIdFailed()
+  message "BankID did not answer in time. Try again." => "BankID svarade inte i tid. Försök igen.";
+  /// BankIdFailed · message
+  /// shown through BankIdFailed()
+  message "That BankID is blocked or too old. Use another, or get a new one from your bank." => "Det BankID:t är spärrat eller för gammalt. Använd ett annat, eller skaffa ett nytt från din bank.";
+  /// BankIdFailed · message
+  /// shown through BankIdFailed()
+  message "The code was not scanned in time. Try again." => "Koden skannades inte i tid. Försök igen.";
+  /// BankIdFailed · message
+  /// shown through BankIdFailed()
+  message "You cancelled in BankID." => "Du avbröt i BankID.";
+
+  // ── BankIdWaiting ──
+  /// BankIdWaiting · message
+  /// shown through BankIdWaiting()
+  message "Enter your security code in the BankID app and select Identify." => "Skriv in din säkerhetskod i BankID-appen och välj Legitimera.";
+  /// BankIdWaiting · message
+  /// shown through BankIdWaiting()
+  message "Open the BankID app." => "Öppna BankID-appen.";
+  /// BankIdWaiting · message
+  /// shown through BankIdWaiting()
+  message "Searching for BankID. Open the app." => "Söker efter BankID. Öppna appen.";
+
+  // ── Osysharp.Shop.BankId.BankIdAgeCheck.Collect ──
+  /// Osysharp.Shop.BankId.BankIdAgeCheck.Collect · message
+  /// shown through AgeCheckAnswer.Message
+  message "BankID answered, but not with a date of birth we could read. Try again." => "BankID svarade, men inte med ett födelsedatum vi kunde läsa. Försök igen.";
+}

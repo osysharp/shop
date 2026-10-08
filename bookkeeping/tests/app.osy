@@ -1,0 +1,15 @@
+// The producer's test project for Osysharp.Shop.Bookkeeping — a small shop wired as a store wires one, whose sales the
+// books are then read from.
+app BookkeepingKitTests {
+  model "model/**/*.osy";
+  tests "**/*.test.osy";
+  use Osysharp.Shop.Bookkeeping@0;
+  use Osysharp.Shop@0 { egress "api.resend.com"; secret "ResendApiKey"; }
+  use Osysharp.Payments@0;
+  use Osysharp.Delivery@0;
+  use Osysharp.Seo@0;
+  use Osysharp.Workflow;
+  use Osysharp.Ui;
+  // A change trail — so the chart of accounts says who last changed each group.
+  use Osysharp.Observability;
+}

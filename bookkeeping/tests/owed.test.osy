@@ -1,0 +1,117 @@
+// Gift cards and store credit in the books: money the shop OWES. A gift card sold is a debt, not a sale, and has no
+// VAT; what it pays for is a sale with all its VAT; what goes back onto a card or into store credit is owed again; what
+// staff give away is a cost; what is left on a card when it expires is income, with no VAT.
+
+using Osysharp.Shop.Bookkeeping;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// A gift card for sale — 500 kr.
+void CardShelf() {
+  runas (Desk) {
+    var card = new Product { Name = "Gift card", Slug = "gift-card", Price = 500m, IsGiftCard = true };
+    new Variant { Product = card, Unlimited = true };
+    UnitOfWork.Commit();
+  }
+}
+
+/// The gift card code in the one mail to `email` that carries a code.
+string CardCodeMailedTo(string email) {
+  var text = "";
+  runas (Desk) { text = ShopMail.Single(m => m.To == email && m.Subject.Contains("gift card")).Text; }
+  for (var i = 0; i + 19 <= text.Length; i = i + 1) {
+    var s = text.Substring(i, 19);
+    if (s.Substring(4, 1) == "-" && s.Substring(9, 1) == "-" && s.Substring(14, 1) == "-" && !s.Contains(" ")
+        && s.Replace("-", "").ToUpper() == s.Replace("-", "")) { return s; }
+  }
+  return "";
+}
+
+[Test(Books)]
+void a_gift_card_sold_is_owed_not_earned_and_what_it_buys_is_a_sale_with_its_vat() {
+  runas (new Visitor { Id = "v-card-spend" }) {
+    CardShelf();
+    var card = "";
+    runas (new Visitor { Id = "v-card-sale" }) {
+      AddGiftCardToBag(Variant.Single(v => v.Product.Name == "Gift card"), 0m, "", "", "", "", null);
+      card = PlaceOrder("Maja Berg", "maja@example.test", "", NothingToShipId(), "banktransfer", "", "", "", "").Reference;
+    }
+    runas (Desk) {
+      var o = Order.Single(x => x.Reference == card);
+      MarkPaid(o, "");
+      Workflow.Settle(o);
+      foreach (var c in GiftCard.ToList()) { Workflow.Settle(c); }
+      var day = Verifications(Today(), Today()).Single();
+      Assert.Equal(0m, day.Postings.Sum(p => p.Amount));
+      Assert.Equal(500m, day.Postings.Single(p => p.Account == "1930").Amount);
+      Assert.Equal(-500m, day.Postings.Single(p => p.Account == "2421").Amount);   // owed, not a sale
+      Assert.False(day.Postings.Any(p => p.Account.StartsWith("30") || p.Account.StartsWith("26")));
+      Assert.Empty(VatReport(Today(), Today()));                                   // nothing for the VAT return
+      Assert.Contains(",voucher,500.00,500.00,0.00,gift card, no VAT", CsvText(Today(), Today()));
+      Assert.Contains("#KONTO 2421 \"Ej inlösta presentkort\"", SieText(Today(), Today()));
+    }
+    // Spent on a lamp of 1250: 500 of it out of what is owed, 750 in money — and the lamp is a sale with ALL its VAT.
+    var code = CardCodeMailedTo("maja@example.test");
+    AddToBag(Variant.Single(v => v.Product.Name == "Lamp"), 1);
+    ApplyGiftCard(code);
+    var lamp = PlaceOrder("Maja Berg", "maja@example.test", "", "collect", "banktransfer", "", "", "", "").Reference;
+    runas (Desk) {
+      var o = Order.Single(x => x.Reference == lamp);
+      MarkPaid(o, "");
+      Workflow.Settle(o);
+      var day = Verifications(Today(), Today()).Single();
+      Assert.Equal(0m, day.Postings.Sum(p => p.Amount));
+      Assert.False(day.Postings.Any(p => p.Account == "2421"));                    // sold 500, spent 500: owed nothing now
+      Assert.Equal(1250m, day.Postings.Single(p => p.Account == "1930").Amount);   // 500 for the card, 750 for the lamp
+      Assert.Equal(-1000m, day.Postings.Single(p => p.Account == "3001").Amount);
+      Assert.Equal(-250m, day.Postings.Single(p => p.Account == "2611").Amount);   // VAT on the whole 1250
+      Assert.Equal(250m, VatReport(Today(), Today()).Single().Vat);
+    }
+  }
+}
+
+[Test(Books)]
+void what_goes_back_onto_a_card_or_into_credit_is_owed_again_and_what_staff_give_is_a_cost() {
+  runas (new Visitor { Id = "v-prize" }) {
+    runas (Desk) {
+      IssueGiftCard(1250m, "olle@example.test", "Olle", "", "A prize");
+      foreach (var c in GiftCard.ToList()) { Workflow.Settle(c); }
+      GrantCredit(ShopAccount.Single(a => a.Email == "anna@shop.test"), 100m, "Staff discount");
+      Workflow.Settle(StoreCreditGrant.Single());
+    }
+    var code = CardCodeMailedTo("olle@example.test");
+    AddToBag(Variant.Single(v => v.Product.Name == "Lamp"), 1);
+    ApplyGiftCard(code);
+    var lamp = PlaceOrder("Olle", "olle@example.test", "", "collect", GiftCardKey(), "", "", "", "").Reference;
+    runas (Desk) {
+      var o = Order.Single(x => x.Reference == lamp);
+      Workflow.Settle(o);
+      RefundOrder(o, "Broken", true);
+      Workflow.Settle(o);
+      var day = Verifications(Today(), Today()).Single();
+      Assert.Equal(0m, day.Postings.Sum(p => p.Amount));
+      Assert.Equal(1350m, day.Postings.Single(p => p.Account == "5990").Amount);   // the prize and the credit, given away
+      Assert.Equal(-1250m, day.Postings.Single(p => p.Account == "2421").Amount);  // the card holds it again
+      Assert.Equal(-100m, day.Postings.Single(p => p.Account == "2420").Amount);
+      Assert.False(day.Postings.Any(p => p.Account == "1930" || p.Account == "3001")); // no money moved, nothing sold
+    }
+  }
+}
+
+[Test(Books)]
+void a_card_that_expires_is_written_off_as_income_without_vat() {
+  runas (Desk) {
+    IssueGiftCard(200m, "olle@example.test", "", "", "A prize");
+    foreach (var c in GiftCard.ToList()) { Workflow.Settle(c); }
+  }
+  TestClock.Advance(TimeSpan.FromDays(25 * 31));
+  runas (Desk) {
+    var card = GiftCard.Single();
+    Workflow.Settle(card);
+    Assert.Equal(GiftCardStatus.Expired, card.Status);
+    var day = Verifications(Today(), Today()).Single();
+    Assert.Equal(200m, day.Postings.Single(p => p.Account == "2421").Amount);   // owed no longer
+    Assert.Equal(-200m, day.Postings.Single(p => p.Account == "3990").Amount);
+    Assert.False(day.Postings.Any(p => p.Account.StartsWith("26")));
+  }
+}

@@ -1,0 +1,83 @@
+using Osysharp.Payments;
+using Osysharp.Shop;
+
+/// A card provider written in the test app: every payment it starts is paid, and its one payout covers every order
+/// paid with it — less a fee of 2.50 — plus one payment the shop has never heard of.
+public class TestCard : IPaymentProvider {
+  public string Key { get; } = "card";
+  public string Label { get; } = "Card";
+  public string Description { get; } = "A test card.";
+  public bool CapturesLater { get; } = false;
+  public bool IsManual { get; } = false;
+  public List<string> EventHeaders { get; } = [];
+
+  public bool IsReady() { return true; }
+  public string CurrencyRefusal(string currency, string country, string sellers) { return ""; }
+  public bool SavesMethods { get; } = false;
+  public PaymentCheck ChargeSaved(string savedMethod, PaymentRequest request) {
+    return new PaymentCheck { State = PaymentState.Failed, Message = "This provider keeps no way to pay." };
+  }
+  public void ForgetMethod(string savedMethod) { }
+  public PaymentStart Start(PaymentRequest request) {
+    return new PaymentStart { RedirectUrl = "https://pay.test/" + request.Reference, ProviderRef = "p-" + request.Reference };
+  }
+  public PaymentCheck Check(string reference, long amount, string token) {
+    return new PaymentCheck { State = PaymentState.Paid, ProviderRef = "p-" + reference };
+  }
+  public void Capture(string providerRef, long amount) { }
+  public PaymentRefund Refund(string providerRef, long amount, string reason, string idempotencyKey) {
+    return new PaymentRefund { State = RefundState.Succeeded, RefundRef = "r-" + providerRef };
+  }
+  public void Cancel(string providerRef) { }
+  public List<PaymentEvent> HandleEvent(string body, Dictionary<string, string> headers) { return []; }
+  public List<Payout> Payouts(DateTime from, DateTime to) {
+    var payout = new Payout { Id = "po_1", PaidAt = DateTime.UtcNow, Currency = "SEK", Fees = 250 };
+    foreach (var o in Order.Where(o => o.PaymentMethod == "card" && o.PaymentRef != null).ToList()) {
+      // A sale in euros is converted into the payout's kronor at 11.20, as Stripe converts one — and says the rate.
+      if (o.Currency == "EUR") { payout.Lines.Add(new PayoutLine { ProviderRef = o.PaymentRef!, Kind = "sale", Amount = Minor(o.Total * 11.20m), SettledRate = 11.20m }); }
+      else { payout.Lines.Add(new PayoutLine { ProviderRef = o.PaymentRef!, Kind = "sale", Amount = Minor(o.Total) }); }
+    }
+    payout.Lines.Add(new PayoutLine { ProviderRef = "p-stranger", Kind = "sale", Amount = 1000 });
+    payout.Net = payout.Lines.Sum(l => l.Amount) - payout.Fees;
+    return [payout];
+  }
+}
+
+
+/// A card provider that pays out in EUROS, as Klarna settles each currency in itself: nothing is converted, and its one
+/// payout — tomorrow — covers every order paid with it, less a fee of €1.
+public class TestEuroCard : IPaymentProvider {
+  public string Key { get; } = "eurocard";
+  public string Label { get; } = "Euro card";
+  public string Description { get; } = "A test card that settles in euros.";
+  public bool CapturesLater { get; } = false;
+  public bool IsManual { get; } = false;
+  public List<string> EventHeaders { get; } = [];
+
+  public bool IsReady() { return true; }
+  public string CurrencyRefusal(string currency, string country, string sellers) { return currency == "EUR" ? "" : "Euros only."; }
+  public bool SavesMethods { get; } = false;
+  public PaymentCheck ChargeSaved(string savedMethod, PaymentRequest request) { return new PaymentCheck { State = PaymentState.Failed }; }
+  public void ForgetMethod(string savedMethod) { }
+  public PaymentStart Start(PaymentRequest request) {
+    return new PaymentStart { RedirectUrl = "https://pay.test/" + request.Reference, ProviderRef = "e-" + request.Reference };
+  }
+  public PaymentCheck Check(string reference, long amount, string token) {
+    return new PaymentCheck { State = PaymentState.Paid, ProviderRef = "e-" + reference };
+  }
+  public void Capture(string providerRef, long amount) { }
+  public PaymentRefund Refund(string providerRef, long amount, string reason, string idempotencyKey) {
+    return new PaymentRefund { State = RefundState.Succeeded, RefundRef = "r-" + providerRef };
+  }
+  public void Cancel(string providerRef) { }
+  public List<PaymentEvent> HandleEvent(string body, Dictionary<string, string> headers) { return []; }
+  public List<Payout> Payouts(DateTime from, DateTime to) {
+    var payout = new Payout { Id = "po_eur", PaidAt = DateTime.UtcNow.AddDays(1), Currency = "EUR", Fees = 100 };
+    foreach (var o in Order.Where(o => o.PaymentMethod == "eurocard" && o.PaymentRef != null).ToList()) {
+      payout.Lines.Add(new PayoutLine { ProviderRef = o.PaymentRef!, Kind = "sale", Amount = Minor(o.Total) });
+    }
+    if (payout.Lines.Count == 0) { return []; }
+    payout.Net = payout.Lines.Sum(l => l.Amount) - payout.Fees;
+    return [payout];
+  }
+}

@@ -1,0 +1,157 @@
+// SIE 4 — the Swedish interchange every accounting package imports — and a CSV of the same documents for everyone
+// else. Both are files staff download from the desk, through a link that expires.
+
+namespace Osysharp.Shop.Bookkeeping;
+
+using Osysharp.Shop;
+using Osysharp.Storage;
+
+/// The period's books as an SIE 4 file (type 4: verifications), for import into Fortnox, Visma, Björn Lundén…
+[Authorize(IsShopStaff)]
+public string SieText(DateOnly from, DateOnly to) {
+  var shop = TheShop();
+  var a = Accounts();
+  // The sales of each day, then each payout — the second clears what the first put on the provider's account.
+  var days = Verifications(from, to);
+  days.AddRange(PayoutVerifications(from, to));
+  var year = from.Year;
+  var lines = new List<string> {
+    "#FLAGGA 0",
+    "#FORMAT PC8",
+    "#SIETYP 4",
+    "#PROGRAM \"Osysharp.Shop.Bookkeeping\" 0.1",
+    $"#GEN {DateTime.UtcNow.ToString("yyyyMMdd")}",
+    $"#FNAMN {Quoted(shop.Name)}",
+  };
+  if (shop.CompanyNumber != null) { lines.Add($"#ORGNR {shop.CompanyNumber}"); }
+  lines.Add($"#RAR 0 {year}0101 {year}1231");
+  lines.Add($"#VALUTA {shop.Currency}");
+  // The accounts the verifications use, named as BAS names them.
+  var names = new Dictionary<string, string> {
+    { a.SalesStandard, "Försäljning, normalmoms" }, { a.SalesReduced, "Försäljning, reducerad moms 12 %" },
+    { a.SalesLower, "Försäljning, reducerad moms 6 %" }, { a.SalesExempt, "Försäljning, momsfri" },
+    { a.VatStandard, "Utgående moms, normalmoms" }, { a.VatReduced, "Utgående moms, 12 %" },
+    { a.VatLower, "Utgående moms, 6 %" }, { a.ProviderClearing, "Fordringar hos betaltjänst" }, { a.Bank, "Företagskonto" }, { a.Receivables, "Kundfordringar" },
+    { a.ProviderFees, "Avgifter betaltjänst" },
+    { a.SalesEuReverseCharge, "Försäljning varor till annat EU-land" },
+    { a.SalesExport, "Försäljning varor till land utanför EU" },
+    { a.GiftCards, "Ej inlösta presentkort" }, { a.StoreCredit, "Förskott från kunder" },
+    { a.SalesSinglePurpose, "Försäljning mot enfunktionsvoucher, moms redovisad vid försäljningen" },
+    { a.GivenAway, "Övriga kostnader för reklam och PR" }, { a.Unredeemed, "Övriga ersättningar och intäkter" },
+    { a.CurrencyGain, "Valutakursvinster på fordringar och skulder av rörelsekaraktär" },
+    { a.CurrencyLoss, "Valutakursförluster på fordringar och skulder av rörelsekaraktär" },
+  };
+  foreach (var account in days.SelectMany(d => d.Postings).Select(p => p.Account).Distinct().OrderBy(x => x)) {
+    lines.Add($"#KONTO {account} {Quoted(names.ContainsKey(account) ? names[account] : account)}");
+  }
+  var number = 1;
+  foreach (var d in days) {
+    lines.Add($"#VER A {number} {d.Date.ToString("yyyyMMdd")} {Quoted(d.Text)}");
+    lines.Add("{");
+    foreach (var p in d.Postings) { lines.Add($"   #TRANS {p.Account} {{}} {Amount(p.Amount)}"); }
+    lines.Add("}");
+    number = number + 1;
+  }
+  return string.Join("\r\n", lines) + "\r\n";
+}
+
+/// The SIE file, encoded as the format requires (PC8), behind a link that expires.
+[Authorize(IsShopStaff)]
+public string SieLink(DateOnly from, DateOnly to) {
+  var path = $"bookkeeping/sie-{from.ToString("yyyyMMdd")}-{to.ToString("yyyyMMdd")}.se";
+  File.WriteAllBytes(path, Pc8(SieText(from, to)));
+  return File.SignedUrl(path);
+}
+
+/// Every invoice and credit note of the period, one row per document and VAT rate — for Xero, QuickBooks, a sheet.
+[Authorize(IsShopStaff)]
+[SuppressWarning("cost-unbounded-read")]   // the period the caller asked for — the export is every document in it
+public string CsvText(DateOnly from, DateOnly to) {
+  var start = from.ToDateTime(TimeOnly.MinValue);
+  var end = to.AddDays(1).ToDateTime(TimeOnly.MinValue);
+  // `adjustments` names what came off an invoiced order (a discount code, a gift) — for reading, not for summing: the
+  // amounts per rate are already what was charged, after it.
+  // The amounts are in the shop's own currency — a sale in another at its invoice's rate — so a column sums; the last
+  // three say what the document was in, how much, and at what rate (1 in the shop's own).
+  var shop = TheShop();
+  var rows = new List<string> { "date,document,number,order,paid_with,vat_percent,gross,net,vat,adjustments,currency,gross_in_currency,rate" };
+  foreach (var i in Invoice.Where(x => x.IssuedAt >= start && x.IssuedAt < end).Include(x => x.Order.VatRates).Include(x => x.Order.Adjustments).OrderBy(x => x.Number).ToList()) {
+    var off = string.Join("; ", i.Order.Adjustments.ToList().Where(a => a.Amount > 0).Select(a => $"{a.Label} -{Amount(a.Amount)}"));
+    var cur = i.Order.Currency ?? shop.Currency;
+    var rate = RateOf(i);
+    foreach (var r in i.Order.VatRates) {
+      var gross = InvoiceShopMoney(r.Gross, i);
+      var vat = InvoiceShopMoney(r.Vat, i);
+      rows.Add(string.Join(",", new List<string> { i.IssuedAt.ToString("yyyy-MM-dd"), "invoice", InvoiceCode(i), i.Order.Reference,
+        Csv(i.Order.PaymentLabel ?? i.Order.PaymentMethod), Amount(r.Percent), Amount(gross), Amount(gross - vat), Amount(vat), Csv(off),
+        cur, Amount(r.Gross), rate }));
+    }
+    // A gift card sold is a voucher: no VAT rate, so its own row — owed, not earned. A single-purpose card's sale is in
+    // the VAT rows above (its VAT is due now), and what one paid for is its own row, with no VAT: declared already.
+    if (i.Order.SinglePurposeUsed > 0) {
+      var paid = InvoiceShopMoney(i.Order.SinglePurposeUsed, i);
+      rows.Add(string.Join(",", new List<string> { i.IssuedAt.ToString("yyyy-MM-dd"), "invoice", InvoiceCode(i), i.Order.Reference,
+        Csv(i.Order.PaymentLabel ?? i.Order.PaymentMethod), "voucher-paid", Amount(paid), Amount(paid - InvoiceShopMoney(i.Order.VoucherVat, i)), "0.00",
+        "paid with a single-purpose gift card, VAT declared when it was sold", cur, Amount(i.Order.SinglePurposeUsed), rate }));
+    }
+    if (i.Order.GiftCardsSold > 0 && !i.Order.GiftCardsSinglePurpose) {
+      var sold = InvoiceShopMoney(i.Order.GiftCardsSold, i);
+      rows.Add(string.Join(",", new List<string> { i.IssuedAt.ToString("yyyy-MM-dd"), "invoice", InvoiceCode(i), i.Order.Reference,
+        Csv(i.Order.PaymentLabel ?? i.Order.PaymentMethod), "voucher", Amount(sold), Amount(sold), "0.00", "gift card, no VAT",
+        cur, Amount(i.Order.GiftCardsSold), rate }));
+    }
+  }
+  foreach (var c in CreditNote.Where(x => x.IssuedAt >= start && x.IssuedAt < end).Include(x => x.Invoice.Order).Include(x => x.VatRates).OrderBy(x => x.Number).ToList()) {
+    var cur = c.Invoice.Order.Currency ?? shop.Currency;
+    var rate = RateOf(c.Invoice);
+    foreach (var r in c.VatRates) {
+      var gross = InvoiceShopMoney(r.Gross, c.Invoice);
+      var vat = InvoiceShopMoney(r.Vat, c.Invoice);
+      rows.Add(string.Join(",", new List<string> { c.IssuedAt.ToString("yyyy-MM-dd"), "credit note", CreditNoteCode(c), c.Invoice.Order.Reference,
+        Csv(c.Invoice.Order.PaymentLabel ?? c.Invoice.Order.PaymentMethod), Amount(r.Percent), Amount(-gross), Amount(-(gross - vat)), Amount(-vat), "",
+        cur, Amount(-r.Gross), rate }));
+    }
+  }
+  return string.Join("\n", rows) + "\n";
+}
+
+[Authorize(IsShopStaff)]
+public string CsvLink(DateOnly from, DateOnly to) {
+  var path = $"bookkeeping/sales-{from.ToString("yyyyMMdd")}-{to.ToString("yyyyMMdd")}.csv";
+  File.WriteAllBytes(path, Text.ToBytes(CsvText(from, to)));
+  return File.SignedUrl(path);
+}
+
+/// How many of the shop's own one unit of the document's currency was, as the CSV writes it — "11.3205", "1".
+string RateOf(Invoice i) {
+  if (i.Rate <= 0 || i.Rate == 1m) { return "1"; }
+  return Math.Round(1m / i.Rate, 4).ToString("0.0000");
+}
+
+/// An amount with a point and two decimals, whatever the server's culture — "-96.00".
+public string Amount(decimal value) {
+  var cents = (long)Math.Round(value * 100m, MidpointRounding.AwayFromZero);
+  var sign = cents < 0 ? "-" : "";
+  var abs = Math.Abs(cents);
+  return sign + Convert.ToString(abs / 100) + "." + Convert.ToString(abs % 100).PadLeft(2, '0');
+}
+
+string Quoted(string text) { return "\"" + text.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""; }
+
+string Csv(string text) { return text.Contains(",") || text.Contains("\"") ? "\"" + text.Replace("\"", "\"\"") + "\"" : text; }
+
+/// Text as PC8 (IBM code page 437), which SIE requires — ASCII as it is, the Nordic and common Western letters mapped,
+/// anything else as "?".
+public byte[] Pc8(string text) {
+  var pc8 = new Dictionary<char, string> {
+    { 'å', "86" }, { 'ä', "84" }, { 'ö', "94" }, { 'Å', "8F" }, { 'Ä', "8E" }, { 'Ö', "99" }, { 'é', "82" }, { 'É', "90" },
+    { 'ü', "81" }, { 'Ü', "9A" }, { 'æ', "91" }, { 'Æ', "92" }, { 'è', "8A" }, { 'à', "85" }, { 'ç', "87" }, { 'ñ', "A4" },
+  };
+  var hex = "";
+  foreach (var c in text) {
+    if ((int)c < 128) { hex = hex + ((int)c).ToString("X2"); }
+    else if (pc8.ContainsKey(c)) { hex = hex + pc8[c]; }
+    else { hex = hex + "3F"; }
+  }
+  return Crypto.FromHex(hex);
+}

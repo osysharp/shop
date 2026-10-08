@@ -1,0 +1,24 @@
+// The shop the books are kept for: sign-in wired as every store wires it, a bank transfer and a card-like provider,
+// collection and a flat rate.
+
+using Osysharp.Delivery;
+using Osysharp.Payments;
+using Osysharp.Shop;
+
+app.Auth = new PasswordAuth { LoginField = Email, PasswordField = PasswordHash };
+app.AuthBootstrap = new AuthBootstrap {
+  Role = ShopRole.Authenticator,
+  Login = ShopLogin, Signup = ShopSignup,
+  PasswordResetRequest = ShopRequestPasswordReset, PasswordReset = ShopResetPassword,
+  PasswordChange = ShopChangePassword, EmailChange = ShopChangeEmail,
+  EmailVerify = ShopConfirmEmail, EmailVerifyCode = ShopConfirmEmailCode,
+};
+
+app.Shop = new ShopSetup {
+  Payments = [ new ManualPayment { Key = "banktransfer", Label = "Bank transfer", Instructions = "IBAN SE00" }, new TestCard(),
+               new TestEuroCard(), new ManualPayment { Key = "invoice", Label = "Invoice", Instructions = "IBAN SE00" } ],
+  // An invoice on a price list's terms, for a wholesale account alone (books.test.osy).
+  OnlyForWholesale = ["invoice"],
+  Delivery = [ new CollectInStore { Address = "the shop" }, new FlatRateDelivery { Price = 5000, Countries = ["SE", "DE", "NO"] } ],
+  VatNumbers = new AnyRegister(),
+};

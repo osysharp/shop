@@ -1,0 +1,222 @@
+// Gift cards of both kinds in the books (D-GIFTCARD-SPV1). A MULTI-purpose card (the default) is a debt with no VAT
+// until it is spent; a SINGLE-purpose one (`ShopSettings.GiftCardsAreSinglePurpose`) is taxed when it is SOLD — 2611 on
+// the sale, the card owed less its VAT — and what it pays for carries no VAT again (EU VAT Directive 2006/112/EC,
+// art. 30a–30b). Sale, redemption, refund, and the VAT report, SIE and CSV that come out of them.
+
+using Osysharp.Shop.Bookkeeping;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// The shop sells single-purpose gift cards from now on (`on`), or multi-purpose ones.
+void SinglePurposeCards(bool on) {
+  runas (Desk) {
+    TheShop().GiftCardsAreSinglePurpose = on;
+    UnitOfWork.Commit();
+  }
+}
+
+/// Sells one 500 kr card (nothing to ship, paid by transfer, marked paid) — answers its code.
+string SellCard(string visit, string email) {
+  var reference = "";
+  runas (new Visitor { Id = visit }) {
+    AddGiftCardToBag(Variant.Single(v => v.Product.Name == "Gift card"), 0m, "", "", "", "", null);
+    reference = PlaceOrder("Maja Berg", email, "", NothingToShipId(), "banktransfer", "", "", "", "").Reference;
+  }
+  runas (Desk) {
+    var o = Order.Single(x => x.Reference == reference);
+    MarkPaid(o, "");
+    Workflow.Settle(o);
+    foreach (var c in GiftCard.ToList()) { Workflow.Settle(c); }
+  }
+  return CardCodeMailedTo(email);
+}
+
+/// Buys `count` lamps (1250 kr each) with the card `code` on the bag, the rest by transfer, marked paid — answers the
+/// order's reference.
+string LampsWithCard(string visit, string code, int count) {
+  var reference = "";
+  runas (new Visitor { Id = visit }) {
+    AddToBag(Variant.Single(v => v.Product.Name == "Lamp"), count);
+    ApplyGiftCard(code);
+    reference = PlaceOrder("Maja Berg", "maja@example.test", "", "collect", "banktransfer", "", "", "", "").Reference;
+  }
+  runas (Desk) {
+    var o = Order.Single(x => x.Reference == reference);
+    MarkPaid(o, "");
+    Workflow.Settle(o);
+  }
+  return reference;
+}
+
+[Test(Books)]
+void a_single_purpose_card_is_taxed_when_sold_and_what_it_pays_for_is_not_taxed_again() {
+  CardShelf();
+  SinglePurposeCards(true);
+  var code = SellCard("v-spv-sale", "maja@example.test");
+  runas (Desk) {
+    var card = GiftCard.Single();
+    Assert.True(card.SinglePurpose);
+    Assert.Equal(25m, card.VatPercent);
+    var sold = Order.Single(o => o.GiftCardsSold > 0);
+    Assert.Equal(100m, sold.Vat);                                                // 500 incl. 25 %, due now
+    Assert.Equal(100m, sold.GiftCardsSoldVat);
+    var day = Verifications(Today(), Today()).Single();
+    Assert.Equal(0m, day.Postings.Sum(p => p.Amount));
+    Assert.Equal(500m, day.Postings.Single(p => p.Account == "1930").Amount);
+    Assert.Equal(-400m, day.Postings.Single(p => p.Account == "2421").Amount);   // owed: the card less its VAT
+    Assert.Equal(-100m, day.Postings.Single(p => p.Account == "2611").Amount);   // declared on the sale
+    Assert.False(day.Postings.Any(p => p.Account.StartsWith("300")));            // nothing earned yet
+    var vat = VatReport(Today(), Today()).Single();
+    Assert.Equal(500m, vat.Sales);
+    Assert.Equal(100m, vat.Vat);
+    Assert.Contains("#TRANS 2611 {} -100.00", SieText(Today(), Today()));
+    Assert.Contains(",25.00,500.00,400.00,100.00,", CsvText(Today(), Today()));
+    Assert.DoesNotContain("gift card, no VAT", CsvText(Today(), Today()));
+  }
+  // Spent on a lamp of 1250: 500 of it by the card, whose VAT is paid — only the 750 paid in money carries VAT now.
+  var lamp = LampsWithCard("v-spv-spend", code, 1);
+  runas (Desk) {
+    var o = Order.Single(x => x.Reference == lamp);
+    Assert.Equal(500m, o.SinglePurposeUsed);
+    Assert.Equal(100m, o.VoucherVat);
+    Assert.Equal(150m, o.Vat);
+    Assert.Equal(750m, o.VatRates.Single().Gross);
+    var day = Verifications(Today(), Today()).Single();
+    Assert.Equal(0m, day.Postings.Sum(p => p.Amount));
+    Assert.False(day.Postings.Any(p => p.Account == "2421"));                    // sold 400 owed, spent 400: nothing owed
+    Assert.Equal(1250m, day.Postings.Single(p => p.Account == "1930").Amount);   // 500 for the card, 750 for the lamp
+    Assert.Equal(-600m, day.Postings.Single(p => p.Account == "3001").Amount);   // the 750 paid in money, without VAT
+    Assert.Equal(-400m, day.Postings.Single(p => p.Account == "3009").Amount);   // what the card paid: declared already
+    Assert.Equal(-250m, day.Postings.Single(p => p.Account == "2611").Amount);   // 100 on the card + 150 on the rest
+    // The VAT return counts the card when it was sold and never again: 1250 of sales, 250 of VAT — as for a
+    // multi-purpose card, declared at another time.
+    var vat = VatReport(Today(), Today()).Single();
+    Assert.Equal(1250m, vat.Sales);
+    Assert.Equal(250m, vat.Vat);
+    var csv = CsvText(Today(), Today());
+    Assert.Contains(",voucher-paid,500.00,400.00,0.00,", csv);
+    Assert.Contains("#KONTO 3009 \"Försäljning mot enfunktionsvoucher, moms redovisad vid försäljningen\"", SieText(Today(), Today()));
+    Assert.Contains("#TRANS 3009 {} -400.00", SieText(Today(), Today()));
+  }
+}
+
+[Test(Books)]
+void a_multi_purpose_card_refunded_unspent_is_owed_no_longer_and_never_touched_vat() {
+  CardShelf();
+  SellCard("v-mpv-refund", "maja@example.test");
+  runas (Desk) {
+    var card = GiftCard.Single();
+    Assert.False(card.SinglePurpose);
+    var o = Order.Single(x => x.GiftCardsSold > 0);
+    Assert.Equal(0m, o.Vat);
+    RefundOrder(o, "Changed their mind", false);
+    Workflow.Settle(o);
+    Assert.Equal(GiftCardStatus.Voided, GiftCard.Single().Status);
+    var note = CreditNote.Single();
+    Assert.Equal(0m, note.Vat);
+    Assert.False(note.GiftCardsSinglePurpose);
+    var day = Verifications(Today(), Today()).Single();
+    Assert.Equal(0m, day.Postings.Sum(p => p.Amount));
+    // Sold and refunded: the money went back, so the card is owed no longer and nothing was earned — its void is not a
+    // write-off to 3990 on top of the credit note.
+    Assert.False(day.Postings.Any(p => p.Account.StartsWith("26") || p.Account.StartsWith("30") || p.Account == "2421"
+                                    || p.Account == "3990" || p.Account == "1930"));
+    Assert.Equal(GiftCardEntryKind.SaleRefunded, GiftCardEntry.OrderByDescending(e => e.At).First().Kind);
+    Assert.Empty(VatReport(Today(), Today()));
+  }
+}
+
+[Test(Books)]
+void a_single_purpose_card_refunded_unspent_gives_its_vat_back() {
+  CardShelf();
+  SinglePurposeCards(true);
+  SellCard("v-spv-refund", "maja@example.test");
+  runas (Desk) {
+    var o = Order.Single(x => x.GiftCardsSold > 0);
+    RefundOrder(o, "Changed their mind", false);
+    Workflow.Settle(o);
+    Assert.Equal(GiftCardStatus.Voided, GiftCard.Single().Status);
+    var note = CreditNote.Single();
+    Assert.Equal(100m, note.Vat);                                                // the VAT the sale declared, given back
+    Assert.True(note.GiftCardsSinglePurpose);
+    Assert.Equal(100m, note.GiftCardsSoldVat);
+    var day = Verifications(Today(), Today()).Single();
+    Assert.Equal(0m, day.Postings.Sum(p => p.Amount));
+    Assert.False(day.Postings.Any(p => p.Account == "2611" || p.Account == "2421" || p.Account == "1930"));
+    var vat = VatReport(Today(), Today()).Single();
+    Assert.Equal(500m, vat.Sales);
+    Assert.Equal(500m, vat.Credited);
+    Assert.Equal(0m, vat.Vat);
+  }
+}
+
+[Test(Books)]
+void refunding_what_a_single_purpose_card_paid_gives_back_no_vat_for_the_cards_part() {
+  CardShelf();
+  SinglePurposeCards(true);
+  var code = SellCard("v-spv-back-sale", "maja@example.test");
+  // Two lamps, 2500: the card pays 500 (its VAT paid), the transfer 2000 (VAT 400 on this order).
+  var lamps = LampsWithCard("v-spv-back", code, 2);
+  runas (Desk) {
+    var o = Order.Single(x => x.Reference == lamps);
+    Assert.Equal(400m, o.Vat);
+    // One lamp turns out not to be there: refunded before it is sent — 1250, of which the card paid 250.
+    var ret = RefundPart(o.Lines.Single(), 1, "Out of stock", false);
+    Workflow.Settle(ret);
+    Assert.Equal(250m, ret.GiftCardAmount);
+    Assert.Equal(250m, ret.SinglePurposeBack);
+    Assert.Equal(250m, GiftCard.Single().Balance);                               // back on the card
+    var note = CreditNote.Single(n => n.Return == ret);
+    Assert.Equal(250m, note.SinglePurposeBack);
+    Assert.Equal(50m, note.VoucherVat);
+    Assert.Equal(200m, note.Vat);                                                // VAT back on the 1000 paid in money only
+    Assert.Equal(1000m, note.VatRates.Single().Gross);
+    var day = Verifications(Today(), Today()).Single();
+    Assert.Equal(0m, day.Postings.Sum(p => p.Amount));
+    // What the card holds again is owed again, less its VAT (declared when it was sold): 250 − 50.
+    Assert.Equal(-200m, day.Postings.Single(p => p.Account == "2421").Amount);
+    var vat = VatReport(Today(), Today()).Single();
+    Assert.Equal(300m, vat.Vat);                                                 // 100 card + 400 lamps − 200 back
+  }
+}
+
+[Test(Books)]
+void a_card_keeps_the_kind_it_was_sold_as_when_the_setting_changes() {
+  CardShelf();
+  SinglePurposeCards(true);
+  var code = SellCard("v-kind-sale", "maja@example.test");
+  SinglePurposeCards(false);
+  // Spent after the shop went back to multi-purpose cards: its VAT was still paid when it was sold.
+  var lamp = LampsWithCard("v-kind-spend", code, 1);
+  runas (Desk) {
+    var o = Order.Single(x => x.Reference == lamp);
+    Assert.Equal(500m, o.SinglePurposeUsed);
+    Assert.Equal(150m, o.Vat);
+    Assert.True(GiftCard.Single().SinglePurpose);
+  }
+  // …and a card sold now is multi-purpose: no VAT on its sale.
+  SellCard("v-kind-second", "olle@example.test");
+  runas (Desk) {
+    var second = Order.Where(x => x.GiftCardsSold > 0).OrderByDescending(x => x.PlacedAt).First();
+    Assert.Equal(0m, second.Vat);
+    Assert.False(second.GiftCardsSinglePurpose);
+    Assert.False(GiftCard.Single(c => c.SendTo == "olle@example.test").SinglePurpose);
+  }
+}
+
+[Test(Books)]
+void a_single_purpose_card_that_expires_is_written_off_less_the_vat_it_declared() {
+  CardShelf();
+  SinglePurposeCards(true);
+  SellCard("v-spv-expire", "maja@example.test");
+  TestClock.Advance(TimeSpan.FromDays(25 * 31));
+  runas (Desk) {
+    var card = GiftCard.Single();
+    Workflow.Settle(card);
+    Assert.Equal(GiftCardStatus.Expired, card.Status);
+    var today = Verifications(Today(), Today()).Single();
+    Assert.Equal(400m, today.Postings.Single(p => p.Account == "2421").Amount);  // owed no longer: 500 less its VAT
+    Assert.Equal(-400m, today.Postings.Single(p => p.Account == "3990").Amount);
+    Assert.False(today.Postings.Any(p => p.Account.StartsWith("26")));           // the VAT stays declared
+  }
+}

@@ -1,0 +1,115 @@
+// Payouts — the bank line that says "Stripe 12 431,20" explained: which orders it pays for, and what the provider kept.
+// Asked of each payment provider the shop lists (`IPaymentProvider.Payouts`), matched to orders by the provider's
+// payment reference, and booked: the bank receives the net, the fees are a cost, the provider's clearing account is
+// emptied by the whole.
+//
+// ⚑ A SALE IN ANOTHER CURRENCY SETTLES AT ANOTHER RATE (D-SELLCURRENCY1). The clearing account holds it at its
+//   invoice's rate (Books.osy); the payout brings in what the provider converted it to. The rate actually settled is
+//   the PROVIDER's where it says so — Stripe's balance transaction carries `exchange_rate` for a charge it converted
+//   (https://docs.stripe.com/api/balance_transactions/object), read into `PayoutLine.SettledRate`. A payout IN the
+//   sale's currency (Klarna settles each currency in itself) was not converted by anyone: it reaches the bank at the
+//   ECB's rate of the day it was paid out, from the rates the shop kept (`ExchangeRateDay`). Either way the clearing
+//   account is emptied by exactly what was booked into it, and the difference is a currency gain (3960) or loss (7960).
+
+namespace Osysharp.Shop.Bookkeeping;
+
+using Osysharp.Payments;
+using Osysharp.Shop;
+
+/// One payout, reconciled.
+public class PayoutView {
+  /// The provider's label — "Card", "Klarna".
+  public string Provider = "";
+  public string Id = "";
+  public DateTime PaidAt;
+  public string Currency = "";
+  /// Major units.
+  public decimal Net = 0;
+  public decimal Fees = 0;
+  /// What the payout's sales in another currency were booked at, less what they settled at, in the shop's own money —
+  /// positive a loss, negative a gain. 0 when every sale in it was in the shop's own currency.
+  public decimal CurrencyDifference = 0;
+  /// Net and fees in the shop's own money (the same as `Net` and `Fees` for a payout in it), and how a payout in
+  /// another currency was converted — "" otherwise.
+  public decimal NetInShop = 0;
+  public decimal FeesInShop = 0;
+  public string Converted = "";
+  /// The orders its payments belong to, by reference.
+  public List<string> Orders = [];
+  /// Payments in it the shop has no order for — to be looked into.
+  public List<string> Unmatched = [];
+}
+
+/// The payouts that reached the bank in the period, reconciled against the shop's orders. A provider that cannot be
+/// reached is named in `problems` rather than taking the report down.
+[Authorize(IsShopStaff)]
+public List<PayoutView> Reconciliation(DateOnly from, DateOnly to) {
+  var start = from.ToDateTime(TimeOnly.MinValue);
+  var end = to.AddDays(1).ToDateTime(TimeOnly.MinValue);
+  List<PayoutView> views = [];
+  foreach (var provider in App.Setting<ShopSetup>().Payments.Where(p => !p.IsManual && p.IsReady())) {
+    List<Payout> payouts = [];
+    try { payouts = provider.Payouts(start, end); }
+    catch (Exception ex) {
+      views.Add(new PayoutView { Provider = provider.Label, Id = "", PaidAt = DateTime.UtcNow, Unmatched = [$"could not be asked: {ex.Message}"] });
+      continue;
+    }
+    foreach (var p in payouts) {
+      var view = new PayoutView { Provider = provider.Label, Id = p.Id, PaidAt = p.PaidAt, Currency = p.Currency,
+                                  Net = p.Net / 100m, Fees = p.Fees / 100m };
+      var shop = TheShop();
+      // A payout in another currency reaches the bank at the ECB's rate of its day — the one the shop kept.
+      var perShop = 1m;
+      if (p.Currency != "" && p.Currency != shop.Currency) {
+        var code = p.Currency;
+        var day = DateOnly.FromDateTime(p.PaidAt);
+        var kept = ExchangeRateDay.Where(d => d.Currency == code && d.Date <= day).OrderByDescending(d => d.Date).FirstOrDefault();
+        if (kept == null || kept.PerUnit <= 0) { view.Unmatched.Add($"no {code} rate kept for {day.ToString("yyyy-MM-dd")} — the payout is booked as if in {shop.Currency}"); }
+        else {
+          perShop = kept.PerUnit;
+          view.Converted = $"{code} at {Math.Round(1m / perShop, 4):0.0000} {shop.Currency}/{code} ({kept.Source}, {kept.Date.ToString("yyyy-MM-dd")})";
+        }
+      }
+      view.NetInShop = Math.Round(view.Net / perShop, 2, MidpointRounding.AwayFromZero);
+      view.FeesInShop = Math.Round(view.Fees / perShop, 2, MidpointRounding.AwayFromZero);
+      foreach (var line in p.Lines.Where(l => l.ProviderRef != "")) {
+        var reference = line.ProviderRef;
+        var order = Order.FirstOrDefault(o => o.PaymentRef == reference);
+        if (order == null) { if (!view.Unmatched.Contains(reference)) { view.Unmatched.Add(reference); } }
+        else if (!view.Orders.Contains(order.Reference)) { view.Orders.Add(order.Reference); }
+        if (order != null && InOtherCurrency(order!, shop)) {
+          // What this line was booked at — its amount in the sale's currency at the invoice's rate — less what it settled at.
+          var settled = Math.Round(line.Amount / 100m / perShop, 2, MidpointRounding.AwayFromZero);
+          var inSale = line.SettledRate > 0 ? line.Amount / 100m / line.SettledRate
+                     : p.Currency == order!.Currency ? line.Amount / 100m : settled * order!.Rate;
+          var invoice = Invoice.FirstOrDefault(i => i.Order == order);
+          var rate = invoice == null ? order!.Rate : invoice.Rate;
+          var booked = rate <= 0 ? settled : Math.Round(inSale / rate, 2, MidpointRounding.AwayFromZero);
+          view.CurrencyDifference = view.CurrencyDifference + booked - settled;
+        }
+      }
+      views.Add(view);
+    }
+  }
+  return views.OrderBy(v => v.PaidAt).ToList();
+}
+
+/// Each payout as a verification: the bank receives the net, the fees are a cost, the provider's clearing account is
+/// emptied by both.
+[Authorize(IsShopStaff)]
+public List<Verification> PayoutVerifications(DateOnly from, DateOnly to) {
+  var a = Accounts();
+  List<Verification> all = [];
+  foreach (var p in Reconciliation(from, to).Where(v => v.Id != "")) {
+    var v = new Verification { Date = p.PaidAt.Date, Text = $"{p.Provider} payout {p.Id}" + (p.Converted == "" ? "" : $", {p.Converted}") };
+    Post(v.Postings, a.Bank, p.NetInShop);
+    Post(v.Postings, a.ProviderFees, p.FeesInShop);
+    // The clearing account is emptied by what was booked into it; a sale settled at another rate than its invoice's
+    // leaves the difference, a gain or a loss.
+    Post(v.Postings, a.ProviderClearing, -(p.NetInShop + p.FeesInShop + p.CurrencyDifference));
+    if (p.CurrencyDifference > 0) { Post(v.Postings, a.CurrencyLoss, p.CurrencyDifference); }
+    if (p.CurrencyDifference < 0) { Post(v.Postings, a.CurrencyGain, p.CurrencyDifference); }
+    all.Add(v);
+  }
+  return all;
+}

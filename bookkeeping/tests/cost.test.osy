@@ -1,0 +1,109 @@
+// WHAT THE BOOKS COST AS A PERIOD FILLS — the verifications, the VAT report and the CSV read each kind of row once for
+// the period, not once per sale: a day with six sales (two given back) costs what a day with two (one given back) does.
+// A read per invoice or per credit note turns each test red with both numbers.
+
+using Osysharp.Shop.Bookkeeping;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// Sells `product` to `visit` and has staff mark it paid — and, when `back`, refund it whole. Answers the reference.
+string SoldAndPaid(string visit, string product, bool back) {
+  var reference = "";
+  runas (new Visitor { Id = visit }) {
+    AddToBag(Variant.Single(v => v.Product.Name == product), 1);
+    reference = PlaceOrder("Maja Berg", "maja@example.test", "", "collect", "banktransfer", "", "", "", "").Reference;
+  }
+  runas (Desk) {
+    var o = Order.Single(x => x.Reference == reference);
+    MarkPaid(o, "");
+    Workflow.Settle(o);
+    if (back) {
+      RefundOrder(o, "Scratched", true);
+      Workflow.Settle(o);
+    }
+  }
+  return reference;
+}
+
+/// A period's sales: `sales` sold and paid, every other one of them given back.
+void Sales(string token, int sales) {
+  for (var i = 1; i <= sales; i++) { SoldAndPaid($"v-{token}-{i}", i % 2 == 0 ? "Book" : "Lamp", i % 2 == 0); }
+}
+
+/// ⭐ THE DAY'S VERIFICATIONS READ THE SAME FOR TWO SALES AND FOR SIX — each sale's VAT rates and lines, and each credit
+/// note's, are read with the period, not one read per document.
+[Test(Books)]
+void the_verifications_read_the_same_however_many_sales_the_period_has() {
+  Sales("a", 2);
+  runas (Desk) {
+    Verifications(Today(), Today());   // the first read sets up what every later one reuses — not what this compares
+    var mark = Cost.Mark();
+    Verifications(Today(), Today());
+    var two = Cost.StatementsSince(mark);
+    Sales("b", 4);
+    mark = Cost.Mark();
+    var day = Verifications(Today(), Today()).Single();
+    var six = Cost.StatementsSince(mark);
+    Log.Information("Verifications: " + two + " statements for two sales, " + six + " for six");
+    Assert.Equal(0m, day.Postings.Sum(p => p.Amount));   // still balanced
+    Assert.Equal(two, six);
+  }
+}
+
+/// ⭐ …and so does the VAT report; the CSV reads each document's rates and adjustments with the period too.
+[Test(Books)]
+void the_vat_report_and_the_csv_read_the_same_however_many_sales_the_period_has() {
+  Sales("c", 2);
+  runas (Desk) {
+    VatReport(Today(), Today());
+    CsvText(Today(), Today());
+    var mark = Cost.Mark();
+    VatReport(Today(), Today());
+    var vatTwo = Cost.StatementsSince(mark);
+    mark = Cost.Mark();
+    CsvText(Today(), Today());
+    var csvTwo = Cost.StatementsSince(mark);
+    Sales("d", 4);
+    mark = Cost.Mark();
+    var lines = VatReport(Today(), Today());
+    var vatSix = Cost.StatementsSince(mark);
+    mark = Cost.Mark();
+    var csv = CsvText(Today(), Today());
+    var csvSix = Cost.StatementsSince(mark);
+    Log.Information("VAT report: " + vatTwo + " / " + vatSix + " statements; CSV: " + csvTwo + " / " + csvSix + ", two sales / six");
+    Assert.Equal(3750m, lines.Single(l => l.Percent == 25m).Sales);   // three lamps sold, 1250 each
+    Assert.Equal(3, csv.Split("credit note").Length - 1);             // three books given back
+    Assert.Equal(vatTwo, vatSix);
+    // Each row's document number (`InvoiceCode`/`CreditNoteCode`, the shop's) still reads the shop's settings once per
+    // document — four invoices and two credit notes more is at most six more. A read of each document's VAT rates or
+    // adjustments as well would be twelve or more.
+    Assert.AtMost(csvTwo + 6, csvSix);
+  }
+}
+
+principal Stranger => ShopAccount.Single(s => s.Email == "stranger@example.test");
+
+/// ⭐ A COLLECTION READ AS STAFF IS NEVER THE ANSWER FOR SOMEBODY ELSE. The staff's `.Include` is reused for the staff's
+/// own later questions (above); asked about the same order under a `runas` as a customer who never bought it — nested
+/// inside the staff's block, holding the staff's row — the rates are read as that customer, who may read none.
+[Test(Books)]
+void an_included_collection_is_not_the_answer_for_another_reader() {
+  Sales("e", 2);
+  runas (Desk) {
+    var stranger = new ShopAccount { Email = "stranger@example.test", PasswordHash = Security.HashPassword("stranger-pass-1") };
+    new ShopRoleGrant { Member = stranger, Role = ShopRole.Customer };
+    UnitOfWork.Commit();
+  }
+  runas (Desk) {
+    var orders = Order.Where(o => o.PaidAt != null).Include(o => o.VatRates).ToList();
+    var staffSees = 0;
+    foreach (var r in orders[0].VatRates) { staffSees = staffSees + 1; }
+    Assert.True(staffSees > 0);
+    var strangerSees = -1;
+    runas (Stranger) {
+      strangerSees = 0;
+      foreach (var r in orders[0].VatRates) { strangerSees = strangerSees + 1; }
+    }
+    Assert.Equal(0, strangerSees);
+  }
+}

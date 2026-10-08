@@ -1,0 +1,394 @@
+// The books. Every invoice the shop issued is a sale and every credit note a sale given back; each is posted
+// against the accounts below, per VAT rate, and a day's postings make ONE verification — what an accountant imports.
+//
+// ⚑ THE SHOP'S DOCUMENTS ARE THE SOURCE, never the orders. An order changes (paid, sent, refunded); an invoice and a
+//   credit note never do, so the books read from them come out the same whenever they are exported. What moves money
+//   the shop OWES without a document — a gift card or store credit staff give, a card voided or expired — is read
+//   from the shop's own ledgers of them (`GiftCardEntry`, `StoreCreditEntry`), which are only ever added to.
+//
+// ⚑ A GIFT CARD IS A DEBT, NOT A SALE (a multi-purpose voucher, EU VAT Directive art. 30a–30b, Directive 2016/1065).
+//   Selling one credits what the shop owes (BAS 2421, unredeemed gift cards) with no VAT; spending one debits it, and
+//   the goods it pays for are sales with their VAT like any others. Store credit is the same kind of debt (2420). So an
+//   invoice's money goes to the bank or the provider only for the part paid in money.
+//
+// ⚑ A SINGLE-PURPOSE CARD (D-GIFTCARD-SPV1, art. 30a(2)/30b(1)) is taxed when SOLD: its sale credits 2421 with the card
+//   LESS its VAT, and output VAT (2611) with the VAT — the Swedish textbook entry for an "enfunktionsvoucher". Spending
+//   it debits 2421 by what it owed (the amount less the VAT paid on it) and credits the sale to `SalesSinglePurpose`
+//   with no VAT: the goods' VAT was declared with the card. That account is kept apart from 3001–3003 so what a
+//   single-purpose card paid is never read as a second taxable sale; the VAT return comes from `VatReport`, which counts
+//   such a card when it is sold and never when it is spent.
+//
+// ⚑ THE BOOKS ARE IN THE SHOP'S OWN CURRENCY, WHATEVER A SALE WAS IN (D-SELLCURRENCY1). A sale in a currency the shop
+//   sells in besides its own is converted at its INVOICE's rate — the rate of the day it was paid, which the invoice
+//   records and states its VAT at (VAT Directive art. 230 and art. 91(2); Skatteverket accepts the ECB's rate) — and
+//   gets a verification of its own that names the currency, the amount and the rate. What the provider's payout then
+//   actually brings in for it differs by the rate it settled at: that difference is a currency gain or loss (BAS 3960
+//   "Valutakursvinster på fordringar och skulder av rörelsekaraktär", 7960 "Valutakursförluster på fordringar och
+//   skulder av rörelsekaraktär" — the BAS chart, bas.se), booked with the payout (Payouts.osy). A credit note is
+//   converted at its invoice's rate too, so the VAT it gives back is the VAT that was declared.
+
+namespace Osysharp.Shop.Bookkeeping;
+
+using Osysharp.Payments;
+using Osysharp.Shop;
+using Osysharp.Storage;
+
+/// The chart of accounts the books are written against — the Swedish BAS numbers until staff change them. One row,
+/// and a SETTINGS SECTION (D-SETTINGSTIER1): the settings area lists "Chart of accounts" for the shop's staff and draws
+/// its page at `/settings/bookkeeping` from the fields below, a section per group — `BookkeepingAccountsPage`, which an
+/// app takes over by name; the desk's books panel places the same sections (`BookkeepingAccountsFields`). Every account
+/// is `OrgPolicyMode.Default`: a group that consolidates its books may seed its own chart, and a shop may still change one.
+[Settings("Chart of accounts", Route = "/settings/bookkeeping", Group = "Shop", Order = 80, Icon = Icons.File,
+          Authorize = IsShopStaff, Hint = "The account each sale, VAT rate, payment and gift card is booked to.",
+          Description = "The account each sale, VAT rate, payment and gift card is booked to in the books you export — an account number as your accounting program knows it. The Swedish BAS numbers until you change them; check them with your accountant.",
+          Saved = "Accounts saved.")]
+[SettingsGroup("Sales", "Where a sale is booked — by its VAT rate, and by where the customer is.")]
+[SettingsGroup("VAT", "The VAT a sale carries, by rate.")]
+[SettingsGroup("Money", "Money on its way to the bank, what is owed on terms, and what moving it costs or brings in.")]
+[SettingsGroup("Gift cards and store credit", "What the shop owes on cards and credit it has sold or given, and what it gives away.")]
+public entity BookkeepingAccounts {
+  /// Sales, per VAT class of rate.
+  [Setting("Sales, standard rate", Group = "Sales", Order = 1), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string SalesStandard = "3001";
+  [Setting("Sales, reduced rate", Group = "Sales", Order = 2), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string SalesReduced = "3002";
+  [Setting("Sales, lower rate", Group = "Sales", Order = 3), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string SalesLower = "3003";
+  [Setting("Sales, no VAT", Group = "Sales", Order = 4), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string SalesExempt = "3004";
+  /// Goods sold without VAT to a business in another EU country (reverse charge).
+  [Setting("Sales to EU businesses", Group = "Sales", Order = 5), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string SalesEuReverseCharge = "3108";
+  /// Goods sold to a country outside the EU — an export, without VAT.
+  [Setting("Sales outside the EU", Group = "Sales", Order = 6), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string SalesExport = "3105";
+  /// Output VAT, per rate.
+  [Setting("VAT, standard rate", Group = "VAT", Order = 8), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string VatStandard = "2611";
+  [Setting("VAT, reduced rate", Group = "VAT", Order = 9), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string VatReduced = "2621";
+  [Setting("VAT, lower rate", Group = "VAT", Order = 10), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string VatLower = "2631";
+  /// Where the money is while a payment provider holds it (card, Klarna) — and the bank, for what was paid by hand.
+  [Setting("Payment provider clearing", Group = "Money", Order = 11), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string ProviderClearing = "1580";
+  [Setting("Bank", Group = "Money", Order = 12), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string Bank = "1930";
+  /// What customers owe on invoices sent on terms (a wholesale account's) — until the money arrives.
+  [Setting("Invoices not yet paid", Group = "Money", Order = 13), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string Receivables = "1510";
+  /// What a payment provider keeps of a payout — a cost.
+  [Setting("Payment provider fees", Group = "Money", Order = 14), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string ProviderFees = "6570";
+  /// What the shop owes on gift cards not yet spent, and on its customers' store credit.
+  [Setting("Gift cards not yet spent", Group = "Gift cards and store credit", Order = 17), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string GiftCards = "2421";
+  [Setting("Customers' store credit", Group = "Gift cards and store credit", Order = 18), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string StoreCredit = "2420";
+  /// What the shop gives away — a gift card or store credit staff issue, with their reason — a cost.
+  [Setting("Given away (cards and credit)", Group = "Gift cards and store credit", Order = 19), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string GivenAway = "5990";
+  /// What is left on a gift card when it expires or is voided — the shop owes it no longer: income, without VAT.
+  [Setting("Gift cards expired or voided", Group = "Gift cards and store credit", Order = 20), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string Unredeemed = "3990";
+  /// What a SINGLE-purpose gift card paid for — a sale whose VAT was declared when the card was sold, so it carries none
+  /// now. A sub-account of the Swedish sales range, apart from 3001–3003 (which carry VAT); staff may point it elsewhere.
+  [Setting("Paid by single-purpose cards", Group = "Sales", Order = 7, Hint = "Their VAT was declared when the card was sold."), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string SalesSinglePurpose = "3009";
+  /// What a sale in another currency brought in more, or less, than it was booked at — settled at another rate.
+  [Setting("Currency gains", Group = "Money", Order = 15), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string CurrencyGain = "3960";
+  [Setting("Currency losses", Group = "Money", Order = 16), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string CurrencyLoss = "7960";
+  security { allow read, create, update when IsShopStaff; }
+}
+
+/// One line of a verification: an account and an amount — debit positive, credit negative.
+public class Posting {
+  public string Account = "";
+  public decimal Amount = 0;
+}
+
+/// A day's postings — balanced, so its amounts add up to zero.
+public class Verification {
+  public DateTime Date;
+  public string Text = "";
+  public List<Posting> Postings = [];
+}
+
+/// The VAT for one rate over a period: what was sold at it and what was given back, both VAT included.
+public class VatLine {
+  /// Whose VAT — the shop's home country, or the destination's under OSS.
+  public string Country = "";
+  public decimal Percent = 0;
+  public decimal Sales = 0;
+  public decimal Credited = 0;
+  /// Net of credits, VAT included.
+  public decimal Gross = 0;
+  public decimal Vat = 0;
+}
+
+/// The accounts row — made with the BAS defaults the first time it is asked for.
+[Authorize(IsShopStaff)]
+public BookkeepingAccounts Accounts() {
+  var accounts = BookkeepingAccounts.FirstOrDefault();
+  if (accounts == null) {
+    accounts = new BookkeepingAccounts { };
+    UnitOfWork.Commit();
+  }
+  return accounts;
+}
+
+string SalesAccount(decimal percent, BookkeepingAccounts a, ShopSettings shop) {
+  if (percent <= 0) { return a.SalesExempt; }
+  if (percent == shop.VatReducedPercent) { return a.SalesReduced; }
+  if (percent == shop.VatLowerPercent) { return a.SalesLower; }
+  return a.SalesStandard;
+}
+
+string VatAccount(decimal percent, BookkeepingAccounts a, ShopSettings shop) {
+  if (percent == shop.VatReducedPercent) { return a.VatReduced; }
+  if (percent == shop.VatLowerPercent) { return a.VatLower; }
+  return a.VatStandard;
+}
+
+/// Adds `amount` to `account` in `postings`, keeping one line per account.
+void Post(List<Posting> postings, string account, decimal amount) {
+  if (amount == 0) { return; }
+  var p = postings.FirstOrDefault(x => x.Account == account);
+  if (p == null) { postings.Add(new Posting { Account = account, Amount = amount }); }
+  else { p.Amount = p.Amount + amount; }
+}
+
+/// The books for `from` to `to` (dates, both included): one verification per day with sales on it.
+[Authorize(IsShopStaff)]
+[SuppressWarning("cost-unbounded-read")]   // the period the caller asked for — the books must carry every document in it
+public List<Verification> Verifications(DateOnly from, DateOnly to) {
+  var shop = TheShop();
+  var a = Accounts();
+  var start = from.ToDateTime(TimeOnly.MinValue);
+  var end = to.AddDays(1).ToDateTime(TimeOnly.MinValue);
+  // Each document with what its posting reads — its order's VAT rates and lines, a credit note's own rates — read with
+  // the period, not once per document.
+  var all = Invoice.Where(i => i.IssuedAt >= start && i.IssuedAt < end).Include(i => i.Order.VatRates)
+    .Include(i => i.Order.Lines).ToList();
+  var allCredits = CreditNote.Where(c => c.IssuedAt >= start && c.IssuedAt < end).Include(c => c.VatRates)
+    .Include(c => c.Invoice.Order.Lines).ToList();
+  // A sale in another currency is its own verification, below; the day's in the shop's own are summed here.
+  var invoices = all.Where(i => !InOtherCurrency(i.Order, shop)).ToList();
+  var credits = allCredits.Where(c => !InOtherCurrency(c.Invoice.Order, shop)).ToList();
+  // Moves in what is owed that no invoice or credit note carries: staff giving, adjusting, voiding; a card expiring.
+  var cardEntries = GiftCardEntry.Include(e => e.Card).Where(e => e.At >= start && e.At < end && (e.Kind == GiftCardEntryKind.Issued
+    || e.Kind == GiftCardEntryKind.Adjusted || e.Kind == GiftCardEntryKind.Voided || e.Kind == GiftCardEntryKind.Expired)).ToList();
+  var creditEntries = StoreCreditEntry.Where(e => e.At >= start && e.At < end && e.Kind == StoreCreditKind.Grant).ToList();
+  List<Verification> days = [];
+  for (var day = start; day < end; day = day.AddDays(1)) {
+    var next = day.AddDays(1);
+    var sold = invoices.Where(i => i.IssuedAt >= day && i.IssuedAt < next).ToList();
+    var back = credits.Where(c => c.IssuedAt >= day && c.IssuedAt < next).ToList();
+    var cardMoves = cardEntries.Where(e => e.At >= day && e.At < next).ToList();
+    var creditMoves = creditEntries.Where(e => e.At >= day && e.At < next).ToList();
+    if (sold.Count == 0 && back.Count == 0 && cardMoves.Count == 0 && creditMoves.Count == 0) { continue; }
+    var v = new Verification { Date = day, Text = $"{shop.Name} — sales {day.ToString("yyyy-MM-dd")}" };
+    foreach (var i in sold) {
+      var o = i.Order;
+      // Paid in money to the bank or the provider; with a gift card or store credit, out of what the shop owes — a
+      // single-purpose card owed its amount less the VAT paid on it when it was sold.
+      Post(v.Postings, MoneyAccount(o, a, i.IssuedAt), i.Total - o.GiftCardUsed - o.CreditUsed);
+      Post(v.Postings, a.GiftCards, o.GiftCardUsed - o.VoucherVat);
+      Post(v.Postings, a.StoreCredit, o.CreditUsed);
+      // A gift card sold is owed, not earned — without its VAT, when it carried some (a single-purpose voucher).
+      Post(v.Postings, a.GiftCards, -(o.GiftCardsSold - o.GiftCardsSoldVat));
+      foreach (var r in i.Order.VatRates) {
+        Post(v.Postings, i.Order.ReverseCharge ? a.SalesEuReverseCharge : i.Order.Exported ? a.SalesExport : SalesAccount(r.Percent, a, shop), -(r.Gross - r.Vat));
+        Post(v.Postings, VatAccount(r.Percent, a, shop), -r.Vat);
+      }
+      SinglePurposeSales(v, o.GiftCardsSinglePurpose ? o.GiftCardsSold - o.GiftCardsSoldVat : 0m, CardRateOf(o),
+                         o.SinglePurposeUsed - o.VoucherVat, a, shop, 1m);
+    }
+    foreach (var c in back) {
+      // Given back as money, onto gift cards, or into store credit; a gift card it takes back is owed no longer.
+      Post(v.Postings, MoneyAccount(c.Invoice.Order, a, c.IssuedAt), -(c.Total - c.ToGiftCards - c.ToStoreCredit));
+      Post(v.Postings, a.GiftCards, -(c.ToGiftCards - c.VoucherVat));
+      Post(v.Postings, a.StoreCredit, -c.ToStoreCredit);
+      Post(v.Postings, a.GiftCards, c.GiftCardsSold - c.GiftCardsSoldVat);
+      foreach (var r in c.VatRates) {
+        Post(v.Postings, c.Invoice.Order.ReverseCharge ? a.SalesEuReverseCharge : c.Invoice.Order.Exported ? a.SalesExport : SalesAccount(r.Percent, a, shop), r.Gross - r.Vat);
+        Post(v.Postings, VatAccount(r.Percent, a, shop), r.Vat);
+      }
+      SinglePurposeSales(v, c.GiftCardsSinglePurpose ? c.GiftCardsSold - c.GiftCardsSoldVat : 0m, CardRateOf(c.Invoice.Order),
+                         c.SinglePurposeBack - c.VoucherVat, a, shop, -1m);
+    }
+    // Owed without a document: what staff gave (a cost), and what a card no longer owes (income, no VAT).
+    foreach (var e in cardMoves) {
+      // A card in another currency is owed at the rate it was sold at; a single-purpose card without the VAT its sale
+      // paid — what is written off it is income less that VAT, which stays declared.
+      var owed = CardShopMoney(CardOwes(e.Amount, e.Card), e.Card);
+      Post(v.Postings, a.GiftCards, -owed);
+      Post(v.Postings, e.Kind == GiftCardEntryKind.Expired || e.Kind == GiftCardEntryKind.Voided ? a.Unredeemed : a.GivenAway, owed);
+    }
+    foreach (var e in creditMoves) {
+      Post(v.Postings, a.StoreCredit, -e.Amount);
+      Post(v.Postings, a.GivenAway, e.Amount);
+    }
+    v.Postings = v.Postings.Where(p => p.Amount != 0).OrderBy(p => p.Account).ToList();
+    days.Add(v);
+  }
+  // Invoices on terms paid in the period: the money in the bank, owed no longer.
+  foreach (var o in Order.Where(x => x.InvoiceDueAt != null && x.PaidAt != null && x.PaidAt >= start && x.PaidAt < end).OrderBy(x => x.PaidAt).ToList()) {
+    days.Add(InvoicePaid(o, a, shop));
+  }
+  // Each sale and each credit note in another currency, in the order they were issued.
+  foreach (var i in all.Where(x => InOtherCurrency(x.Order, shop)).OrderBy(x => x.IssuedAt).ToList()) { days.Add(ForeignSale(i, a, shop)); }
+  foreach (var c in allCredits.Where(x => InOtherCurrency(x.Invoice.Order, shop)).OrderBy(x => x.IssuedAt).ToList()) { days.Add(ForeignCredit(c, a, shop)); }
+  // Each gift card reissued in the shop's own currency (its own no longer sold): the debt moving from one card to the
+  // other — its own verification, both sides named.
+  foreach (var e in GiftCardEntry.Include(x => x.Card.ReissuedFrom)
+                      .Where(x => x.At >= start && x.At < end && x.Kind == GiftCardEntryKind.Reissued && x.Amount > 0)
+                      .OrderBy(x => x.At).ToList()) {
+    days.Add(ReissuedCard(e, a, shop));
+  }
+  return days.OrderBy(d => d.Date).ToList();
+}
+
+/// A gift card reissued in the shop's own currency: NOT a sale and NOT a write-off — what the shop owes on the old card
+/// (at the rate it was sold at, less the VAT a single-purpose card's sale paid) is taken off 2421 and the same debt put
+/// back on it for the new card. Two lines on one account, kept apart so the move can be read; what converting each side
+/// to the öre leaves over (a single-purpose card's VAT, rounded twice) is the currency gain or loss.
+Verification ReissuedCard(GiftCardEntry e, BookkeepingAccounts a, ShopSettings shop) {
+  var card = e.Card;
+  var old = card.ReissuedFrom!;
+  var oldCard = old;
+  var gone = GiftCardEntry.FirstOrDefault(x => x.Card == oldCard && x.Kind == GiftCardEntryKind.Reissued);
+  var moved = gone == null ? old.Amount : -gone.Amount;
+  var owedBefore = CardShopMoney(CardOwes(moved, old), old);
+  var owedNow = CardShopMoney(CardOwes(e.Amount, card), card);
+  var v = new Verification { Date = e.At.Date,
+    Text = $"{shop.Name} — gift card …{old.Last4}, {old.Currency ?? shop.Currency} {Amount(moved)} sold at {RateAsSold(old)}, reissued in {shop.Currency} as …{card.Last4} — the debt moved, no sale" };
+  v.Postings.Add(new Posting { Account = a.GiftCards, Amount = owedBefore });
+  v.Postings.Add(new Posting { Account = a.GiftCards, Amount = -owedNow });
+  Balance(v, a);
+  return v;
+}
+
+/// Whether an order was sold in another currency than the shop's own.
+public bool InOtherCurrency(Order order, ShopSettings shop) {
+  return order.Currency != null && order.Currency != "" && order.Currency != shop.Currency;
+}
+
+/// Of `amount` on a card, what the shop OWES for it: all of it on a multi-purpose card; on a single-purpose one, the
+/// amount less the VAT its sale already paid.
+decimal CardOwes(decimal amount, GiftCard card) {
+  return card.SinglePurpose ? amount - VatIn(amount, card.VatPercent) : amount;
+}
+
+/// The rate the gift cards an order sold carried — its gift card lines' — or 0.
+decimal CardRateOf(Order order) {
+  return order.Lines.ToList().Where(l => l.Kind == LineKind.GiftCard).Select(l => l.VatPercent).FirstOrDefault();
+}
+
+/// The two single-purpose voucher entries of a sale (`sign` 1) or a credit note (-1): a card SOLD is owed, so the net
+/// of it the VAT rows credited as a sale comes back off that sale; and goods a card PAID for are earned now, out of
+/// what it owed, with no VAT (`SalesSinglePurpose`).
+void SinglePurposeSales(Verification v, decimal soldNet, decimal cardRate, decimal paidNet, BookkeepingAccounts a,
+                        ShopSettings shop, decimal sign) {
+  if (soldNet != 0) { Post(v.Postings, SalesAccount(cardRate, a, shop), sign * soldNet); }
+  if (paidNet != 0) { Post(v.Postings, a.SalesSinglePurpose, -sign * paidNet); }
+}
+
+/// A gift card's amount in the shop's own money, at the rate the card was sold at.
+decimal CardShopMoney(decimal amount, GiftCard card) {
+  return card.Rate <= 0 || card.Rate == 1m ? amount : Math.Round(amount / card.Rate, 2, MidpointRounding.AwayFromZero);
+}
+
+/// "EUR 34.95 at 11.3205 SEK/EUR (European Central Bank, 2026-09-28)" — how a foreign-currency document converts.
+public string RateText(decimal amount, Invoice invoice, ShopSettings shop) {
+  var perOne = invoice.Rate <= 0 ? 0m : Math.Round(1m / invoice.Rate, 4);
+  var date = invoice.RateDate == null ? invoice.IssuedAt : invoice.RateDate!.Value;
+  return $"{invoice.Order.Currency} {Amount(amount)} at {perOne:0.0000} {shop.Currency}/{invoice.Order.Currency} ({invoice.RateSource ?? "rate"}, {date.ToString("yyyy-MM-dd")})";
+}
+
+/// Makes a verification balance to the öre: what converting each amount on its own left over goes to the currency
+/// gain or loss (with a card spent at another rate than the sale's, that is a real one).
+void Balance(Verification v, BookkeepingAccounts a) {
+  var left = v.Postings.Sum(p => p.Amount);
+  if (left > 0) { Post(v.Postings, a.CurrencyGain, -left); }
+  if (left < 0) { Post(v.Postings, a.CurrencyLoss, -left); }
+  v.Postings = v.Postings.Where(p => p.Amount != 0).OrderBy(p => p.Account).ToList();
+}
+
+/// Where the money of a sale — or of a credit note on it, at `at` — goes: owed on an invoice on terms until it is
+/// paid (a wholesale account's, Receivables), else the bank for money paid by hand, else the provider's clearing — and
+/// a card taken on the shop's own terminal at the counter goes through its card acquirer, who pays it out later, so it
+/// waits in clearing too (the shop kit's `CounterCardKey`).
+string MoneyAccount(Order o, BookkeepingAccounts a, DateTime at) {
+  if (o.InvoiceDueAt != null && (o.PaidAt == null || at < o.PaidAt!.Value)) { return a.Receivables; }
+  if (o.PaymentMethod == CounterCardKey()) { return a.ProviderClearing; }
+  return o.PaymentRef == null ? a.Bank : a.ProviderClearing;
+}
+
+/// An invoice on terms, paid: what was owed on it — less what credit notes took off before it was paid — moves from
+/// Receivables to the bank, converted at its invoice's rate.
+[SuppressWarning("cost-unbounded-read")]   // one invoice's credit notes
+Verification InvoicePaid(Order o, BookkeepingAccounts a, ShopSettings shop) {
+  var i = Invoice.Single(x => x.Order == o);
+  var paidAt = o.PaidAt!.Value;
+  var before = CreditNote.Where(c => c.Invoice == i && c.IssuedAt < paidAt).ToList().Sum(c => c.Total - c.ToGiftCards - c.ToStoreCredit);
+  var owed = InvoiceShopMoney(i.Total - o.GiftCardUsed - o.CreditUsed - before, i);
+  var v = new Verification { Date = paidAt.Date, Text = $"{shop.Name} — invoice {InvoiceCode(i)} paid, {o.Reference}" };
+  Post(v.Postings, a.Bank, owed);
+  Post(v.Postings, a.Receivables, -owed);
+  return v;
+}
+
+/// A sale in another currency, converted at its invoice's rate.
+[SuppressWarning("cost-unbounded-read")]   // one order's gift cards
+Verification ForeignSale(Invoice i, BookkeepingAccounts a, ShopSettings shop) {
+  var o = i.Order;
+  var v = new Verification { Date = i.IssuedAt.Date, Text = $"{shop.Name} — sale {o.Reference}, {RateText(i.Total, i, shop)}" };
+  Post(v.Postings, MoneyAccount(o, a, i.IssuedAt), InvoiceShopMoney(i.Total - o.GiftCardUsed - o.CreditUsed, i));
+  // Its gift cards are owed at the rate each was sold at — a single-purpose one without the VAT its sale paid.
+  foreach (var g in OrderGiftCard.Where(x => x.Order == o).Include(x => x.Card).ToList()) { Post(v.Postings, a.GiftCards, CardShopMoney(CardOwes(g.Amount, g.Card), g.Card)); }
+  Post(v.Postings, a.GiftCards, -InvoiceShopMoney(o.GiftCardsSold - o.GiftCardsSoldVat, i));
+  foreach (var r in o.VatRates) {
+    Post(v.Postings, o.ReverseCharge ? a.SalesEuReverseCharge : o.Exported ? a.SalesExport : SalesAccount(r.Percent, a, shop), -(InvoiceShopMoney(r.Gross, i) - InvoiceShopMoney(r.Vat, i)));
+    Post(v.Postings, VatAccount(r.Percent, a, shop), -InvoiceShopMoney(r.Vat, i));
+  }
+  SinglePurposeSales(v, o.GiftCardsSinglePurpose ? InvoiceShopMoney(o.GiftCardsSold - o.GiftCardsSoldVat, i) : 0m, CardRateOf(o),
+                     InvoiceShopMoney(o.SinglePurposeUsed - o.VoucherVat, i), a, shop, 1m);
+  Balance(v, a);
+  return v;
+}
+
+/// A credit note in another currency, converted at its invoice's rate.
+Verification ForeignCredit(CreditNote c, BookkeepingAccounts a, ShopSettings shop) {
+  var i = c.Invoice;
+  var o = i.Order;
+  var v = new Verification { Date = c.IssuedAt.Date, Text = $"{shop.Name} — credit note {CreditNoteCode(c)} on {o.Reference}, {RateText(c.Total, i, shop)}" };
+  Post(v.Postings, MoneyAccount(o, a, c.IssuedAt), -InvoiceShopMoney(c.Total - c.ToGiftCards - c.ToStoreCredit, i));
+  Post(v.Postings, a.GiftCards, -InvoiceShopMoney(c.ToGiftCards - c.VoucherVat, i));
+  Post(v.Postings, a.GiftCards, InvoiceShopMoney(c.GiftCardsSold - c.GiftCardsSoldVat, i));
+  foreach (var r in c.VatRates) {
+    Post(v.Postings, o.ReverseCharge ? a.SalesEuReverseCharge : o.Exported ? a.SalesExport : SalesAccount(r.Percent, a, shop), InvoiceShopMoney(r.Gross, i) - InvoiceShopMoney(r.Vat, i));
+    Post(v.Postings, VatAccount(r.Percent, a, shop), InvoiceShopMoney(r.Vat, i));
+  }
+  SinglePurposeSales(v, c.GiftCardsSinglePurpose ? InvoiceShopMoney(c.GiftCardsSold - c.GiftCardsSoldVat, i) : 0m, CardRateOf(o),
+                     InvoiceShopMoney(c.SinglePurposeBack - c.VoucherVat, i), a, shop, -1m);
+  Balance(v, a);
+  return v;
+}
+
+/// The VAT per rate for the period — what the VAT return asks for.
+[Authorize(IsShopStaff)]
+[SuppressWarning("cost-unbounded-read")]   // the period the caller asked for — a VAT return must count every document in it
+public List<VatLine> VatReport(DateOnly from, DateOnly to) {
+  var start = from.ToDateTime(TimeOnly.MinValue);
+  var end = to.AddDays(1).ToDateTime(TimeOnly.MinValue);
+  List<VatLine> lines = [];
+  foreach (var i in Invoice.Where(x => x.IssuedAt >= start && x.IssuedAt < end).Include(x => x.Order.VatRates).ToList()) {
+    // In the shop's own currency — a sale in another at its invoice's rate — as the VAT return is filed.
+    foreach (var r in i.Order.VatRates) {
+      var line = VatLineFor(lines, r.Country ?? "", r.Percent);
+      line.Sales = line.Sales + InvoiceShopMoney(r.Gross, i);
+      line.Vat = line.Vat + InvoiceShopMoney(r.Vat, i);
+    }
+  }
+  foreach (var c in CreditNote.Where(x => x.IssuedAt >= start && x.IssuedAt < end).Include(x => x.VatRates).Include(x => x.Invoice.Order.VatRates).ToList()) {
+    // A credit note gives back VAT to whoever it was charged for: the invoiced order's country at that rate.
+    var byRate = c.Invoice.Order.VatRates.ToList();
+    foreach (var r in c.VatRates) {
+      var country = byRate.FirstOrDefault(x => x.Percent == r.Percent)?.Country ?? "";
+      var line = VatLineFor(lines, country, r.Percent);
+      line.Credited = line.Credited + InvoiceShopMoney(r.Gross, c.Invoice);
+      line.Vat = line.Vat - InvoiceShopMoney(r.Vat, c.Invoice);
+    }
+  }
+  foreach (var l in lines) { l.Gross = l.Sales - l.Credited; }
+  return lines.OrderBy(l => l.Country).ThenByDescending(l => l.Percent).ToList();
+}
+
+VatLine VatLineFor(List<VatLine> lines, string country, decimal percent) {
+  var line = lines.FirstOrDefault(l => l.Country == country && l.Percent == percent);
+  if (line == null) { line = new VatLine { Country = country, Percent = percent }; lines.Add(line); }
+  return line;
+}

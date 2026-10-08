@@ -1,0 +1,152 @@
+// The books, read from a real shop's invoices and credit notes.
+
+using Osysharp.Shop.Bookkeeping;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[TestFixture]
+void Books() {
+  new ShopSettings { Name = "Möbelhuset", Currency = "SEK", CurrencySymbol = "kr", SymbolAfter = true, OrderPrefix = "MH-",
+                     VatPercent = 25m, VatReducedPercent = 12m, CompanyNumber = "556677-8899" };
+  var lamp = new Product { Name = "Lamp", Slug = "lamp", Price = 1250m };
+  new Variant { Product = lamp, Stock = 10 };
+  var book = new Product { Name = "Book", Slug = "book", Price = 224m, Vat = VatClass.Reduced };
+  new Variant { Product = book, Stock = 10 };
+  var anna = new ShopAccount { Email = "anna@shop.test", PasswordHash = Security.HashPassword("desk-pass-1") };
+  new ShopRoleGrant { Member = anna, Role = ShopRole.Staff };
+}
+
+DateOnly Today() { return DateOnly.FromDateTime(DateTime.UtcNow); }
+
+principal Desk => ShopAccount.Single(s => s.Email == "anna@shop.test");
+
+/// Buys `product` (collected, by bank transfer) and has staff mark it paid — answers the order's reference.
+string Sold(string visit, string product) {
+  runas (new Visitor { Id = visit }) {
+    AddToBag(Variant.Single(v => v.Product.Name == product), 1);
+    return PlaceOrder("Maja Berg", "maja@example.test", "", "collect", "banktransfer", "", "", "", "").Reference;
+  }
+}
+
+[Test(Books)]
+void a_days_sales_are_one_balanced_verification_per_rate() {
+  var lamp = Sold("v-1", "Lamp");
+  var book = Sold("v-2", "Book");
+  runas (Desk) {
+    foreach (var r in new List<string> { lamp, book }) {
+      var o = Order.Single(x => x.Reference == r);
+      MarkPaid(o, "");
+      Workflow.Settle(o);
+    }
+    var day = Verifications(Today(), Today()).Single();
+    Assert.Equal(0m, day.Postings.Sum(p => p.Amount));                          // balanced
+    Assert.Equal(1474m, day.Postings.Single(p => p.Account == "1930").Amount);  // paid by hand → the bank
+    Assert.Equal(-1000m, day.Postings.Single(p => p.Account == "3001").Amount); // 1250 incl. 25 %
+    Assert.Equal(-250m, day.Postings.Single(p => p.Account == "2611").Amount);
+    Assert.Equal(-200m, day.Postings.Single(p => p.Account == "3002").Amount);  // 224 incl. 12 %
+    Assert.Equal(-24m, day.Postings.Single(p => p.Account == "2621").Amount);
+  }
+}
+
+[Test(Books)]
+void a_refund_is_booked_back_and_the_vat_report_nets_it() {
+  var lamp = Sold("v-3", "Lamp");
+  runas (Desk) {
+    var o = Order.Single(x => x.Reference == lamp);
+    MarkPaid(o, "");
+    Workflow.Settle(o);
+    RefundOrder(o, "Scratched", true);
+    Workflow.Settle(o);
+    var day = Verifications(Today(), Today()).Single();
+    Assert.Empty(day.Postings);                                                 // sold and given back the same day
+    var standard = VatReport(Today(), Today()).Single();
+    Assert.Equal(1250m, standard.Sales);
+    Assert.Equal(1250m, standard.Credited);
+    Assert.Equal(0m, standard.Vat);
+  }
+}
+
+[Test(Books)]
+void the_sie_file_names_the_company_and_carries_the_verification() {
+  var lamp = Sold("v-4", "Lamp");
+  runas (Desk) {
+    var o = Order.Single(x => x.Reference == lamp);
+    MarkPaid(o, "");
+    Workflow.Settle(o);
+    var sie = SieText(Today(), Today());
+    Assert.Contains("#SIETYP 4", sie);
+    Assert.Contains("#FNAMN \"Möbelhuset\"", sie);
+    Assert.Contains("#ORGNR 556677-8899", sie);
+    Assert.Contains("#TRANS 3001 {} -1000.00", sie);
+    Assert.Contains("#TRANS 2611 {} -250.00", sie);
+    Assert.Contains("#TRANS 1930 {} 1250.00", sie);
+    Assert.Equal("4d94", Crypto.ToHex(Pc8("Mö")));                               // M, and ö as PC8 (0x94)
+    Assert.NotEqual("", SieLink(Today(), Today()));
+    new OrderAdjustment { Order = o, Source = "discounts", Label = "Summer sale", Amount = 100m };
+    UnitOfWork.Commit();
+    var csv = CsvText(Today(), Today());
+    Assert.Contains("vat,adjustments,currency,gross_in_currency,rate\n", csv);
+    Assert.Contains(",Summer sale -100.00", csv);                              // what came off, named on the row
+    Assert.Contains("invoice,MH-INV-", csv);
+    Assert.Contains(",25.00,1250.00,1000.00,250.00", csv);
+  }
+}
+
+[Test(Books)]
+void a_payout_is_matched_to_its_orders_and_booked_with_its_fees() {
+  runas (new Visitor { Id = "v-card" }) {
+    AddToBag(Variant.Single(v => v.Product.Name == "Lamp"), 1);
+    var reference = PlaceOrder("Maja Berg", "maja@example.test", "", "collect", "card", "", "", "", "").Reference;
+    Assert.True(CheckPayment(OrderLink.From(LinkToMyOrder(reference)), "card-tok").Paid);
+    runas (Desk) {
+      Workflow.Settle(Order.Single(o => o.Reference == reference));
+      var payout = Reconciliation(Today(), Today()).Single();
+      Assert.Equal([reference], payout.Orders);
+      Assert.Equal(["p-stranger"], payout.Unmatched);            // a payment the shop has no order for is flagged
+      Assert.Equal(2.50m, payout.Fees);
+      var booked = PayoutVerifications(Today(), Today()).Single();
+      Assert.Equal(0m, booked.Postings.Sum(p => p.Amount));
+      Assert.Equal(1257.50m, booked.Postings.Single(p => p.Account == "1930").Amount);   // 1250 + 10 − 2.50
+      Assert.Equal(2.50m, booked.Postings.Single(p => p.Account == "6570").Amount);
+      Assert.Equal(-1260m, booked.Postings.Single(p => p.Account == "1580").Amount);
+      Assert.Contains("#TRANS 6570 {} 2.50", SieText(Today(), Today()));
+    }
+  }
+}
+
+[Test(Books)]
+void a_sale_to_a_business_abroad_is_booked_as_an_eu_sale_without_vat() {
+  runas (new Visitor { Id = "v-b2b" }) {
+    AddToBag(Variant.Single(v => v.Product.Name == "Lamp"), 1);
+    SetBuyerVatNumber("DE123456789");
+    var reference = PlaceOrder("Klaus Muster", "klaus@muster.test", "", "flat", "banktransfer",
+                               "Hauptstraße 1", "10115", "Berlin", "DE").Reference;
+    runas (Desk) {
+      var o = Order.Single(x => x.Reference == reference);
+      MarkPaid(o, "");
+      Workflow.Settle(o);
+      var day = Verifications(Today(), Today()).Single();
+      Assert.Equal(-1040m, day.Postings.Single(p => p.Account == "3108").Amount);   // 1000 + 40 of delivery, both without VAT
+      Assert.False(day.Postings.Any(p => p.Account == "2611"));
+      Assert.Equal("DE", VatReport(Today(), Today()).Single().Country);
+    }
+  }
+}
+
+[Test(Books)]
+void an_export_is_booked_as_a_sale_outside_the_eu_without_vat() {
+  runas (new Visitor { Id = "v-export" }) {
+    AddToBag(Variant.Single(v => v.Product.Name == "Lamp"), 1);
+    var reference = PlaceOrder("Ola Nordmann", "ola@example.test", "", "flat", "banktransfer",
+                               "Karl Johans gate 1", "0154", "Oslo", "NO").Reference;
+    runas (Desk) {
+      var o = Order.Single(x => x.Reference == reference);
+      MarkPaid(o, "");
+      Workflow.Settle(o);
+      var day = Verifications(Today(), Today()).Single();
+      Assert.Equal(-1040m, day.Postings.Single(p => p.Account == "3105").Amount);   // 1000 + 40 delivery, no VAT
+      Assert.Empty(day.Postings.Where(p => p.Account == "2611"));
+      Assert.Contains("#KONTO 3105 \"Försäljning varor till land utanför EU\"", SieText(Today(), Today()));
+    }
+  }
+}

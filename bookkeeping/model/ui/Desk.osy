@@ -1,0 +1,79 @@
+// The books on the desk: pick a period, download it for the accountant, read the VAT report, set the accounts.
+// A store places `DeskBookkeeping()` wherever its staff pages live.
+
+namespace Osysharp.Shop.Bookkeeping;
+
+using Osysharp.Shop;
+using Osysharp.Ui;
+
+[Composable]
+[Authorize(IsShopStaff)]
+public component DeskBookkeeping() {
+  DateOnly from = new DateOnly(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1);
+  DateOnly to = DateOnly.FromDateTime(DateTime.UtcNow);
+  List<VatLine> vat = [];
+  List<PayoutView> payouts = [];
+  live var accounts = BookkeepingAccounts.FirstOrDefault();
+  string sie = "";
+  string csv = "";
+  string note = "";
+
+  on mount { Load(); }
+  // `Accounts()` makes the row with the BAS defaults the first time; the live read above then holds it.
+  action Load() { vat = VatReport(from, to); payouts = Reconciliation(from, to); Accounts(); sie = ""; csv = ""; }
+  action Sie() { sie = SieLink(from, to); }
+  action Csv() { csv = CsvLink(from, to); }
+  action SaveAccounts() { UnitOfWork.Commit(); note = "Saved."; }
+
+  render {
+    Stack(gap: 8) {
+      Stack(gap: 3) {
+        SectionLabel("Period");
+        Row(gap: 3, align: Align.End, wrap: Wrapping.Wrap) {
+          DatePicker("From", value: from);
+          DatePicker("To", value: to);
+          Button("Show", onPress: Load);
+        }
+        Row(gap: 3, align: Align.Center, wrap: Wrapping.Wrap) {
+          if (sie == "") { Button("SIE 4 for the accountant", onPress: Sie, tone: Tone.Primary); }
+          else { TextLink("Download the SIE file", to: sie); }
+          if (csv == "") { Button("CSV", onPress: Csv); }
+          else { TextLink("Download the CSV", to: csv); }
+        }
+      }
+      Stack(gap: 2) {
+        SectionLabel("VAT");
+        if (vat.Count == 0) { Text("Nothing was sold in this period.", color: Colors.TextMuted); }
+        foreach (var l in vat) {
+          Row(justify: Justify.Between, gap: 3, py: 1, borderTW: 1, border: Colors.Border, label: $"VAT {l.Percent:0.##} %") {
+            Text(l.Country == "" ? $"{l.Percent:0.##} %" : $"{l.Country} · {l.Percent:0.##} %");
+            Text($"sold {Amount(l.Sales)} · credited {Amount(l.Credited)}", color: Colors.TextMuted);
+            Strong($"VAT {Amount(l.Vat)}");
+          }
+        }
+      }
+      Stack(gap: 2) {
+        SectionLabel("Payouts");
+        if (payouts.Count == 0) { Text("No payouts reached the bank in this period.", color: Colors.TextMuted); }
+        foreach (var p in payouts) {
+          Stack(gap: 1, py: 1, borderTW: 1, border: Colors.Border, label: $"{p.Provider} {p.Id}") {
+            Row(justify: Justify.Between, gap: 3) {
+              Text($"{p.Provider} · {p.Id} · {p.PaidAt.ToString("d MMM")}");
+              Strong($"{Amount(p.Net)} {p.Currency}");
+            }
+            Text($"fees {Amount(p.Fees)} · {p.Orders.Count} orders: {string.Join(", ", p.Orders)}", color: Colors.TextMuted);
+            if (p.Unmatched.Count > 0) { Text($"Not matched to an order: {string.Join(", ", p.Unmatched)}", color: Colors.Danger); }
+          }
+        }
+      }
+      if (accounts != null) {
+        Stack(gap: 3) {
+          SectionLabel("Accounts");
+          BookkeepingAccountsFields(accounts);
+          if (note != "") { Alert(note, tone: Tone.Success); }
+          Row() { Button("Save accounts", onPress: SaveAccounts); }
+        }
+      }
+    }
+  }
+}

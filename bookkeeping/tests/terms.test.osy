@@ -1,0 +1,40 @@
+// An invoice on terms — a wholesale account's (the shop kit's Wholesale.osy): owed when it is sent, in the bank when
+// it is paid.
+
+using Osysharp.Shop.Bookkeeping;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+principal Cafe => ShopAccount.Single(s => s.Email == "cafe@example.test");
+
+[Test(Books)]
+void an_invoice_on_terms_is_owed_until_it_is_paid() {
+  runas (Desk) {
+    var cafe = new ShopAccount { Email = "cafe@example.test", PasswordHash = Security.HashPassword("cafe-pass-1"), Name = "Café Linné" };
+    new ShopRoleGrant { Member = cafe, Role = ShopRole.Customer };
+    UnitOfWork.Commit();
+    MakeWholesale(cafe, SavePriceList(null, "Cafés", 20m, 0m, 30), "SE556677889901", true);
+  }
+  var reference = "";
+  runas (Cafe) {
+    runas (new Visitor { Id = "v-cafe" }) {
+      AddToBag(Variant.Single(v => v.Product.Name == "Lamp"), 1);
+      reference = PlaceOrder("Café Linné", "cafe@example.test", "", "collect", "invoice", "", "", "", "").Reference;
+    }
+  }
+  runas (Desk) {
+    var o = Order.Single(x => x.Reference == reference);
+    Workflow.Settle(o);
+    Assert.Equal(1000m, o.Total);                                               // 1250 less 20 %
+    var sold = Verifications(Today(), Today()).Single();
+    Assert.Equal(0m, sold.Postings.Sum(p => p.Amount));
+    Assert.Equal(1000m, sold.Postings.Single(p => p.Account == "1510").Amount); // owed, not in the bank
+    Assert.False(sold.Postings.Any(p => p.Account == "1930"));
+    MarkInvoicePaid(o, "Bank transfer");
+    var days = Verifications(Today(), Today());
+    Assert.Equal(2, days.Count);
+    var paid = days.Single(d => d.Text.Contains("paid"));
+    Assert.Equal(1000m, paid.Postings.Single(p => p.Account == "1930").Amount);
+    Assert.Equal(-1000m, paid.Postings.Single(p => p.Account == "1510").Amount);
+  }
+}

@@ -1,0 +1,66 @@
+// The chart of accounts as a settings section, DECLARED on `BookkeepingAccounts` (D-SETTINGSTIER1) with no page code in
+// the kit: announced to the shop's staff and nobody else, made with the BAS numbers the first time, drawn a section per
+// group, and an account changed on the page is saved only when Save is pressed — and the books are then written
+// against it, with who changed which group said under it.
+
+using Osysharp.Shop.Bookkeeping;
+using Osysharp.Shop;
+using Osysharp.Ui;
+
+[Test(Books)]
+void the_kit_announces_its_chart_of_accounts_to_staff_only() {
+  runas (Desk) {
+    var link = AnnouncedSettings().Single(l => l.To == "/settings/bookkeeping");
+    Assert.Equal("Chart of accounts", link.Label);
+    Assert.Equal("Shop", link.Group);
+  }
+  Assert.False(AnnouncedSettings().Any(l => l.To == "/settings/bookkeeping"));   // signed out: not shown
+}
+
+[Test(Books)]
+void staff_change_the_bank_account_and_it_holds_only_after_save() {
+  Ui.Viewport(1280, 900);
+  Ui.SignInAs(Desk);
+  Ui.Visit("/settings/bookkeeping");
+  Assert.Visible("Chart of accounts");
+  Assert.Visible("Currency gains", within: "Money");
+  Assert.Visible("Sales, standard rate", within: "Sales");
+  Assert.Visible("VAT, lower rate", within: "VAT");
+  Assert.Visible("Gift cards not yet spent", within: "Gift cards and store credit");
+  Assert.Value("Bank", "1930");
+  Ui.Fill("Bank", "1940");
+  Assert.Visible("Unsaved changes");
+  runas (Desk) { Assert.Equal("1930", Accounts().Bank); }             // nothing is saved before Save
+  Ui.Shot("bookkeeping-settings-wide");
+  Ui.Click("Save");
+  Assert.Visible("Accounts saved.");
+  Assert.Visible("Changed by anna@shop.test", within: "Money");
+  Assert.Hidden("Changed by", within: "Sales");
+  runas (Desk) { Assert.Equal("1940", Accounts().Bank); }
+  Ui.Shot("bookkeeping-settings-saved-wide");
+  Ui.Theme("dark");
+  Ui.Shot("bookkeeping-settings-saved-wide-dark");
+  Ui.Theme("light");
+
+  Ui.Viewport(390, 844);
+  Ui.Visit("/settings/bookkeeping");
+  Assert.Visible("Chart of accounts");
+  Assert.NoOverflow();
+  Ui.Shot("bookkeeping-settings-phone");
+}
+
+[TestFixture]
+void BooksAndACustomer() {
+  Books();
+  new ShopAccount { Email = "maja@example.test", PasswordHash = Security.HashPassword("maja-pass-1") };
+}
+
+principal Maja => ShopAccount.Single(s => s.Email == "maja@example.test");
+
+[Test(BooksAndACustomer)]
+void a_customer_is_refused_the_chart_of_accounts_page() {
+  Ui.SignInAs(Maja);
+  Ui.Visit("/settings/bookkeeping");
+  Assert.Hidden("Bank");
+  runas (Maja) { Assert.Throws<NotAuthorized>(() => Accounts()); }
+}

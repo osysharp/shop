@@ -1,0 +1,6 @@
+using Osysharp.Shop;
+
+/// Every VAT number checks out, as Muster GmbH.
+public class AnyRegister : IVatNumberCheck {
+  public VatNumberResult Check(string country, string number) { return new VatNumberResult { Valid = true, Name = "Muster GmbH" }; }
+}

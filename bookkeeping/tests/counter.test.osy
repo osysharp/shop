@@ -1,0 +1,28 @@
+// A sale at the counter (the shop kit's Counter.osy) is in the books like any other: invoiced, its VAT per rate — and a
+// card taken on the shop's own terminal waits in clearing until the card acquirer pays it out.
+
+using Osysharp.Shop.Bookkeeping;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Books)]
+void a_card_on_the_counters_terminal_is_a_sale_that_waits_in_clearing() {
+  var reference = "";
+  runas (Desk) {
+    var bag = StartCounterSale(null);
+    AddToCounterSale(bag, Variant.Single(v => v.Product.Name == "Lamp"), 1);
+    var order = PlaceCounterSale(bag, CounterCardKey(), false, "", null);
+    CardPaidAtCounter(order, "");
+    reference = order.Reference;
+  }
+  runas (Desk) {
+    var o = Order.Single(x => x.Reference == reference);
+    Workflow.Settle(o);
+    Assert.Equal(OrderStatus.Delivered, o.Status);
+    var sold = Verifications(Today(), Today()).Single();
+    Assert.Equal(0m, sold.Postings.Sum(p => p.Amount));
+    Assert.Equal(o.Total, sold.Postings.Single(p => p.Account == "1580").Amount);   // with the card acquirer
+    Assert.False(sold.Postings.Any(p => p.Account == "1930"));                     // not in the bank yet
+    Assert.Equal(-o.Vat, sold.Postings.Where(p => p.Account.StartsWith("26")).Sum(p => p.Amount));
+  }
+}

@@ -1,0 +1,15 @@
+// The books as a page of the kit — it stands in the store's own working shell and puts itself in its navigation,
+// beside the shop's desk (Osysharp.Shop's DeskPages.osy). A store writes nothing to have it; the chart of accounts is a
+// section of the store's settings (`[Settings]`, Books.osy).
+
+namespace Osysharp.Shop.Bookkeeping;
+
+using Osysharp.Ui;
+using Osysharp.Shop;
+
+/// The books: SIE 4 and CSV for a period, the VAT report per rate, and the payouts reconciled.
+[Page("/staff/books")] [Layout(WorkspaceFrame)] [Authorize(IsShopStaff)] [Render(CSR)] [Title("Books")]
+[Nav("Books", Order = 70)]
+public component BooksPage() {
+  render { Stack(gap: 6, w: "100%", maxW: "1200px") { PageTitle("Books"); DeskBookkeeping(); } }
+}

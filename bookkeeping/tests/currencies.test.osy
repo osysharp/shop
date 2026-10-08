@@ -1,0 +1,168 @@
+// The books of a shop in kronor that SELLS in euros (D-SELLCURRENCY1): each sale in euros booked in kronor at its
+// invoice's rate, in a verification that names the currency and the rate, and the payout booked with the currency gain
+// or loss against the rate it actually settled at — the provider's own where it converted (Stripe's exchange_rate),
+// the ECB's rate of the payout's day where the payout itself is in euros.
+
+using Osysharp.Shop.Bookkeeping;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+/// Euros SOLD at the ECB's 11.3205 kronor — the rate a job would have fetched — with the lamp priced at €110 on the price
+/// list, and tomorrow's rate kept at 11.2360 for a payout that arrives then.
+void SellingInEuros() {
+  runas (Desk) {
+    var today = DateTime.UtcNow.Date;
+    new ExchangeRate { Currency = "EUR", PerUnit = 0.08833532m, RateDate = today, UsableUntil = today.AddDays(6),
+                       Source = "European Central Bank", Symbol = "€", Sold = true };
+    new ExchangeRateDay { Currency = "EUR", Date = DateOnly.FromDateTime(today), PerUnit = 0.08833532m, Source = "European Central Bank" };
+    new ExchangeRateDay { Currency = "EUR", Date = DateOnly.FromDateTime(today.AddDays(1)), PerUnit = 0.089m, Source = "European Central Bank" };
+    UnitOfWork.Commit();
+    SetVariantPrice(Variant.Single(v => v.Product.Name == "Lamp"), "EUR", "110");
+  }
+}
+
+/// A lamp bought in euros by `payment` and paid — answers the order's reference.
+string SoldInEuros(string visit, string payment) {
+  runas (new Visitor { Id = visit }) {
+    ShowPricesIn("EUR");
+    AddToBag(Variant.Single(v => v.Product.Name == "Lamp"), 1);
+    var reference = PlaceOrder("Klaus Muster", "klaus@muster.test", "", "collect", payment, "", "", "", "").Reference;
+    // The browser comes back from the provider through the order's own link (D-ORDERLINK1), never its reference.
+    OrderLink? link = null;
+    runas (Desk) { link = OrderLink.For(Order.Single(o => o.Reference == reference)); }
+    Assert.True(CheckPayment(link!, payment + "-tok").Paid);
+    runas (Desk) { Workflow.Settle(Order.Single(o => o.Reference == reference)); }
+    return reference;
+  }
+}
+
+[Test(Books)]
+void a_sale_in_euros_is_booked_in_kronor_at_its_invoices_rate_with_the_rate_named() {
+  SellingInEuros();
+  var reference = SoldInEuros("v-eur-1", "card");
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    Assert.Equal("EUR", order.Currency);
+    Assert.Equal(110m, order.Total);
+    Assert.Equal(22m, order.Vat);
+    var sale = Verifications(Today(), Today()).Single();
+    Assert.Equal(0m, sale.Postings.Sum(p => p.Amount));
+    // €110 / 0.08833532 = 1,245.26 kr; €88 net = 996.21 kr; €22 VAT = 249.05 kr.
+    Assert.Equal(1245.26m, sale.Postings.Single(p => p.Account == "1580").Amount);
+    Assert.Equal(-996.21m, sale.Postings.Single(p => p.Account == "3001").Amount);
+    Assert.Equal(-249.05m, sale.Postings.Single(p => p.Account == "2611").Amount);
+    Assert.Contains($"sale {reference}, EUR 110.00 at 11.3205 SEK/EUR (European Central Bank, ", sale.Text);
+    var sie = SieText(Today(), Today());
+    Assert.Contains("#TRANS 3001 {} -996.21", sie);
+    Assert.Contains("#TRANS 2611 {} -249.05", sie);
+    Assert.Contains("EUR 110.00 at 11.3205 SEK/EUR", sie);
+    // The VAT return is in kronor, and so is the CSV — with the currency, the euro amount and the rate beside it.
+    var standard = VatReport(Today(), Today()).Single();
+    Assert.Equal(1245.26m, standard.Sales);
+    Assert.Equal(249.05m, standard.Vat);
+    Assert.Contains(",25.00,1245.26,996.21,249.05,,EUR,110.00,11.3205", CsvText(Today(), Today()));
+  }
+}
+
+[Test(Books)]
+void a_payout_the_provider_converted_books_the_currency_loss_against_the_rate_it_settled_at() {
+  SellingInEuros();
+  var reference = SoldInEuros("v-eur-2", "card");
+  runas (Desk) {
+    var payout = Reconciliation(Today(), Today()).Single(p => p.Id == "po_1");
+    Assert.Contains(reference, payout.Orders);
+    // Booked at 1,245.26 kr; Stripe-like settled €110 at 11.20: 1,232.00 kr — 13.26 kr less.
+    Assert.Equal(13.26m, payout.CurrencyDifference);
+    var booked = PayoutVerifications(Today(), Today()).Single(v => v.Text.Contains("po_1"));
+    Assert.Equal(0m, booked.Postings.Sum(p => p.Amount));
+    Assert.Equal(1239.50m, booked.Postings.Single(p => p.Account == "1930").Amount);   // 1,232 + 10 − 2.50
+    Assert.Equal(-1255.26m, booked.Postings.Single(p => p.Account == "1580").Amount);  // 1,245.26 + 10: all it held
+    Assert.Equal(13.26m, booked.Postings.Single(p => p.Account == "7960").Amount);
+    var sie = SieText(Today(), Today());
+    Assert.Contains("#KONTO 7960 \"Valutakursförluster på fordringar och skulder av rörelsekaraktär\"", sie);
+    Assert.Contains("#TRANS 7960 {} 13.26", sie);
+  }
+}
+
+[Test(Books)]
+void a_payout_in_euros_is_booked_at_the_ecb_rate_of_its_day_and_the_difference_is_the_currency_gain_or_loss() {
+  SellingInEuros();
+  var reference = SoldInEuros("v-eur-3", "eurocard");
+  runas (Desk) {
+    var payout = Reconciliation(Today(), Today()).Single(p => p.Id == "po_eur");
+    Assert.Equal("EUR", payout.Currency);
+    Assert.Contains("EUR at 11.2360 SEK/EUR (European Central Bank, ", payout.Converted);
+    // €109 net and €1 fee at tomorrow's 0.089: 1,224.72 kr and 11.24 kr; the sale was booked at 1,245.26 kr.
+    Assert.Equal(1224.72m, payout.NetInShop);
+    Assert.Equal(11.24m, payout.FeesInShop);
+    Assert.Equal(9.30m, payout.CurrencyDifference);
+    var booked = PayoutVerifications(Today(), Today().AddDays(1)).Single(v => v.Text.Contains("po_eur"));
+    Assert.Equal(0m, booked.Postings.Sum(p => p.Amount));
+    Assert.Equal(1224.72m, booked.Postings.Single(p => p.Account == "1930").Amount);
+    Assert.Equal(11.24m, booked.Postings.Single(p => p.Account == "6570").Amount);
+    Assert.Equal(-1245.26m, booked.Postings.Single(p => p.Account == "1580").Amount);  // exactly what the sale put there
+    Assert.Equal(9.30m, booked.Postings.Single(p => p.Account == "7960").Amount);
+  }
+}
+
+[Test(Books)]
+void a_credit_note_in_euros_is_converted_at_its_invoices_rate_so_the_vat_given_back_is_the_vat_declared() {
+  SellingInEuros();
+  var reference = SoldInEuros("v-eur-4", "card");
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    RefundOrder(order, "Scratched", true);
+    Workflow.Settle(order);
+    var days = Verifications(Today(), Today());
+    var back = days.Single(d => d.Text.Contains("credit note"));
+    Assert.Equal(0m, back.Postings.Sum(p => p.Amount));
+    Assert.Equal(-1245.26m, back.Postings.Single(p => p.Account == "1580").Amount);
+    Assert.Equal(996.21m, back.Postings.Single(p => p.Account == "3001").Amount);
+    Assert.Equal(249.05m, back.Postings.Single(p => p.Account == "2611").Amount);
+    var standard = VatReport(Today(), Today()).Single();
+    Assert.Equal(0m, standard.Vat);
+  }
+}
+
+// A gift card sold in euros, reissued in kronor once the shop stops selling euros (owner, 2026-09-29): at the rate it
+// was SOLD at, which is the rate its debt was booked at — so the books see what is owed move from one card to the
+// other, and nothing else: no sale, no VAT, no write-off (3990), no gift (5990), no currency difference.
+[Test(Books)]
+void a_card_reissued_in_kronor_moves_what_is_owed_and_books_no_sale() {
+  SellingInEuros();
+  CardShelf();
+  var reference = "";
+  runas (new Visitor { Id = "v-eur-card" }) {
+    ShowPricesIn("EUR");
+    Assert.Equal("", AddGiftCardToBag(Variant.Single(v => v.Product.Name == "Gift card"), 0m, "Klaus", "Anna", "anna@example.test", "", null));
+    reference = PlaceOrder("Klaus Muster", "klaus@muster.test", "", NothingToShipId(), "card", "", "", "", "").Reference;
+    OrderLink? link = null;
+    runas (Desk) { link = OrderLink.For(Order.Single(o => o.Reference == reference)); }
+    Assert.True(CheckPayment(link!, "card-tok").Paid);
+  }
+  runas (Desk) {
+    Workflow.Settle(Order.Single(o => o.Reference == reference));
+    var card = GiftCard.Single();
+    Workflow.Settle(card);
+    Assert.Equal("EUR", card.Currency);
+    Assert.Equal(43.95m, card.Amount);                                           // 500 kr at 0.08833532, to .95
+    SellInCurrency("EUR", false);
+    var again = ReissueGiftCard(card, "");
+    Workflow.Settle(card);
+    Workflow.Settle(again);
+    Assert.Equal(497.54m, again.Amount);                                         // €43.95 / 0.08833532
+    var days = Verifications(Today(), Today());
+    var moved = days.Single(d => d.Text.Contains("reissued in SEK"));
+    Assert.Contains($"gift card …{card.Last4}, EUR 43.95 sold at 1 EUR = 11.3205 SEK, reissued in SEK as …{again.Last4}", moved.Text);
+    Assert.Equal(["2421", "2421"], moved.Postings.Select(p => p.Account).ToList());
+    Assert.Equal(497.54m, moved.Postings.Single(p => p.Amount > 0).Amount);      // the old card owes no more
+    Assert.Equal(-497.54m, moved.Postings.Single(p => p.Amount < 0).Amount);     // the new one owes the same
+    // Nothing earned, given, written off or converted anywhere that day beyond the sale itself.
+    Assert.False(days.SelectMany(d => d.Postings).Any(p => p.Account == "3990" || p.Account == "5990" || p.Account == "3960" || p.Account == "7960"));
+    Assert.Empty(VatReport(Today(), Today()));                                   // a multi-purpose card: no VAT
+    var sie = SieText(Today(), Today());
+    Assert.Contains("#TRANS 2421 {} 497.54", sie);
+    Assert.Contains("#TRANS 2421 {} -497.54", sie);
+    Assert.Contains($"reissued in SEK as …{again.Last4}", sie);
+  }
+}

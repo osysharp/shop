@@ -1,0 +1,70 @@
+// THE DIRECTION — "the drop".
+//
+// Brief: the same shop and the same pieces, dressed for a customer who shops the way they follow a label — new
+// things on a Friday, the shop as loud as a poster.
+//
+// Looked at in the category: streetwear drop sites (black, a condensed poster face at enormous size, a ticker of news,
+// one neon colour), sneaker boutiques (product on flat colour, stock counters), and skate shops (hand-drawn, zine
+// collage). Three directions written for this shop:
+//   1. The zine — collage and scrawl. REJECTED: it needs illustration this shop does not have, and would read as a
+//      costume over photographs this clean.
+//   2. The sneaker wall — flat colour blocks behind every product. REJECTED: the photographs have their own grounds.
+//   3. The drop — CHOSEN: black, white type, Anton set at poster size in capitals, Geist for everything a customer
+//      reads, and ONE accent — signal orange — on the ticker, the current shelf and the thing to press.
+namespace Osysharp.Shop.Looks.Drop;
+
+/// Black, white type, a condensed poster face in capitals, a ticker across the top and one signal-orange accent.
+look Drop {
+  Label = "Drop";
+  Theme = DropTheme;
+}
+
+theme DropTheme {
+  Colors {
+    Bg            = "#0B0B0B";
+    OnBg          = "#FAFAF7";
+    Surface       = "#161616";
+    OnSurface     = "#FAFAF7";
+    Muted         = "#1F1F1F";
+    TextMuted     = "#8C8C88";
+    TextSecondary = "#CFCFCA";
+    Border        = "#2A2A2A";
+    Primary       = Palette.From("#FF5A1F");   // signal orange — the ONE accent
+    OnPrimary     = "#0B0B0B";
+    OnImage       = "#FFFFFF";
+    Scrim         = "rgb(0 0 0 / 0.6)";
+    // Raised panels and wells in this look's own paper — a menu or a dialog, a field's well — and statuses that read
+    // on its dark ground. Left at the floor they follow the visitor's system instead: dark menus and pale statuses
+    // inside a look that stays as it is.
+    Elevated = Colors.Surface;
+    Sunken   = Colors.Muted;
+    Danger   = "#FF6B5E";   // errors and refusals, set for this look's dark ground
+    Success  = "#4CC38A";   // done, paid, in stock, set for this look's dark ground
+    Warning  = "#F5B738";   // a caution that is not yet a refusal, set for this look's dark ground
+    Waiting  = "#A5A8D0";   // pending — held, not yet paid, set for this look's dark ground
+  }
+  Font {
+    Display = "\"Anton\", \"Arial Narrow\", sans-serif";
+    Sans    = "\"Geist\", system-ui, sans-serif";
+    Mono    = "\"Geist Mono\", ui-monospace, monospace";
+  }
+  FontSize {
+    Mega    = "clamp(72px, 12vw, 200px)";
+    Hero    = "clamp(48px, 7vw, 110px)";
+    Title   = "26px";
+    Lead    = "17px";
+    Body    = "14px";
+    Label   = "11px";
+    Caption = "11px";
+  }
+  // `Headline` — the weight a store's own page headings are set in (Checkout, Your bag, Paid.).
+  FontWeight { Light = 400; Headline = 600; }
+  Radius { Card = "0"; Md = "0"; Lg = "0"; Pill = "0"; }
+  Shadow { Raised = "none"; Floating = "none"; }
+  Motion {
+    Lift = "transform 180ms ease, opacity 180ms ease";
+    Fade = "opacity 160ms ease";
+  }
+}
+
+animation DropRiseIn  { Duration = "380ms"; Easing = EaseOut; from { Opacity = 0; TranslateY = "14px"; } to { Opacity = 1; TranslateY = "0"; } }

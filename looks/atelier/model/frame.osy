@@ -1,0 +1,79 @@
+// The frame — the kit's EditorialShell: a centred wordmark, the shelves either side, the header floating over the front
+// page's photograph and settling on white everywhere else. The menu, the strip across the top and the words in the
+// footer are the store's to arrange at the page desk; what is written here is what they show until staff do.
+
+namespace Osysharp.Shop.Looks.Atelier;
+
+using Osysharp.Ui;
+using Osysharp.Blocks;
+using Osysharp.Pages;
+using Osysharp.Shop;
+using Osysharp.Shop.Looks;
+using Osysharp.Site.Looks;
+
+[Composable]
+component AtelierFrame() : ShopFrame {
+  string visitId = Visitor.Id;
+  live var bag = Bag.Include(b => b.Lines).SingleOrDefault(b => b.VisitId == visitId);
+  live var inBag = bag == null ? 0 : bag.Lines.Sum(l => l.Quantity);
+  live var menu = SiteMenu("menu", [
+      new NavItem { Label = "New in", To = "/shop", Exact = true },
+      new NavItem { Label = "Clothing", To = "/shop/clothing" },
+      new NavItem { Label = "Shoes", To = "/shop/shoes" },
+      new NavItem { Label = "Accessories", To = "/shop/accessories" },
+      new NavItem { Label = "Sale", To = "/sale" },
+  ]);
+  live var shop = ShopSettings.FirstOrDefault();
+  live var chrome = new AppChrome { Product = shop?.Name ?? "", Home = "/", Nav = menu };
+
+  action OpenBag() { Navigation.Go("/bag"); }
+
+  render {
+    EditorialShell(chrome) {
+      SiteLook();
+      ShopVisitSync();
+      Slot;
+      slot promo {
+        Region("announcement", allow: [Announcement]) {
+          Announcement(words: "A demo of Osy# — nothing here is for sale and no money moves. Pay with the test card 4242 4242 4242 4242.");
+        }
+      }
+      slot actions { ShopAccountButton(); Button(inBag == 0 ? "Bag" : $"Bag ({inBag})", onPress: OpenBag); }
+      slot footer {
+        EditorialFooter(chrome) {
+          slot about {
+            Region("footer", allow: [FooterWords, FooterLink, OpeningHours, Address, FooterSignUp]) {
+              FooterWords(words: "A small Stockholm shop for a few good pieces a season — clothing, shoes and accessories chosen to be worn for years.");
+            }
+          }
+        }
+        Box(px: 6, pb: 6) { ShopPolicyLinks(); }
+      }
+    }
+  }
+}
+
+/// The footer's words, as the gallery wall sets them — a paragraph a size up, never wider than a column.
+component AtelierFooterWords(string words) : FooterWords {
+  render { Text(words, fontSize: FontSize.Subhead, lineHeight: "1.6", maxW: "420px"); }
+}
+
+/// A page's content column — generous side margins that shrink on a phone.
+component AtelierSection() : ShopSection {
+  variants { base { W = "100%"; MaxW = "1440px"; Mx = "auto"; Px = 5; Laptop { Px = 10; } } }
+  render { Box { Slot; } }
+}
+
+/// Something that is not here, set as the gallery wall sets a heading — large and light.
+component AtelierNotFound(string message, string linkLabel = "", string to = "") : NotFound {
+  render {
+    AtelierSection {
+      Stack(gap: 3, py: 20) {
+        Text(message, fontSize: FontSize.Hero, fontWeight: FontWeight.Light);
+        if (linkLabel != "" && to != "") {
+          Row { Link(href: to, label: linkLabel) { Text(linkLabel + " →", color: Colors.TextSecondary); } }
+        }
+      }
+    }
+  }
+}

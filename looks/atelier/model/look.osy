@@ -1,0 +1,71 @@
+// THE DIRECTION — "the gallery wall".
+//
+// Brief: women who buy a few good pieces a season, at 700–3,000 kr, want the shop to feel like the clothes: calm,
+// exact, unhurried. The photograph is the product; everything else steps back.
+//
+// Looked at in the category: Scandinavian minimal houses (white, one grotesk, huge photographs, almost no chrome),
+// Paris fashion editorial (serif display over full-bleed shoots, italic captions), and fast-fashion grids (dense
+// cards, badges, red sale prices). Three directions written for this shop:
+//   1. Editorial magazine — serif display, drop captions, a cover story. REJECTED: the cream-and-serif default is
+//      one step away, and it asks the clothes to compete with typography.
+//   2. Grid market — dense cards and badges. REJECTED: it sells volume, and this shop sells fewer, better things.
+//   3. The gallery wall — CHOSEN: pure white, near-black text in one grotesk set light and large, full-bleed
+//      photographs cropped tall, hairlines instead of boxes, and ONE accent — oxblood — kept for the one thing a
+//      visitor should act on.
+
+namespace Osysharp.Shop.Looks.Atelier;
+
+/// The gallery wall — white, one light grotesk, full-bleed photographs cropped tall, hairlines, an oxblood accent.
+look Atelier {
+  Label = "Atelier";
+  Theme = Gallery;
+}
+
+theme Gallery {
+  Colors {
+    Bg            = "#FFFFFF";
+    OnBg          = "#141414";
+    Surface       = "#F5F4F2";   // a quiet panel — the bag, the checkout summary
+    OnSurface     = "#141414";
+    Muted         = "#EFEEEB";   // a BACKGROUND tint (hover, a chosen size)
+    TextMuted     = "#737270";
+    TextSecondary = "#3D3C3A";
+    Border        = "#E2E1DD";
+    Primary       = Palette.From("#6B1F24");   // oxblood — the ONE accent
+    OnPrimary     = "#FFFFFF";
+    OnImage       = "#FFFFFF";
+    Scrim         = "rgb(20 20 20 / 0.45)";
+    // Raised panels and wells in this look's own paper — a menu or a dialog, a field's well — and statuses that read
+    // on its light ground. Left at the floor they follow the visitor's system instead: dark menus and pale statuses
+    // inside a look that stays as it is.
+    Elevated = Colors.Bg;
+    Sunken   = Colors.Muted;
+    Danger   = "#B42318";   // errors and refusals, set for this look's light ground
+    Success  = "#1E6B45";   // done, paid, in stock, set for this look's light ground
+    Warning  = "#8A5300";   // a caution that is not yet a refusal, set for this look's light ground
+    Waiting  = "#55587F";   // pending — held, not yet paid, set for this look's light ground
+  }
+  Font {
+    Display = "\"Hanken Grotesk\", system-ui, sans-serif";
+    Sans    = "\"Hanken Grotesk\", system-ui, sans-serif";
+  }
+  FontSize {
+    Mega    = "clamp(56px, 9vw, 148px)";
+    Hero    = "clamp(36px, 5vw, 72px)";
+    Title   = "28px";
+    Lead    = "18px";
+    Body    = "15px";
+    Label   = "12px";
+    Caption = "12px";
+  }
+  // `Headline` — the weight a store's own page headings are set in (Checkout, Your bag, Paid.): light, as everything here.
+  FontWeight { Light = 300; Headline = 300; }
+  Radius { Card = "0"; Md = "0"; Lg = "0"; Pill = "999px"; }
+  Shadow { Raised = "none"; Floating = "0 18px 40px -24px rgb(0 0 0 / 0.28)"; }
+  Motion {
+    Lift = "transform 320ms cubic-bezier(.2,.7,.2,1), opacity 320ms ease";
+    Fade = "opacity 240ms ease";
+  }
+}
+
+animation AtelierRiseIn { Duration = "620ms"; Easing = EaseOut; from { Opacity = 0; TranslateY = "18px"; } to { Opacity = 1; TranslateY = "0"; } }

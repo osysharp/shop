@@ -1,0 +1,93 @@
+// The frame — the kit's CatalogueShell: the whole shelf tree open in a column beside the page, the bag at its
+// foot. The menu, the strip across the top and the words in the footer are the
+// store's to arrange at the page desk; what is written here is what they show until staff do.
+
+namespace Osysharp.Shop.Looks.Index;
+
+using Osysharp.Ui;
+using Osysharp.Blocks;
+using Osysharp.Pages;
+using Osysharp.Shop;
+using Osysharp.Shop.Looks;
+using Osysharp.Site.Looks;
+
+[Composable]
+component IndexFrame() : ShopFrame {
+  string visitId = Visitor.Id;
+  live var bag = Bag.Include(b => b.Lines).SingleOrDefault(b => b.VisitId == visitId);
+  live var inBag = bag == null ? 0 : bag.Lines.Sum(l => l.Quantity);
+  live var menu = SiteMenu("menu", [
+      new NavItem { Label = "New in", To = "/shop", Exact = true },
+      new NavItem { Label = "Clothing", To = "/shop/clothing", Children = [
+        new NavItem { Label = "Dresses", To = "/shop/dresses" },
+        new NavItem { Label = "Knitwear", To = "/shop/knitwear" },
+        new NavItem { Label = "Coats & jackets", To = "/shop/coats-jackets" },
+        new NavItem { Label = "Trousers & skirts", To = "/shop/trousers-skirts" },
+      ] },
+      new NavItem { Label = "Shoes", To = "/shop/shoes", Children = [
+        new NavItem { Label = "Boots", To = "/shop/boots" },
+        new NavItem { Label = "Sneakers", To = "/shop/sneakers" },
+        new NavItem { Label = "Heels & flats", To = "/shop/heels-flats" },
+      ] },
+      new NavItem { Label = "Accessories", To = "/shop/accessories", Children = [
+        new NavItem { Label = "Bags", To = "/shop/bags" },
+        new NavItem { Label = "Scarves", To = "/shop/scarves" },
+        new NavItem { Label = "Jewellery", To = "/shop/jewellery" },
+      ] },
+      new NavItem { Label = "Sale", To = "/sale" },
+  ]);
+  live var shop = ShopSettings.FirstOrDefault();
+  live var chrome = new AppChrome { Product = shop?.Name ?? "", Home = "/", Nav = menu };
+
+  action OpenBag() { Navigation.Go("/bag"); }
+
+  render {
+    CatalogueShell(chrome) {
+      SiteLook();
+      ShopVisitSync();
+      Slot;
+      slot promo {
+        Region("announcement", allow: [Announcement]) {
+          Announcement(words: "A demo of Osy# — nothing here is for sale and no money moves. Pay with the test card 4242 4242 4242 4242.");
+        }
+      }
+      slot actions { ShopAccountButton(); Button(inBag == 0 ? "Bag" : $"Bag ({inBag})", onPress: OpenBag, tone: Tone.Primary); }
+      slot footer {
+        EditorialFooter(chrome) {
+          slot about {
+            Region("footer", allow: [FooterWords, FooterLink, OpeningHours, Address, FooterSignUp]) {
+              FooterWords(words: "A small Stockholm shop for a few good pieces a season — clothing, shoes and accessories chosen to be worn for years.");
+            }
+          }
+        }
+        Box(px: 6, pb: 6) { ShopPolicyLinks(); }
+      }
+    }
+  }
+}
+
+/// The footer's words, set as the editorial footer sets a blurb — a paragraph a size up, never wider than a column.
+[Composable]
+component IndexFooterWords(string words) : FooterWords {
+  render { Text(words, fontSize: FontSize.Subhead, lineHeight: "1.6", maxW: "420px"); }
+}
+
+/// A page's content column — generous side margins that shrink on a phone.
+component IndexSection() : ShopSection {
+  variants { base { W = "100%"; Px = 5; Laptop { Px = 8; } } }
+  render { Box { Slot; } }
+}
+
+/// Something that is not here.
+component IndexNotFound(string message, string linkLabel = "", string to = "") : NotFound {
+  render {
+    IndexSection {
+      Stack(gap: 3, py: 20) {
+        Text(message, fontSize: FontSize.Hero, fontWeight: FontWeight.Semibold);
+        if (linkLabel != "" && to != "") {
+          Row { Link(href: to, label: linkLabel) { Text(linkLabel + " →", color: Colors.TextSecondary); } }
+        }
+      }
+    }
+  }
+}

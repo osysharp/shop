@@ -1,0 +1,69 @@
+// THE DIRECTION — "the index".
+//
+// Brief: the same shop for a customer who shops like a designer reads a catalogue — by department, fast, every piece
+// in view with its price.
+//
+// Looked at in the category: design-store catalogues (grey ground, black grotesk, monospace labels and prices, a
+// shelf list always on screen), department stores (a mega-menu over a hero), and streetwear drops (black, one loud
+// colour, oversized type). Three directions written for this shop:
+//   1. Department store — mega-menu and banners. REJECTED: a hero and a menu over a grid is Atelier with a menu.
+//   2. The drop — black with one loud colour. REJECTED: it sells scarcity, and this shop sells staples.
+//   3. The index — CHOSEN: a light grey ground, black Geist, Geist Mono for labels and prices, the shelves always open
+//      in a column, a denser grid, and ONE accent — acid lime, always carrying black text — for what to press.
+namespace Osysharp.Shop.Looks.Index;
+
+/// A light grey ground, black Geist, labels and prices in mono, the shelves always open in a column, and acid lime.
+look Index {
+  Label = "Index";
+  Theme = IndexTheme;
+}
+
+theme IndexTheme {
+  Colors {
+    Bg            = "#F1F1EF";
+    OnBg          = "#0E0E0E";
+    Surface       = "#FFFFFF";
+    OnSurface     = "#0E0E0E";
+    Muted         = "#E6E6E3";
+    TextMuted     = "#6E6E6A";
+    TextSecondary = "#2E2E2C";
+    Border        = "#D9D9D5";
+    Primary       = Palette.From("#C8F531");   // acid lime — the ONE accent
+    OnPrimary     = "#0E0E0E";
+    OnImage       = "#FFFFFF";
+    Scrim         = "rgb(14 14 14 / 0.45)";
+    // Raised panels and wells in this look's own paper — a menu or a dialog, a field's well — and statuses that read
+    // on its light ground. Left at the floor they follow the visitor's system instead: dark menus and pale statuses
+    // inside a look that stays as it is.
+    Elevated = Colors.Surface;
+    Sunken   = Colors.Muted;
+    Danger   = "#B42318";   // errors and refusals, set for this look's light ground
+    Success  = "#1E6B45";   // done, paid, in stock, set for this look's light ground
+    Warning  = "#8A5300";   // a caution that is not yet a refusal, set for this look's light ground
+    Waiting  = "#55587F";   // pending — held, not yet paid, set for this look's light ground
+  }
+  Font {
+    Display = "\"Geist\", system-ui, sans-serif";
+    Sans    = "\"Geist\", system-ui, sans-serif";
+    Mono    = "\"Geist Mono\", ui-monospace, monospace";
+  }
+  FontSize {
+    Mega    = "clamp(48px, 7vw, 112px)";
+    Hero    = "clamp(36px, 4.5vw, 64px)";
+    Title   = "22px";
+    Lead    = "17px";
+    Body    = "14px";
+    Label   = "11px";
+    Caption = "11px";
+  }
+  // `Headline` — the weight a store's own page headings are set in (Checkout, Your bag, Paid.).
+  FontWeight { Light = 500; Headline = 600; }
+  Radius { Card = "0"; Md = "0"; Lg = "0"; Pill = "0"; }
+  Shadow { Raised = "none"; Floating = "none"; }
+  Motion {
+    Lift = "transform 200ms ease, opacity 200ms ease";
+    Fade = "opacity 180ms ease";
+  }
+}
+
+animation IndexRiseIn  { Duration = "420ms"; Easing = EaseOut; from { Opacity = 0; TranslateY = "10px"; } to { Opacity = 1; TranslateY = "0"; } }

@@ -1,0 +1,19 @@
+// The producer's test project for Osysharp.Shop.Looks.Index — a map seller's shop — old charts and atlases, wearing the look.
+//
+// ⭐ IT READS THE WORKING TREE: the repository's `osy.workspace` lists `kits/*`, so `use Osysharp.Shop.Looks.Index`
+//    resolves from the directory beside this one. ⛔ It does not ship — `tests` in ../package.osy is a setting, not a role.
+app IndexLookTests {
+  model "model/**/*.osy";
+  tests "*.test.osy";
+  use Osysharp.Shop@0 { egress "api.resend.com"; secret "ResendApiKey"; }
+  use Osysharp.Payments@0;
+  use Osysharp.Delivery@0;
+  use Osysharp.Seo@0;
+  use Osysharp.Blocks;
+  use Osysharp.Pages@0;
+  use Osysharp.Site.Looks@0;
+  use Osysharp.Shop.Looks.Index@0;
+  use Osysharp.Workflow;
+  use Osysharp.Ui;
+  use Osysharp.Storage;
+}

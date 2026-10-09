@@ -87,7 +87,7 @@ component RailBag() {
             Stack(gap: 1, grow: 1, minW: "0") {
               Text(line.Variant.Product.Name, fontWeight: FontWeight.Semibold);
               ShopLineNote(line);
-              Text(LookPrice((line.Variant.Price ?? line.Variant.Product.Price) * line.Quantity, shop), color: Colors.Primary);
+              Text(LookPrice((line.Variant.Price ?? line.Variant.Product.Price) * line.Quantity, shop), color: Colors.Primary.Text);
             }
             IconButton("Remove " + line.Variant.Product.Name, () => Remove(line)) { Icon(Icons.Close); }
           }

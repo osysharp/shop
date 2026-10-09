@@ -177,7 +177,7 @@ component RailSteps(
 component RailStep(string number, string title, string body) {
   render {
     Stack(gap: 3, animation: RailSurface, animationTimeline: AnimationTimeline.View) {
-      Text(number, color: Colors.Primary, fontWeight: FontWeight.Black);
+      Text(number, color: Colors.Primary.Text, fontWeight: FontWeight.Black);
       Text(title, fontSize: FontSize.Title, fontWeight: FontWeight.Black, lineHeight: "1.05");
       Text(body, color: Colors.TextSecondary, lineHeight: "1.6");
     }

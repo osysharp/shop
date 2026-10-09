@@ -77,7 +77,7 @@ public entity DiscountCodeAmount {
   }
 }
 
-/// A bag's codes and an order's uses, as lists on the shop's own records (extension members, D-COMPOSE1 S4): live, so a
+/// A bag's codes and an order's uses, as lists on the shop's own records (extension members): live, so a
 /// code applied in this unit of work is on `bag.Codes` before it is committed.
 partial entity Bag { [ForeignKey(Bag)] BagCode[] Codes; }
 partial entity Order { [ForeignKey(Order)] DiscountUse[] DiscountUses; }

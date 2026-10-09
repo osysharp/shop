@@ -3,7 +3,9 @@ app DiscountsKitTests {
   model "model/**/*.osy";
   tests "**/*.test.osy";
   use Osysharp.Shop.Discounts@0;
-  use Osysharp.Shop@0 { egress "api.resend.com"; secret "ResendApiKey"; }
+  use Osysharp.Shop@1 { egress "api.resend.com"; secret "ResendApiKey"; }
+  use Osysharp.Identity@0;
+  use Osysharp.Accounts@1;
   use Osysharp.Payments@0;
   use Osysharp.Delivery@0;
   use Osysharp.Seo@0;

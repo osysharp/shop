@@ -1,5 +1,6 @@
 // Discount codes through a real shop: found by fingerprint, priced with the basket, counted when used.
 
+using Osysharp.Identity;
 using Osysharp.Shop.Discounts;
 using Osysharp.Shop;
 using Osysharp.Workflow;
@@ -10,7 +11,7 @@ void Shop() {
   var beans = new Product { Name = "Beans", Slug = "beans", Price = 200m };
   new Variant { Product = beans, Stock = 50 };
   var anna = new ShopAccount { Email = "anna@shop.test", PasswordHash = Security.HashPassword("desk-pass-1") };
-  new ShopRoleGrant { Member = anna, Role = ShopRole.Staff };
+  new RoleGrant { Member = anna, Role = ShopRole.Staff };
 }
 
 principal Desk => ShopAccount.Single(s => s.Email == "anna@shop.test");

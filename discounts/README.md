@@ -28,7 +28,7 @@ your desk, and the shop prices every code with the basket.
 
 ```osy
 // app.osy
-use Osysharp.Shop@0 { egress "api.resend.com"; secret "ResendApiKey"; }
+use Osysharp.Shop@1 { egress "api.resend.com"; secret "ResendApiKey"; }
 use Osysharp.Shop.Discounts@0;
 ```
 

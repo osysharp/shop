@@ -4,7 +4,7 @@ using Osysharp.Shop;
 using Osysharp.Ui;
 
 [Route("/")] [AllowAnonymous] component KitHome() { render { Text("Discounts test shop"); } }
-[Route("/account/sign-in")] [AllowAnonymous] component KitSignIn() { render { ShopSignIn(); } }
+[Route("/login")] [AllowAnonymous] component SignInPage() { render { ShopSignIn(); } }
 [Route("/codes")] component KitCodes() { render { DeskDiscountCodes(); } }
 
 /// The store's working shell, designed once — what every kit's staff page stands in. The test store writes NO page for the

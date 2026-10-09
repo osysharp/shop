@@ -1,4 +1,4 @@
-// A code in a currency the shop SELLS in besides its own (D-SELLCURRENCY1): an amount off is a promise in one currency,
+// A code in a currency the shop SELLS in besides its own: an amount off is a promise in one currency,
 // so it applies in euros only once staff gave it a euro amount; a percent applies anywhere, its minimum spend the
 // euro one staff set, else the shop's converted at the day's rate.
 

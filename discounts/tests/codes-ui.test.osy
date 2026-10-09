@@ -5,7 +5,7 @@ using Osysharp.Shop;
 
 [Test(Shop)]
 void staff_make_a_code_on_the_desk_and_can_stop_it() {
-  Ui.Visit("/account/sign-in");
+  Ui.Visit("/login");
   Ui.Fill("Email", "anna@shop.test");
   Ui.Fill("Password", "desk-pass-1");
   Ui.Click("Sign in");
@@ -35,7 +35,7 @@ void staff_make_a_code_on_the_desk_and_can_stop_it() {
 }
 
 void MakeSpring15() {
-  Ui.Visit("/account/sign-in");
+  Ui.Visit("/login");
   Ui.Fill("Email", "anna@shop.test");
   Ui.Fill("Password", "desk-pass-1");
   Ui.Click("Sign in");
@@ -66,7 +66,7 @@ void a_shopper_types_a_code_and_the_total_drops() {
 
 [Test(Shop)]
 void staff_give_one_customer_a_code_of_their_own() {
-  Ui.Visit("/account/sign-in");
+  Ui.Visit("/login");
   Ui.Fill("Email", "anna@shop.test");
   Ui.Fill("Password", "desk-pass-1");
   Ui.Click("Sign in");
@@ -85,12 +85,12 @@ void staff_give_one_customer_a_code_of_their_own() {
   }
 }
 
-/// ⭐ THE CODES STAND IN THE STORE'S DESK WITH NOTHING WRITTEN FOR THEM (D-COMPOSE1): the shop's desk and this kit's codes
+/// ⭐ THE CODES STAND IN THE STORE'S DESK WITH NOTHING WRITTEN FOR THEM: the shop's desk and this kit's codes
 /// are the kits' own pages, in the store's shell and its navigation, and a free gift card points to the codes — this
 /// kit's contribution to the shop's `GiftCardGoodwill` slot. The test store wrote a shell and nothing else.
 [Test(Shop)]
 void the_codes_stand_in_the_stores_desk_and_a_free_gift_card_points_to_them() {
-  Ui.Visit("/account/sign-in");
+  Ui.Visit("/login");
   Ui.Fill("Email", "anna@shop.test");
   Ui.Fill("Password", "desk-pass-1");
   Ui.Click("Sign in");

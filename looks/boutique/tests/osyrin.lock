@@ -6,8 +6,8 @@
     {
       "name": "Osysharp.Accounts",
       "kind": "package",
-      "version": "1.0.0",
-      "hash": "sha256:255191db83d3be6d5f11bcede79d98dea5864d4713e9cf00e4a52b9b05b47f51",
+      "version": "1.0.1",
+      "hash": "sha256:f7e4103a4235c3512a463015e750632d910fd8cb4255afcf4cd7edbcae253812",
       "minPlatform": "0.9.0",
       "shadow": "app-forkable",
       "source": "workspace:kits/accounts",
@@ -161,8 +161,8 @@
     {
       "name": "Osysharp.Shop",
       "kind": "package",
-      "version": "1.0.0",
-      "hash": "sha256:06f9b817a22ca887c55c992c4cc4dfd46fd2c3e4f219e90ade12d4e5b329cfdb",
+      "version": "1.0.1",
+      "hash": "sha256:129f7caed7846e90e47959becde0673a3bff4f691e72f466fd6743367157f2f0",
       "minPlatform": "0.9.0",
       "shadow": "app-forkable",
       "source": "workspace:kits/shop",
@@ -241,8 +241,8 @@
     {
       "name": "Osysharp.Shop.Looks.Boutique",
       "kind": "package",
-      "version": "0.2.0",
-      "hash": "sha256:8458190066f4de56730a908cca9af626b6d4e0da1608cb51b64cffcadb45d8e6",
+      "version": "0.2.1",
+      "hash": "sha256:05f9e4cd5298347b19607a567436cb5866342459084619cfeadf1af610a649c9",
       "minPlatform": "0.9.0",
       "shadow": "app-forkable",
       "source": "workspace:kits/look-boutique",

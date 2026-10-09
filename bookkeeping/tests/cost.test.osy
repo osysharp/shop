@@ -32,16 +32,25 @@ void Sales(string token, int sales) {
 
 /// ⭐ THE DAY'S VERIFICATIONS READ THE SAME FOR TWO SALES AND FOR SIX — each sale's VAT rates and lines, and each credit
 /// note's, are read with the period, not one read per document.
+///
+/// ⚑ BOTH MEASUREMENTS ARE THE FIRST READ AFTER SALES WERE WRITTEN. A unit of work answers a read it already sent from
+///   what it found until something it read is written (D-SETTINGCACHE1), so a repeat of the same read costs one
+///   statement whatever the period holds. The books are read once before any sale — that sets up what every later read
+///   reuses — and the sales then retire the reads of what they wrote, for two sales and for six alike. Measured with the
+///   repeat measured instead: 1 statement for two sales against 12 for six.
 [Test(Books)]
 void the_verifications_read_the_same_however_many_sales_the_period_has() {
+  runas (Desk) { Verifications(Today(), Today()); }   // sets up what every later read reuses — not what this compares
   Sales("a", 2);
+  var two = 0;
   runas (Desk) {
-    Verifications(Today(), Today());   // the first read sets up what every later one reuses — not what this compares
     var mark = Cost.Mark();
     Verifications(Today(), Today());
-    var two = Cost.StatementsSince(mark);
-    Sales("b", 4);
-    mark = Cost.Mark();
+    two = Cost.StatementsSince(mark);
+  }
+  Sales("b", 4);
+  runas (Desk) {
+    var mark = Cost.Mark();
     var day = Verifications(Today(), Today()).Single();
     var six = Cost.StatementsSince(mark);
     Log.Information("Verifications: " + two + " statements for two sales, " + six + " for six");
@@ -50,21 +59,26 @@ void the_verifications_read_the_same_however_many_sales_the_period_has() {
   }
 }
 
-/// ⭐ …and so does the VAT report; the CSV reads each document's rates and adjustments with the period too.
+/// ⭐ …and so does the VAT report; the CSV reads each document's rates and adjustments with the period too. Each is
+/// measured as the first read after sales were written, as above, and in the same order both times — the report, then
+/// the CSV — so what the CSV reuses from the report is the same for two sales and for six.
 [Test(Books)]
 void the_vat_report_and_the_csv_read_the_same_however_many_sales_the_period_has() {
+  runas (Desk) { VatReport(Today(), Today()); CsvText(Today(), Today()); }   // sets up what every later read reuses
   Sales("c", 2);
+  var vatTwo = 0;
+  var csvTwo = 0;
   runas (Desk) {
-    VatReport(Today(), Today());
-    CsvText(Today(), Today());
     var mark = Cost.Mark();
     VatReport(Today(), Today());
-    var vatTwo = Cost.StatementsSince(mark);
+    vatTwo = Cost.StatementsSince(mark);
     mark = Cost.Mark();
     CsvText(Today(), Today());
-    var csvTwo = Cost.StatementsSince(mark);
-    Sales("d", 4);
-    mark = Cost.Mark();
+    csvTwo = Cost.StatementsSince(mark);
+  }
+  Sales("d", 4);
+  runas (Desk) {
+    var mark = Cost.Mark();
     var lines = VatReport(Today(), Today());
     var vatSix = Cost.StatementsSince(mark);
     mark = Cost.Mark();

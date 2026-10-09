@@ -1,17 +1,17 @@
-// Osysharp.Shop.Looks.Drop — a LOOK for a shop (D-SITEFRAME1 part 2): "the drop". Black, white type, Anton set at poster size in capitals, Geist for everything a customer
+// Osysharp.Shop.Looks.Drop — a LOOK for a shop: "the drop". Black, white type, Anton set at poster size in capitals, Geist for everything a customer
 // reads, a ticker of news across the top, and one accent — signal orange — on the ticker, the current shelf and the thing to press.
 //
 // It draws the general site contract (`Osysharp.Site.Looks`) and the shop's (`Osysharp.Shop.Looks`). It carries NO data
 // and NO logic of its own — a store installs it beside others and staff pick it per version of the site.
 package Osysharp.Shop.Looks.Drop {
-  version     "0.1.3";
+  version     "0.2.0";
   minPlatform "0.9.0";
   summary     "a shop look — the drop: black, a poster face in capitals, a ticker, mono labels, a signal-orange accent.";
   model "model/**/*.osy";
   use Osysharp.Ui;
   use Osysharp.Blocks;
   use Osysharp.Storage;
-  use Osysharp.Shop@0;
+  use Osysharp.Shop@1;
   use Osysharp.Site.Looks@0;
   use Osysharp.Pages@0;
   // The frame sends a customer to the bag, which is the store's own page.

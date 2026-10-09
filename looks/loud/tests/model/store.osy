@@ -27,7 +27,7 @@ component Store() {
   render { ShopFrame { Outlet; } }
 }
 
-[Page("/")]
+[Route("/")]
 [Layout(Store)]
 [AllowAnonymous]
 component Home() {
@@ -35,14 +35,14 @@ component Home() {
 }
 
 /// The customer's account — the shop kit's panel, on the store's own page (the shop's `appPage "/account"`).
-[Page("/account")]
+[Route("/account")]
 [Layout(Store)]
 component Account() {
   render { ShopAccountPanel(); }
 }
 
 /// The store's own bag page — the look sends a customer here, and the store decides what it is.
-[Page("/bag")]
+[Route("/bag")]
 [Layout(Store)]
 [AllowAnonymous]
 component BagPage() {

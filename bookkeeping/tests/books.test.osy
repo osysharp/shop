@@ -1,5 +1,6 @@
 // The books, read from a real shop's invoices and credit notes.
 
+using Osysharp.Identity;
 using Osysharp.Shop.Bookkeeping;
 using Osysharp.Shop;
 using Osysharp.Workflow;
@@ -13,7 +14,7 @@ void Books() {
   var book = new Product { Name = "Book", Slug = "book", Price = 224m, Vat = VatClass.Reduced };
   new Variant { Product = book, Stock = 10 };
   var anna = new ShopAccount { Email = "anna@shop.test", PasswordHash = Security.HashPassword("desk-pass-1") };
-  new ShopRoleGrant { Member = anna, Role = ShopRole.Staff };
+  new RoleGrant { Member = anna, Role = ShopRole.Staff };
 }
 
 DateOnly Today() { return DateOnly.FromDateTime(DateTime.UtcNow); }

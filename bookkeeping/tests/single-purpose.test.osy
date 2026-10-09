@@ -1,4 +1,4 @@
-// Gift cards of both kinds in the books (D-GIFTCARD-SPV1). A MULTI-purpose card (the default) is a debt with no VAT
+// Gift cards of both kinds in the books. A MULTI-purpose card (the default) is a debt with no VAT
 // until it is spent; a SINGLE-purpose one (`ShopSettings.GiftCardsAreSinglePurpose`) is taxed when it is SOLD — 2611 on
 // the sale, the card owed less its VAT — and what it pays for carries no VAT again (EU VAT Directive 2006/112/EC,
 // art. 30a–30b). Sale, redemption, refund, and the VAT report, SIE and CSV that come out of them.

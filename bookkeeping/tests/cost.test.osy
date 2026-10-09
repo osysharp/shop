@@ -2,6 +2,7 @@
 // the period, not once per sale: a day with six sales (two given back) costs what a day with two (one given back) does.
 // A read per invoice or per credit note turns each test red with both numbers.
 
+using Osysharp.Identity;
 using Osysharp.Shop.Bookkeeping;
 using Osysharp.Shop;
 using Osysharp.Workflow;
@@ -34,10 +35,10 @@ void Sales(string token, int sales) {
 /// note's, are read with the period, not one read per document.
 ///
 /// ⚑ BOTH MEASUREMENTS ARE THE FIRST READ AFTER SALES WERE WRITTEN. A unit of work answers a read it already sent from
-///   what it found until something it read is written (D-SETTINGCACHE1), so a repeat of the same read costs one
+///   what it found until something it read is written, so a repeat of the same read costs one
 ///   statement whatever the period holds. The books are read once before any sale — that sets up what every later read
-///   reuses — and the sales then retire the reads of what they wrote, for two sales and for six alike. Measured with the
-///   repeat measured instead: 1 statement for two sales against 12 for six.
+///   reuses — and the sales then retire the reads of what they wrote, for two sales and for six alike — so the two
+///   sizes compare what the read costs, never what was already answered.
 [Test(Books)]
 void the_verifications_read_the_same_however_many_sales_the_period_has() {
   runas (Desk) { Verifications(Today(), Today()); }   // sets up what every later read reuses — not what this compares
@@ -103,9 +104,9 @@ principal Stranger => ShopAccount.Single(s => s.Email == "stranger@example.test"
 [Test(Books)]
 void an_included_collection_is_not_the_answer_for_another_reader() {
   Sales("e", 2);
-  runas (Desk) {
+  runas (AuthBootstrap) {   // an account is made by the sign-in flow, as a sign-up makes one
     var stranger = new ShopAccount { Email = "stranger@example.test", PasswordHash = Security.HashPassword("stranger-pass-1") };
-    new ShopRoleGrant { Member = stranger, Role = ShopRole.Customer };
+    new RoleGrant { Member = stranger, Role = ShopRole.Customer };
     UnitOfWork.Commit();
   }
   runas (Desk) {

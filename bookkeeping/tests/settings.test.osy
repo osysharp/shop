@@ -1,4 +1,4 @@
-// The chart of accounts as a settings section, DECLARED on `BookkeepingAccounts` (D-SETTINGSTIER1) with no page code in
+// The chart of accounts as a settings section, DECLARED on `BookkeepingAccounts` with no page code in
 // the kit: announced to the shop's staff and nobody else, made with the BAS numbers the first time, drawn a section per
 // group, and an account changed on the page is saved only when Save is pressed — and the books are then written
 // against it, with who changed which group said under it.

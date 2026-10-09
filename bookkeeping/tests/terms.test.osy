@@ -1,6 +1,7 @@
 // An invoice on terms — a wholesale account's (the shop kit's Wholesale.osy): owed when it is sent, in the bank when
 // it is paid.
 
+using Osysharp.Identity;
 using Osysharp.Shop.Bookkeeping;
 using Osysharp.Shop;
 using Osysharp.Workflow;
@@ -9,10 +10,13 @@ principal Cafe => ShopAccount.Single(s => s.Email == "cafe@example.test");
 
 [Test(Books)]
 void an_invoice_on_terms_is_owed_until_it_is_paid() {
-  runas (Desk) {
-    var cafe = new ShopAccount { Email = "cafe@example.test", PasswordHash = Security.HashPassword("cafe-pass-1"), Name = "Café Linné" };
-    new ShopRoleGrant { Member = cafe, Role = ShopRole.Customer };
+  runas (AuthBootstrap) {   // an account is made by the sign-in flow, as a sign-up makes one
+    var made = new ShopAccount { Email = "cafe@example.test", PasswordHash = Security.HashPassword("cafe-pass-1"), DisplayName = "Café Linné" };
+    new RoleGrant { Member = made, Role = ShopRole.Customer };
     UnitOfWork.Commit();
+  }
+  runas (Desk) {
+    var cafe = ShopAccount.Single(a => a.Email == "cafe@example.test");
     MakeWholesale(cafe, SavePriceList(null, "Cafés", 20m, 0m, 30), "SE556677889901", true);
   }
   var reference = "";

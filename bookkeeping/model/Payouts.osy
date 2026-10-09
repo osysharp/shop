@@ -3,7 +3,7 @@
 // payment reference, and booked: the bank receives the net, the fees are a cost, the provider's clearing account is
 // emptied by the whole.
 //
-// ⚑ A SALE IN ANOTHER CURRENCY SETTLES AT ANOTHER RATE (D-SELLCURRENCY1). The clearing account holds it at its
+// ⚑ A SALE IN ANOTHER CURRENCY SETTLES AT ANOTHER RATE. The clearing account holds it at its
 //   invoice's rate (Books.osy); the payout brings in what the provider converted it to. The rate actually settled is
 //   the PROVIDER's where it says so — Stripe's balance transaction carries `exchange_rate` for a charge it converted
 //   (https://docs.stripe.com/api/balance_transactions/object), read into `PayoutLine.SettledRate`. A payout IN the

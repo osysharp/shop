@@ -1,4 +1,4 @@
-// The books of a shop in kronor that SELLS in euros (D-SELLCURRENCY1): each sale in euros booked in kronor at its
+// The books of a shop in kronor that SELLS in euros: each sale in euros booked in kronor at its
 // invoice's rate, in a verification that names the currency and the rate, and the payout booked with the currency gain
 // or loss against the rate it actually settled at — the provider's own where it converted (Stripe's exchange_rate),
 // the ECB's rate of the payout's day where the payout itself is in euros.
@@ -27,7 +27,7 @@ string SoldInEuros(string visit, string payment) {
     ShowPricesIn("EUR");
     AddToBag(Variant.Single(v => v.Product.Name == "Lamp"), 1);
     var reference = PlaceOrder("Klaus Muster", "klaus@muster.test", "", "collect", payment, "", "", "", "").Reference;
-    // The browser comes back from the provider through the order's own link (D-ORDERLINK1), never its reference.
+    // The browser comes back from the provider through the order's own link, never its reference.
     OrderLink? link = null;
     runas (Desk) { link = OrderLink.For(Order.Single(o => o.Reference == reference)); }
     Assert.True(CheckPayment(link!, payment + "-tok").Paid);
@@ -124,7 +124,7 @@ void a_credit_note_in_euros_is_converted_at_its_invoices_rate_so_the_vat_given_b
   }
 }
 
-// A gift card sold in euros, reissued in kronor once the shop stops selling euros (owner, 2026-09-29): at the rate it
+// A gift card sold in euros, reissued in kronor once the shop stops selling euros: at the rate it
 // was SOLD at, which is the rate its debt was booked at — so the books see what is owed move from one card to the
 // other, and nothing else: no sale, no VAT, no write-off (3990), no gift (5990), no currency difference.
 [Test(Books)]

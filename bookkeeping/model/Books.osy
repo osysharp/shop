@@ -11,14 +11,14 @@
 //   the goods it pays for are sales with their VAT like any others. Store credit is the same kind of debt (2420). So an
 //   invoice's money goes to the bank or the provider only for the part paid in money.
 //
-// ⚑ A SINGLE-PURPOSE CARD (D-GIFTCARD-SPV1, art. 30a(2)/30b(1)) is taxed when SOLD: its sale credits 2421 with the card
+// ⚑ A SINGLE-PURPOSE CARD (ML art. 30a(2)/30b(1)) is taxed when SOLD: its sale credits 2421 with the card
 //   LESS its VAT, and output VAT (2611) with the VAT — the Swedish textbook entry for an "enfunktionsvoucher". Spending
 //   it debits 2421 by what it owed (the amount less the VAT paid on it) and credits the sale to `SalesSinglePurpose`
 //   with no VAT: the goods' VAT was declared with the card. That account is kept apart from 3001–3003 so what a
 //   single-purpose card paid is never read as a second taxable sale; the VAT return comes from `VatReport`, which counts
 //   such a card when it is sold and never when it is spent.
 //
-// ⚑ THE BOOKS ARE IN THE SHOP'S OWN CURRENCY, WHATEVER A SALE WAS IN (D-SELLCURRENCY1). A sale in a currency the shop
+// ⚑ THE BOOKS ARE IN THE SHOP'S OWN CURRENCY, WHATEVER A SALE WAS IN. A sale in a currency the shop
 //   sells in besides its own is converted at its INVOICE's rate — the rate of the day it was paid, which the invoice
 //   records and states its VAT at (VAT Directive art. 230 and art. 91(2); Skatteverket accepts the ECB's rate) — and
 //   gets a verification of its own that names the currency, the amount and the rate. What the provider's payout then
@@ -34,7 +34,7 @@ using Osysharp.Shop;
 using Osysharp.Storage;
 
 /// The chart of accounts the books are written against — the Swedish BAS numbers until staff change them. One row,
-/// and a SETTINGS SECTION (D-SETTINGSTIER1): the settings area lists "Chart of accounts" for the shop's staff and draws
+/// and a SETTINGS SECTION: the settings area lists "Chart of accounts" for the shop's staff and draws
 /// its page at `/settings/bookkeeping` from the fields below, a section per group — `BookkeepingAccountsPage`, which an
 /// app takes over by name; the desk's books panel places the same sections (`BookkeepingAccountsFields`). Every account
 /// is `OrgPolicyMode.Default`: a group that consolidates its books may seed its own chart, and a shop may still change one.

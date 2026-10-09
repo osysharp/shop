@@ -17,6 +17,7 @@ public enum DiscountKind {
 }
 
 public entity DiscountCode {
+  [CreatedAt] DateTime? CreatedAt;
   /// The code's fingerprint — what a typed code is looked up by.
   [Required, Unique, MaxLength(64)] string CodeHash;
   /// The code as staff wrote it. Nobody else reads it.

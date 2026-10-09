@@ -3,9 +3,9 @@ using Osysharp.Shop.Discounts;
 using Osysharp.Shop;
 using Osysharp.Ui;
 
-[Page("/")] [AllowAnonymous] component KitHome() { render { Text("Discounts test shop"); } }
-[Page("/account/sign-in")] [AllowAnonymous] component KitSignIn() { render { ShopSignIn(); } }
-[Page("/codes")] component KitCodes() { render { DeskDiscountCodes(); } }
+[Route("/")] [AllowAnonymous] component KitHome() { render { Text("Discounts test shop"); } }
+[Route("/account/sign-in")] [AllowAnonymous] component KitSignIn() { render { ShopSignIn(); } }
+[Route("/codes")] component KitCodes() { render { DeskDiscountCodes(); } }
 
 /// The store's working shell, designed once — what every kit's staff page stands in. The test store writes NO page for the
 /// shop's desk or the codes: they are the kits' own, and put themselves in this bar.
@@ -20,7 +20,7 @@ component TestStoreShell() : WorkspaceShell {
 }
 
 /// A checkout reduced to what a code changes: a bag, the code field, and the total it prices to.
-[Page("/try")]
+[Route("/try")]
 [AllowAnonymous]
 component KitTry() {
   CheckoutTotals? totals = null;

@@ -7,7 +7,7 @@ using Osysharp.Ui;
 using Osysharp.Shop;
 
 /// The codes: what each gives, how often it has been used, and a form for a new one.
-[Page("/staff/codes")] [Layout(WorkspaceFrame)] [Authorize(IsShopStaff)] [Render(CSR)] [Title("Discount codes")]
+[Route("/staff/codes")] [Layout(WorkspaceFrame)] [Authorize(IsShopStaff)] [Render(CSR)] [Title("Discount codes")]
 [Nav("Codes", Order = 50)]
 public component DiscountCodesPage() {
   render { Stack(gap: 6, w: "100%", maxW: "1200px") { PageTitle("Codes"); DeskDiscountCodes(); } }

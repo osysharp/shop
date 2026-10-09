@@ -12,7 +12,7 @@ using Osysharp.Shop;
 /// Every subscription — who, what, at what price, where it stands, when the next period starts and what its subscriber
 /// last asked — and what staff do to one: pause it, resume it, stop it when its period ends (or keep it going), or stop
 /// it now. Above them, a plan's price from a date.
-[Page("/staff/subscriptions")] [Layout(WorkspaceFrame)] [Authorize(IsShopStaff)] [Render(CSR)] [Title("Subscriptions")]
+[Route("/staff/subscriptions")] [Layout(WorkspaceFrame)] [Authorize(IsShopStaff)] [Render(CSR)] [Title("Subscriptions")]
 [Nav("Subscriptions", Order = 40)]
 public component SubscriptionsDeskPage() {
   render { Stack(gap: 6, w: "100%", maxW: "1200px") { PageTitle("Subscriptions"); SubscriptionsDesk(); } }

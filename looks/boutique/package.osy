@@ -1,4 +1,4 @@
-// Osysharp.Shop.Looks.Boutique — a LOOK for a shop (D-SITEFRAME1 part 2): "the boutique". A powder-blue ground, navy type,
+// Osysharp.Shop.Looks.Boutique — a LOOK for a shop: "the boutique". A powder-blue ground, navy type,
 // Fraunces — a soft serif with a little wobble — for display and Hanken Grotesk to read, round corners, and one accent,
 // tomato red, for the price on sale and the thing to press. The shelves open in a panel and the bag slides in from the
 // side, always one tap away.
@@ -6,14 +6,14 @@
 // It draws the general site contract (`Osysharp.Site.Looks`) and the shop's (`Osysharp.Shop.Looks`). It carries NO data
 // and NO logic of its own — a store installs it beside others and staff pick it per version of the site.
 package Osysharp.Shop.Looks.Boutique {
-  version     "0.1.3";
+  version     "0.2.0";
   minPlatform "0.9.0";
   summary     "a shop look — the boutique: powder blue, navy, a soft serif, round corners, a tomato accent and a sliding bag.";
   model "model/**/*.osy";
   use Osysharp.Ui;
   use Osysharp.Blocks;
   use Osysharp.Storage;
-  use Osysharp.Shop@0;
+  use Osysharp.Shop@1;
   use Osysharp.Site.Looks@0;
   use Osysharp.Pages@0;
   // The frame sends a customer to checkout, which is the store's own page.

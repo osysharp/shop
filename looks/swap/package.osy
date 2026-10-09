@@ -5,7 +5,7 @@
 // every page, the front page, the listings, a piece's page, and the blocks staff arrange. It carries NO data and NO logic
 // of its own — a store installs it beside others and staff pick it per version of the site.
 package Osysharp.Shop.Looks.Swap {
-  version     "0.2.0";
+  version     "0.2.1";
   minPlatform "0.9.0";
   summary     "a shop look — the swap sheet: white, a condensed grotesk and mono lot labels, the shelves in a column, signal red.";
   model "model/**/*.osy";

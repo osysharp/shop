@@ -1,6 +1,7 @@
 // Reviews through a real shop: only a customer who paid for the product writes one, staff publish it, and the product
 // page — and its search-engine data — count the published ones alone.
 
+using Osysharp.Identity;
 using Osysharp.Shop.Reviews;
 using Osysharp.Shop;
 using Osysharp.Workflow;
@@ -13,13 +14,13 @@ void Shop() {
   var tea = new Product { Name = "Tea", Slug = "tea", Price = 90m };
   new Variant { Product = tea, Stock = 50 };
   var anna = new ShopAccount { Email = "anna@shop.test", PasswordHash = Security.HashPassword("desk-pass-1") };
-  new ShopRoleGrant { Member = anna, Role = ShopRole.Staff };
-  var maja = new ShopAccount { Email = "maja@example.test", PasswordHash = Security.HashPassword("maja-pass-1"), Name = "Maja Berg" };
-  new ShopRoleGrant { Member = maja, Role = ShopRole.Customer };
-  var ines = new ShopAccount { Email = "ines@example.test", PasswordHash = Security.HashPassword("ines-pass-1"), Name = "Ines" };
-  new ShopRoleGrant { Member = ines, Role = ShopRole.Customer };
-  var olle = new ShopAccount { Email = "olle@example.test", PasswordHash = Security.HashPassword("olle-pass-1"), Name = "Olle Ek" };
-  new ShopRoleGrant { Member = olle, Role = ShopRole.Customer };
+  new RoleGrant { Member = anna, Role = ShopRole.Staff };
+  var maja = new ShopAccount { Email = "maja@example.test", PasswordHash = Security.HashPassword("maja-pass-1"), DisplayName = "Maja Berg" };
+  new RoleGrant { Member = maja, Role = ShopRole.Customer };
+  var ines = new ShopAccount { Email = "ines@example.test", PasswordHash = Security.HashPassword("ines-pass-1"), DisplayName = "Ines" };
+  new RoleGrant { Member = ines, Role = ShopRole.Customer };
+  var olle = new ShopAccount { Email = "olle@example.test", PasswordHash = Security.HashPassword("olle-pass-1"), DisplayName = "Olle Ek" };
+  new RoleGrant { Member = olle, Role = ShopRole.Customer };
 }
 
 principal Desk => ShopAccount.Single(s => s.Email == "anna@shop.test");
@@ -251,7 +252,7 @@ void ASecondReviewByHand() {
 }
 
 /// ⭐ ONE REVIEW A CUSTOMER AND PRODUCT IS THE TABLE'S RULE (`[Unique(Product, Author)]`), not only `WriteReview`'s: a write
-/// that goes around the function is refused too. Nothing else showed the rule — it once compiled away unseen.
+/// that goes around the function is refused too.
 [Test(Shop)]
 void the_table_holds_one_review_a_customer_and_product() {
   MajaBoughtBeans();

@@ -13,6 +13,7 @@
 
 namespace Osysharp.Shop.Reviews;
 
+using Osysharp.Identity;
 using Osysharp.Shop;
 using Osysharp.Seo;
 using Osysharp.Workflow;
@@ -25,7 +26,7 @@ public enum ReviewState {
 }
 
 /// The shop's say over reviews. One row, made the first time the settings page or the desk asks for it; none means
-/// "wait". A SETTINGS SECTION (D-SETTINGSTIER1): the settings area lists "Reviews" for the shop's staff and draws its
+/// "wait". A SETTINGS SECTION: the settings area lists "Reviews" for the shop's staff and draws its
 /// page at `/settings/reviews` from the fields below — `ReviewSettingsPage`, which an app takes over by name.
 [Settings("Reviews", Route = "/settings/reviews", Group = "Shop", Order = 70, Icon = Icons.Star, Authorize = IsShopStaff,
           Hint = "Whether a new review waits for staff to read it, or goes up at once.",
@@ -49,7 +50,7 @@ policy HasBought(Product product) => OrderLine.Any(l => l.Order.Account == user 
   && (l.Order.Status == OrderStatus.Paid || l.Order.Status == OrderStatus.Picking || l.Order.Status == OrderStatus.Packed
       || l.Order.Status == OrderStatus.Fulfilled || l.Order.Status == OrderStatus.Delivered));
 
-/// A customer's reviews, as a list on the shop's own account (an extension member, D-COMPOSE1 S4) — what an erasure removes.
+/// A customer's reviews, as a list on the shop's own account (an extension member) — what an erasure removes.
 partial entity ShopAccount { [ForeignKey(Author)] ProductReview[] Reviews; }
 
 /// One customer's review of one product — one each, which they may change.
@@ -93,11 +94,11 @@ public workflow ReviewLifecycle {
   Initial   = Waiting;
 
   /// Staff publish a waiting review — or put a hidden one back.
-  [Authorize(u => ShopRoleGrant.Any(g => g.Member == u && g.Role == ShopRole.Staff))]
+  [Authorize(u => RoleGrant.Any(g => g.Member == u && g.Role == ShopRole.Staff))]
   event Approve();
 
   /// Staff take a review off the product page, saying why.
-  [Authorize(u => ShopRoleGrant.Any(g => g.Member == u && g.Role == ShopRole.Staff))]
+  [Authorize(u => RoleGrant.Any(g => g.Member == u && g.Role == ShopRole.Staff))]
   event Hide(string reason);
 
   /// The author changes their review. A published one waits for staff again (unless the shop publishes at once).
@@ -156,7 +157,7 @@ void Reword(ProductReview review, int rating, string title, string text) {
 
 /// How a review is signed: the first name and the initial of the last — "Maja B." — or "A customer".
 public string SignatureOf(ShopAccount author) {
-  var name = (author.Name ?? "").Trim();
+  var name = author.DisplayName.Trim();
   if (name == "") { return "A customer"; }
   var parts = name.Split(' ').Where(p => p != "").ToList();
   if (parts.Count == 1) { return parts[0]; }
@@ -231,7 +232,7 @@ public ProductReview? MyReview(Product product) {
 /// the review's own `security { }` decides who may write it.
 [AllowAnonymous]
 public ProductReview WriteReview(Product product, int rating, string title, string text) {
-  var me = Session.CurrentUser;
+  var me = MyShopAccount();
   if (me == null) { throw new Exception("Sign in to write a review."); }
   var problem = ReviewProblem(rating, title, text);
   if (problem != "") { throw new Exception(problem); }

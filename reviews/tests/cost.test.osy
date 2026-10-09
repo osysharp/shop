@@ -2,6 +2,7 @@
 // a page of reviews, so a product with thirty reviews costs what one with two does. Each test compares one act on two
 // products of different sizes; reading every rating, or every review, turns it red with both numbers.
 
+using Osysharp.Identity;
 using Osysharp.Shop.Reviews;
 using Osysharp.Shop;
 
@@ -14,8 +15,8 @@ void Reviewed() {
   new ReviewSettings { PublishAtOnce = true };   // each review goes up as it is written
   var hash = Security.HashPassword("reader-pass-1");
   for (var i = 1; i <= 30; i++) {
-    var who = new ShopAccount { Email = $"reader{i}@example.test", PasswordHash = hash, Name = $"Reader {i}" };
-    new ShopRoleGrant { Member = who, Role = ShopRole.Customer };
+    var who = new ShopAccount { Email = $"reader{i}@example.test", PasswordHash = hash, DisplayName = $"Reader {i}" };
+    new RoleGrant { Member = who, Role = ShopRole.Customer };
     var at = new DateTime(2026, 1, 1).AddDays(i);
     new ProductReview { Product = beans, Author = who, ShownAs = $"Reader {i}.", Rating = 1 + i % 5, Title = $"Beans {i}",
                         Text = "Good beans.", WrittenAt = at };

@@ -4,7 +4,7 @@ using Osysharp.Shop;
 using Osysharp.Ui;
 
 [Route("/")] [AllowAnonymous] component KitHome() { render { Text("Reviews test shop"); } }
-[Route("/account/sign-in")] [AllowAnonymous] component KitSignIn() { render { ShopSignIn(); } }
+[Route("/login")] [AllowAnonymous] component SignInPage() { render { ShopSignIn(); } }
 [Route("/reviews")] component KitReviews() { render { DeskReviews(); } }
 
 /// A product page reduced to what reviews add: the name, and the reviews under it.

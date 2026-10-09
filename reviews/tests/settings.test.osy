@@ -1,4 +1,4 @@
-// The reviews' settings section — DECLARED on `ReviewSettings` (D-SETTINGSTIER1), with no page code in the kit:
+// The reviews' settings section — DECLARED on `ReviewSettings`, with no page code in the kit:
 // announced to the shop's staff and nobody else, its switch saved only when Save is pressed (and then deciding whether
 // the next review waits), who changed it said under it, and the switch the organisation's when it sets it.
 

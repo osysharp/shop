@@ -21,7 +21,7 @@ button that opens BankID there. The page and its words are the store's; the chec
 // app.osy
 app MyShop {
   model "**/*.osy";
-  use Osysharp.Shop@0 { egress "api.resend.com"; secret "ResendApiKey"; }
+  use Osysharp.Shop@1 { egress "api.resend.com"; secret "ResendApiKey"; }
   // Osysharp.Shop.BankId is not written: it arrives by itself, because the app uses what it completes (`osy lock` says so)
   use Osysharp.BankId@0 {
     egress     "appapi2.bankid.com";

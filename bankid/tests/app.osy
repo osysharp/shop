@@ -9,7 +9,9 @@ app ShopBankIdKitTests {
     clientCert "BankIdCert";
     serverCa   "BankIdCa";
   }
-  use Osysharp.Shop@0 { egress "api.resend.com"; secret "ResendApiKey"; }
+  use Osysharp.Shop@1 { egress "api.resend.com"; secret "ResendApiKey"; }
+  use Osysharp.Identity@0;
+  use Osysharp.Accounts@1;
   use Osysharp.Seo@0;
   use Osysharp.Http;
 }

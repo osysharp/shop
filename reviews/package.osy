@@ -2,7 +2,7 @@
 // product, moderated by staff, averaged on the product page and in its search-engine data. The shop finds it: an app's
 // `use` line is all.
 package Osysharp.Shop.Reviews {
-  version     "0.5.0";
+  version     "0.5.1";
   minPlatform "0.9.0";
   summary     "product reviews for the shop — verified buyers only, moderated by staff, averaged for search engines.";
   model "model/**/*.osy";

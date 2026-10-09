@@ -1,18 +1,18 @@
-// Osysharp.Shop.Looks.Fitting — a LOOK for a shop (D-SITEFRAME1 part 2): "the fitting room". A dark chocolate ground, warm pale type, Young Serif in italic for display, the piece's own
+// Osysharp.Shop.Looks.Fitting — a LOOK for a shop: "the fitting room". A dark chocolate ground, warm pale type, Young Serif in italic for display, the piece's own
 // photograph pinned to half the screen, and one accent — amber, like the fitting-room bulb — for what to press.
 //
 // It draws the general site contract (`Osysharp.Site.Looks`) and the shop's (`Osysharp.Shop.Looks`): the frame around
 // every page, the front page, the listings, a piece's page, and the blocks staff arrange. It carries NO data and NO logic
 // of its own — a store installs it beside others and staff pick it per version of the site.
 package Osysharp.Shop.Looks.Fitting {
-  version     "0.1.3";
+  version     "0.2.0";
   minPlatform "0.9.0";
   summary     "a shop look — the fitting room: dark chocolate, Young Serif in italic, the piece pinned to half the screen, amber.";
   model "model/**/*.osy";
   use Osysharp.Ui;
   use Osysharp.Blocks;
   use Osysharp.Storage;
-  use Osysharp.Shop@0;
+  use Osysharp.Shop@1;
   use Osysharp.Site.Looks@0;
   use Osysharp.Pages@0;
   // The frame sends a customer to the bag, which is the store's own page.

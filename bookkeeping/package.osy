@@ -2,7 +2,7 @@
 // Visma, Björn Lundén), CSV for everything else, and the VAT report per rate. An add-on: it `use`s the shop and reads
 // only what the shop already records, so a store opts in with its `use` line: its books page stands in the store's desk.
 package Osysharp.Shop.Bookkeeping {
-  version     "0.3.0";
+  version     "0.3.1";
   minPlatform "0.9.0";
   summary     "a shop's books — SIE 4, CSV and the VAT report per rate — from its invoices and credit notes.";
   model "model/**/*.osy";

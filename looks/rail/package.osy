@@ -1,4 +1,4 @@
-// Osysharp.Shop.Looks.Rail — a LOOK for a shop (D-SITEFRAME1 part 2): "the rail". A bottle-green ground like a shop's painted wall, off-white type in Bricolage Grotesque set big and
+// Osysharp.Shop.Looks.Rail — a LOOK for a shop: "the rail". A bottle-green ground like a shop's painted wall, off-white type in Bricolage Grotesque set big and
 // tight, finds pinned to the wall at an angle, and one accent — the yellow of a price tag — for the price and the one
 // thing to press.
 //
@@ -6,14 +6,14 @@
 // every page, the front page, the listings, a piece's page, and the blocks staff arrange. It carries NO data and NO logic
 // of its own — a store installs it beside others and staff pick it per version of the site.
 package Osysharp.Shop.Looks.Rail {
-  version     "0.1.3";
+  version     "0.2.0";
   minPlatform "0.9.0";
   summary     "a shop look — the rail: a bottle-green wall, a big tight grotesk, finds pinned at an angle, a price-tag yellow.";
   model "model/**/*.osy";
   use Osysharp.Ui;
   use Osysharp.Blocks;
   use Osysharp.Storage;
-  use Osysharp.Shop@0;
+  use Osysharp.Shop@1;
   use Osysharp.Site.Looks@0;
   use Osysharp.Pages@0;
   // The frame sends a customer to checkout, which is the store's own page.

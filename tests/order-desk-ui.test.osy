@@ -6,7 +6,7 @@ using Osysharp.Shop;
 using Osysharp.Workflow;
 
 void SignInAt(string email, string password, string then) {
-  Ui.Visit("/account/sign-in");
+  Ui.Visit("/login");
   Ui.Fill("Email", email);
   Ui.Fill("Password", password);
   Ui.Click("Sign in");

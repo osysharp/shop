@@ -1,4 +1,4 @@
-// Newsletters staff write on the desk (D-EMAILTEMPLATES1 f): the whole body in Markdown, inside the shop's own mail,
+// Newsletters staff write on the desk: the whole body in Markdown, inside the shop's own mail,
 // previewed live and sent to ONE address as a test. The list, consent and sending to everyone are not built — the seam
 // is `CampaignFor`, one reader at a time.
 
@@ -87,10 +87,10 @@ void staff_write_a_newsletter_see_it_and_send_a_test() {
   Ui.Shot("desk-newsletter");
 }
 
-/// ⭐ A NEWSLETTER IS WRITTEN IN A UNIT OF WORK OF ITS OWN (D-GHOSTFILTER1). Close throws away what was typed since the
+/// ⭐ A NEWSLETTER IS WRITTEN IN A UNIT OF WORK OF ITS OWN. Close throws away what was typed since the
 /// last Save — it does not linger in the desk's unit of work, where the next Save anywhere on the desk used to commit a
-/// subject nobody meant to keep. Measured before the editor moved onto `Dialog.Open(…, unitOfWork: Root)`: the Settings
-/// tab's "Save settings" renamed the newsletter.
+/// subject nobody meant to keep: the editor opens with `Dialog.Open(…, unitOfWork: Root)`, so the Settings tab's "Save
+/// settings" never renames the newsletter.
 [Test(Floor)]
 void a_newsletter_closed_without_saving_is_not_saved_by_the_desks_next_save() {
   SignInAsStaff();

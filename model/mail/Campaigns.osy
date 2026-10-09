@@ -1,4 +1,4 @@
-// A newsletter — a CAMPAIGN — written by staff on the desk (D-EMAILTEMPLATES1 f). Staff write the WHOLE body in the
+// A newsletter — a CAMPAIGN — written by staff on the desk. Staff write the WHOLE body in the
 // Markdown editor; it goes out inside the shop's own frame (its name, its address, its look) through the same `[Email]`
 // renderer as every other shop mail, with the same closed list of `{placeholders}`.
 //
@@ -108,7 +108,7 @@ public string SendShopCampaignTest(Guid campaignId, string to) {
   var refusal = ShopCampaignRefusal(campaign);
   if (refusal != "") { return refusal; }
   var account = ShopAccount.Where(a => a.Email == address).FirstOrDefault();
-  var name = account?.Name ?? address.Substring(0, address.IndexOf("@"));
+  var name = account != null && account!.DisplayName.Trim() != "" ? account!.DisplayName : address.Substring(0, address.IndexOf("@"));
   var mail = CampaignFor(campaign, name);
   Mail(address, new RenderedEmail($"[Test] {mail.Subject}", mail.Text) { Html = mail.Html, Inline = mail.Inline });
   UnitOfWork.Commit();

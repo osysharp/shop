@@ -10,9 +10,8 @@ public entity Bike : Product {
   /// What the frame is made of.
   [MaxLength(40)] string? Material;
 
-  // ⚠ A SUBTYPE'S SECURITY IS ITS OWN — nothing in this block is inherited from Product (the language doc says so, and
-  //   the first run of subtypes.test.osy measured it: "Create of 'Bike' denied — no security policy grants it"). So a
-  //   type of your own restates the shop's two rules. Anything less and no page can create or read a Bike.
+  // ⚠ A SUBTYPE'S SECURITY IS ITS OWN — nothing in this block is inherited from Product, so a type of your own restates
+  //   the shop's two rules. Anything less and no page can create or read a Bike.
   security {
     allow read when IsAnonymous || IsAuthenticated where Status != ProductStatus.Draft;
     allow read when IsShopStaff;

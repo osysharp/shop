@@ -1,4 +1,4 @@
-// WHAT HAPPENS TO AN ORDER — told as events (D-COMPOSE1). The shop raises each where it happens; whoever cares hears it
+// WHAT HAPPENS TO AN ORDER — told as events. The shop raises each where it happens; whoever cares hears it
 // with `[On]`, in any kit or in the app, after the order's work is committed:
 //
 //     [On] void CountTheCode(OrderPlaced e) { … e.Order.Adjustments … }

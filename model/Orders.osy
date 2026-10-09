@@ -10,13 +10,14 @@
 // ⚑ THE ORDER CARRIES NO PERSONAL DATA, and that split is what lets a visitor see their own receipt. An order is a
 //   reference, amounts, a status and its lines. WHO placed it lives in `OrderContact`, which only staff read.
 //
-// ⚑ AND AN ORDER IS READ THROUGH ITS LINK, NEVER BY ITS REFERENCE (D-ORDERLINK1). A reference is printed on parcels,
+// ⚑ AND AN ORDER IS READ THROUGH ITS LINK, NEVER BY ITS REFERENCE. A reference is printed on parcels,
 //   read out on the phone and counts up by one, so it proves nothing. An order is read by the account it was placed
 //   from, by the visit that placed it, by staff and packers — and by whoever holds an `OrderLink` to it: the signed
 //   link every order mail, the paid page and the receipt carry.
 
 namespace Osysharp.Shop;
 
+using Osysharp.Identity;
 using Osysharp.Delivery;
 using Osysharp.Payments;
 using Osysharp.Workflow;
@@ -63,7 +64,7 @@ public entity Order {
   [Required, MaxLength(40)] string PaymentMethod;
   [MaxLength(80)] string? PaymentLabel;
   /// The language the customer shopped in (`sv`) — every mail about this order is written in it, whoever sends it
-  /// (D-I18N1). Null for an order taken on the desk: its mails go out in the language of the person sending them.
+  ///. Null for an order taken on the desk: its mails go out in the language of the person sending them.
   [MaxLength(35)] string? Language;
   /// How to pay, for a payment with no page to go to — a bank transfer's details. Sent in the confirmation.
   [MaxLength(1000)] string? PayInstructions;
@@ -113,7 +114,7 @@ public entity Order {
   /// The account it was placed from — null for a guest. What puts it in the customer's order history.
   ShopAccount? Account;
   /// The visit (browser) that placed it — so a guest reads their own order on the page they placed it from, without a
-  /// link (D-GUESTROWS1). Null for an order the shop placed (the desk, a renewal).
+  /// link. Null for an order the shop placed (the desk, a renewal).
   [MaxLength(64)] string? VisitId;
   /// Its products are on the "bought together" tally (Related.osy) — counted when paid, taken off when given back; so a
   /// recount, or a second event, never counts it twice.
@@ -190,7 +191,7 @@ public entity Order {
   /// locations), paid there and handed over the moment it is paid. Priced again by its workflow like any customer's.
   bool AtCounter = false;
   StockLocation? SoldAt;
-  ShopAccount? SoldBy;
+  Principal? SoldBy;
   [ForeignKey(Order)] OrderLine[] Lines;
   [ForeignKey(Order)] OrderAdjustment[] Adjustments;
   [ForeignKey(Order)] OrderVat[] VatRates;
@@ -206,7 +207,7 @@ public entity Order {
     //   bought, when, for how much, and its status. Guarded by order-link.test.osy
     //   a_stranger_with_the_reference_reads_nothing_and_lists_no_orders and the_link_reads_its_own_order_and_no_other.
     // SECURITY-INVARIANT(a-packer-sees-only-their-locations-orders): a packer limited to a location
-    //   (`ShopRoleGrant.Location`) reads the orders picked there — and through them their lines, contact and address —
+    //   (`ShopRoleLimit`) reads the orders picked there — and through them their lines, contact and address —
     //   and no other location's; `PacksAt` holds for staff and for an unlimited packer as `IsShopPacker` did. Failure
     //   mode: a pop-up's temporary packer reads every customer's name and address the shop has. Guarded by
     //   locations.test.osy a_packer_limited_to_a_location_sees_only_its_orders.
@@ -484,7 +485,7 @@ public workflow OrderLifecycle {
 
   /// A payment provider's own event says the order is paid — `amount` in minor units as the provider reports it (0: it
   /// did not say). Heard in every state and decided HERE, as the shop: the webhook that brings it may not read orders
-  /// (an order is read through its link, D-ORDERLINK1), so what it would have checked by reading one — that the order
+  /// (an order is read through its link), so what it would have checked by reading one — that the order
   /// is waiting for a payment, and for this amount — is checked by the order's own run. A repeat (a provider sends an
   /// event twice, or `CheckPayment` recorded the payment first) changes nothing.
   [CorrelateOn(this.Item.Reference == reference)]
@@ -539,7 +540,7 @@ public workflow OrderLifecycle {
     }
   }
 
-  // ⚑ ACCEPTED, NOT FIXED (D-AUTOSTART1, 2026-09-30): an app that installs a payment provider calling out (Stripe) is
+  // ⚑ THIS STEP STAYS IN `enter`: an app that installs a payment provider calling out (Stripe) is
   //   told this step reaches the network through a contract — `PriceProblem` calls `provider.Start(…)`, and the lint
   //   counts every implementation in view. It is called only for a MANUAL provider (`provider.IsManual` — a bank
   //   transfer's instructions), whose `Start` is local; a card provider's `Start` runs in the checkout's own call, not
@@ -967,7 +968,7 @@ string WithdrawalText(Order order, ShopSettings shop) {
 [AllowAnonymous]
 public Receipt PlaceOrder(string name, string email, string phone, string delivery, string payment,
                           string street, string postCode, string city, string country) {
-  // D-BLOCKS1 — a member of staff previewing the site sees what it WOULD look like; nothing they do there is real.
+  // a member of staff previewing the site sees what it WOULD look like; nothing they do there is real.
   if (SitePreviewing()) { throw new Exception("You are previewing the site — orders are off until you go back to the live site."); }
   var shop = TheShop();
   var bag = BagFor(false);
@@ -1020,7 +1021,7 @@ public Receipt PlaceOrder(string name, string email, string phone, string delive
     SaveMethod = bag.SaveMethod,
     UseCredit = bag.UseCredit && Session.CurrentUser != null,
   };
-  var receipt = PlaceBag(bag, placement, Session.CurrentUser);
+  var receipt = PlaceBag(bag, placement, MyShopAccount());
   // The sale, for the store's analytics — reported once it is paid (at once when there is no payment page).
   NoteSaleForAnalytics(Order.Single(o => o.Reference == receipt.Reference), receipt.PayUrl != "");
   return receipt;
@@ -1105,7 +1106,7 @@ public Receipt PlaceOrderForAccount(Bag bag, ShopAccount customer, string paymen
     .FirstOrDefault(c => c.Key == paymentKey);
   if (pay == null) { throw new Exception($"The shop does not take '{paymentKey}' for this order."); }
   var placement = new Placement {
-    Name = customer.Name ?? customer.Email, Email = customer.Email, Phone = customer.Phone ?? "",
+    Name = ShopNameOf(customer), Email = customer.Email, Phone = customer.ContactPhone ?? "",
     Street = customer.Street ?? "", PostCode = customer.PostCode ?? "", City = customer.City ?? "", Country = country,
     Way = way, Pay = pay,
     Fulfilment = digital ? Fulfilment.Digital : way.NeedsAddress ? Fulfilment.Deliver : Fulfilment.Collect,

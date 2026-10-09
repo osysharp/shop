@@ -2,6 +2,7 @@
 // with its own stock; an order picked from one of them; transfers on the road between them; and a shop with one
 // place exactly as it was.
 
+using Osysharp.Identity;
 using Osysharp.Shop;
 using Osysharp.Workflow;
 
@@ -240,9 +241,7 @@ void a_packer_limited_to_a_location_sees_only_its_orders() {
   Bag("v-pack-post", "Loafer", "38", 1);
   var byPost = PlaceTo("v-pack-post", "courier");
   runas (Desk) {
-    var grant = ShopRoleGrant.Single(g => g.Member.Email == "pia@shop.test");
-    grant.Location = w;
-    UnitOfWork.Commit();
+    LimitPacker(ShopAccount.Single(a => a.Email == "pia@shop.test"), w);
   }
   runas (Packer) {
     Assert.Equal(new List<string> { byPost.Reference }, Order.ToList().Select(o => o.Reference).ToList());
@@ -251,8 +250,7 @@ void a_packer_limited_to_a_location_sees_only_its_orders() {
   }
   // A packer for every location, as before, sees both.
   runas (Desk) {
-    ShopRoleGrant.Single(g => g.Member.Email == "pia@shop.test").Location = null;
-    UnitOfWork.Commit();
+    LimitPacker(ShopAccount.Single(a => a.Email == "pia@shop.test"), null);
   }
   runas (Packer) { Assert.Equal(2, Order.Count()); }
 }

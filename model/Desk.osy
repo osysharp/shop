@@ -6,6 +6,7 @@
 
 namespace Osysharp.Shop;
 
+using Osysharp.Identity;
 using Osysharp.Delivery;
 using Osysharp.Payments;
 using Osysharp.Workflow;
@@ -114,7 +115,7 @@ string CarrierKeyOf(Order order) {
 [Authorize(IsShopPacker)]
 public bool IsStaffMember() {
   var me = Session.CurrentUser;
-  return me != null && ShopRoleGrant.Any(g => g.Member == me && g.Role == ShopRole.Staff);
+  return me != null && RoleGrant.Any(g => g.Member == me && g.Role == ShopRole.Staff);
 }
 
 /// The keys of the payment providers staff settle by hand — a bank transfer, paying on collection — for which the
@@ -254,7 +255,7 @@ public enum StockOrigin {
 }
 
 /// One change to a variant's stock, and why — so the number on the shelf can be explained later. FACTS, never a
-/// sentence the shop writes (D-RTL2 Q2): the order a return came from, the transfer it moved with, where stock came
+/// sentence the shop writes: the order a return came from, the transfer it moved with, where stock came
 /// from — said in the reader's language when it is read (`StockMoveNote`).
 public entity StockMove {
   [Required] Variant Variant;
@@ -269,7 +270,7 @@ public entity StockMove {
   Order? Order;
   StockTransfer? Transfer;
   StockOrigin? Origin;
-  ShopAccount? By;
+  Principal? By;
   security { allow read, create when IsShopStaff; }
 }
 

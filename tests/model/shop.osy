@@ -6,20 +6,18 @@ using Osysharp.Delivery;
 using Osysharp.Payments.Klarna;
 using Osysharp.Payments;
 using Osysharp.Shop;
+using Osysharp.Identity;
+using Osysharp.Accounts;
 using Osysharp.Payments.Stripe;
 using Osysharp.Analytics;
 
 
-// The kit ships the identity — `ShopRole`, `ShopAccount` and its sign-in functions — and the app wires them. A PasswordAuth field is
-// named by its bare property name on the `[Principal]`, wherever that principal was declared.
-app.Auth = new PasswordAuth { LoginField = Email, PasswordField = PasswordHash };
-app.AuthBootstrap = new AuthBootstrap {
-  Role = ShopRole.Authenticator,
-  Login = ShopLogin, Signup = ShopSignup,
-  PasswordResetRequest = ShopRequestPasswordReset, PasswordReset = ShopResetPassword,
-  PasswordChange = ShopChangePassword, EmailChange = ShopChangeEmail,
-  EmailVerify = ShopConfirmEmail, EmailVerifyCode = ShopConfirmEmailCode,
-};
+// Who signs in is Osysharp.Accounts' — the shop's `ShopAccount` for every sign-up, with the Customer role. Off, as a store
+// starts: a test stubs `AddressProofRequired` to see an account that must prove its address (confirm-email.test.osy).
+app.Accounts = ShopAccounts("Kit Test Shop", requireVerifiedEmail: AddressProofRequired());
+
+// Staff see who holds which role — the desk's packers and counter staff (Osysharp.Identity's grants are the app's to show).
+partial entity RoleGrant { security { allow read when IsShopStaff; } }
 
 // Analytics on, so an order notes its sale for the store's frame to report (analytics.test.osy).
 app.Analytics = new AnalyticsSetup { Provider = AnalyticsProvider.Plausible, Domain = "kit-test-shop.example" };
@@ -58,8 +56,6 @@ app.Shop = new ShopSetup {
   // An identity provider that proves a buyer's age (model/identity.osy) — offered only when a test says so.
   AgeVerifier = new FakeId(),
   AgeMustBeVerified = FakeIdRequired(),
-  // Off, as a store starts — a test stubs it on to see an account that must prove its address (confirm-email.test.osy).
-  RequireConfirmedEmail = AddressProofRequired(),
   // Prices shown in a visitor's own currency (currencies.test.osy) — rates from a stubbed sheet.
   ExchangeRates = new FakeRates(),
   DisplayCurrencies = ["EUR", "SEK", "USD", "JPY", "NOK"],

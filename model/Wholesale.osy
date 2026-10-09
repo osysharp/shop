@@ -105,10 +105,10 @@ public WholesaleAccount? WholesaleOf(ShopAccount? account) {
 /// The wholesale terms `bag` is priced on — its owner's, or, for a counter's sale, those of the customer who proved
 /// themselves with their code (`ConfirmedCounterCustomer`). Null for a guest, a walk-in and a retail customer.
 ///
-/// ⚑ THE SPECIFIC READ A CLERK NEEDS (arg-rule-kits, owner 2026-10-09). The terms are the shop's to read, the customer's
-///   account is not the clerk's: so the account is matched by the id the confirmed `CounterCustomer` holds, and never
-///   handed to `WholesaleOf` as a row the caller cannot read — which the platform refuses, rightly: before that rule a
-///   row the caller could not read priced the sale at retail, silently.
+/// ⚑ THE SPECIFIC READ A CLERK NEEDS. The terms are the shop's to read, the customer's account is not the clerk's: so the
+///   account is matched by the id the confirmed `CounterCustomer` holds, and never handed to `WholesaleOf` as a row the
+///   caller cannot read — the platform refuses a function argument its caller cannot read, so a clerk's sale is priced
+///   on exactly the terms the shop gave that customer.
 public WholesaleAccount? WholesaleOfBag(Bag bag) {
   if (bag.Owner != null || !bag.AtCounter) { return WholesaleOf(bag.Owner); }
   var c = ConfirmedCounterCustomer(bag);
@@ -224,7 +224,7 @@ public class ListPriceView {
 /// The caller's price list, or null — a guest, a retail customer, or staff browsing as themselves.
 [AllowAnonymous]
 public PriceListView? MyPriceList() {
-  var w = WholesaleOf(Session.CurrentUser);
+  var w = WholesaleOf(MyShopAccount());
   if (w == null) { return null; }
   var list = w.PriceList;
   return new PriceListView {

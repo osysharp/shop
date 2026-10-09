@@ -1,5 +1,5 @@
-// The shop's plain design of the site's FRAME block types (D-SITEFRAME1; the types are the general contract's since part
-// 2 — `Osysharp.Site.Looks`): what staff place in the regions around every page — the strip across the top
+// The shop's plain design of the site's FRAME block types (the types are the general site contract's —
+// `Osysharp.Site.Looks`): what staff place in the regions around every page — the strip across the top
 // (`Region("announcement", allow: [Announcement])`) and the footer (`Region("footer", allow: [FooterWords, FooterLink,
 // OpeningHours, Address, FooterSignUp])`, in `StoreFooter`'s `about` slot). They wear the store's theme and nothing else;
 // a look kit draws the same types in its own design. The menu is not blocks — it is `SiteMenu(…)`, a list of links the

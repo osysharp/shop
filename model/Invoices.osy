@@ -10,6 +10,7 @@
 
 namespace Osysharp.Shop;
 
+using Osysharp.Identity;
 using Osysharp.PdfWriter;
 using Osysharp.Storage;
 
@@ -188,7 +189,7 @@ void CreditReturn(ReturnRequest ret) {
 public string CreditNoteLink(CreditNote note) {
   var me = Session.CurrentUser;
   if (me == null) { throw new Exception("Sign in to fetch a credit note."); }
-  if (note.Invoice.Order.Account != me && !ShopRoleGrant.Any(g => g.Member == me && g.Role == ShopRole.Staff)) {
+  if (note.Invoice.Order.Account != me && !RoleGrant.Any(g => g.Member == me && g.Role == ShopRole.Staff)) {
     throw new Exception("That credit note is not on your account.");
   }
   var path = $"credit-notes/{note.Id}.pdf";

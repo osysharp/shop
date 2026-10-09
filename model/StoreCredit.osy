@@ -17,6 +17,7 @@
 
 namespace Osysharp.Shop;
 
+using Osysharp.Identity;
 using Osysharp.Workflow;
 
 // ⚠ Appended, never inserted: an enum is stored by position.
@@ -68,7 +69,7 @@ public entity StoreCreditEntry {
   /// Why it was given back, for a `GivenBack` entry.
   GiveBackCause? Cause;
   /// Who gave it, for a grant — staff's to read.
-  ShopAccount? By;
+  Principal? By;
   DateTime At;
   invariant BalanceAfter >= 0 message "Store credit cannot go below nothing.";
   security {
@@ -84,7 +85,7 @@ public entity StoreCreditGrant {
   [Required] ShopAccount Account;
   decimal Amount;
   [Required, MaxLength(300)] string Reason;
-  ShopAccount? By;
+  Principal? By;
   DateTime At;
   StoreCreditGrantStatus Status;                     // no default — StoreCreditGranting owns it
   invariant Amount > 0 message "Give an amount above nothing.";
@@ -117,7 +118,7 @@ public workflow StoreCreditGranting {
 /// Changes a customer's store credit by `amount` (negative: taken) and writes the entry that says why. Refuses a change
 /// that would leave less than nothing. Called by the shop's workflows only — no principal may write either row.
 void PostCredit(ShopAccount account, decimal amount, StoreCreditKind kind, string? note, Order? order, ReturnRequest? ret,
-                ShopAccount? by, GiveBackCause? cause = null) {
+                Principal? by, GiveBackCause? cause = null) {
   if (amount == 0) { return; }
   var credit = StoreCredit.FirstOrDefault(c => c.Account == account);
   if (credit == null) { credit = new StoreCredit { Account = account, Balance = 0m }; }
@@ -190,14 +191,14 @@ StoreCreditView CreditViewOf(ShopAccount account) {
 
 /// The signed-in customer's store credit — nothing for a visitor.
 public StoreCreditView MyStoreCredit() {
-  var me = Session.CurrentUser;
+  var me = MyShopAccount();
   return me == null ? new StoreCreditView() : CreditViewOf(me);
 }
 
 /// What the signed-in customer holds — 0 for a visitor.
 [AllowAnonymous]
 public decimal MyCreditBalance() {
-  return CreditBalanceOf(Session.CurrentUser);
+  return CreditBalanceOf(MyShopAccount());
 }
 
 // ── the desk's side ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -277,10 +278,10 @@ public bool UsingStoreCredit() {
 /// What store credit a total takes, for the signed-in customer who chose to use it — never more than they hold or
 /// than it costs.
 decimal CreditFor(Bag bag, decimal total) {
-  var me = Session.CurrentUser;
+  var me = MyShopAccount();
   if (!bag.UseCredit || me == null || total <= 0) { return 0m; }
   // Store credit is held in the shop's own currency and is a debt in its books in that currency: it pays an order in
-  // it, never one bought in another (D-SELLCURRENCY1) — two balances in two currencies would be two debts to revalue.
+  // it, never one bought in another — two balances in two currencies would be two debts to revalue.
   if (BagCurrency(bag) != TheShop().Currency) { return 0m; }
   return Math.Min(CreditBalanceOf(me), total);
 }

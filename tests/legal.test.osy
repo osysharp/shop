@@ -48,8 +48,8 @@ void the_confirmation_hands_over_the_right_of_withdrawal_and_its_form() {
 }
 
 /// The model form is addressed to the seller ONCE. A collection address that already starts with the shop's name
-/// ("Kit Test Shop, Storgatan 1") is written as it is — measured on a real confirmation, the form read "To: Grounds &
-/// Grapes, Grounds & Grapes, Hornsgatan 64" — and the company's registered address, when the shop has one, is the one
+/// ("Kit Test Shop, Storgatan 1") is written as it is — never "To: Kit Test Shop, Kit Test
+/// Shop, Storgatan 1" — and the company's registered address, when the shop has one, is the one
 /// the form names.
 [Test(Floor)]
 void the_withdrawal_form_names_the_seller_once() {

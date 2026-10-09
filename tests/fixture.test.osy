@@ -1,6 +1,7 @@
 // The shop floor every test starts from: a settings row, a small category tree, products with sizes and stock, a
 // draft nobody outside may see, a Bike (the app's own subtype), and one member of staff.
 
+using Osysharp.Identity;
 using Osysharp.Shop;
 using Osysharp.Workflow;
 
@@ -26,19 +27,19 @@ void Floor() {
   new ProductSpec { Product = super, Name = "Frame size", Value = "56 cm", Rank = 0 };
 
   var anna = new ShopAccount { Email = "anna@shop.test", PasswordHash = Security.HashPassword("desk-pass-1") };
-  new ShopRoleGrant { Member = anna, Role = ShopRole.Staff };
+  new RoleGrant { Member = anna, Role = ShopRole.Staff };
   // A packer: gets orders out of the door, and sees no money.
   var pia = new ShopAccount { Email = "pia@shop.test", PasswordHash = Security.HashPassword("pack-pass-1") };
-  new ShopRoleGrant { Member = pia, Role = ShopRole.Packer };
+  new RoleGrant { Member = pia, Role = ShopRole.Packer };
   // A counter clerk: sells at the counter (Counter.osy), and sees no money beyond the sale in front of them.
-  var cia = new ShopAccount { Email = "cia@shop.test", PasswordHash = Security.HashPassword("till-pass-1"), Name = "Cia" };
-  new ShopRoleGrant { Member = cia, Role = ShopRole.Counter };
+  var cia = new ShopAccount { Email = "cia@shop.test", PasswordHash = Security.HashPassword("till-pass-1"), DisplayName = "Cia" };
+  new RoleGrant { Member = cia, Role = ShopRole.Counter };
 
   // Two customers with accounts. Maja's is the one the order history and returns tests shop from.
-  var maja = new ShopAccount { Email = "maja@example.test", PasswordHash = Security.HashPassword("maja-pass-1"), Name = "Maja Berg" };
-  new ShopRoleGrant { Member = maja, Role = ShopRole.Customer };
-  var olle = new ShopAccount { Email = "olle@example.test", PasswordHash = Security.HashPassword("olle-pass-1"), Name = "Olle" };
-  new ShopRoleGrant { Member = olle, Role = ShopRole.Customer };
+  var maja = new ShopAccount { Email = "maja@example.test", PasswordHash = Security.HashPassword("maja-pass-1"), DisplayName = "Maja Berg" };
+  new RoleGrant { Member = maja, Role = ShopRole.Customer };
+  var olle = new ShopAccount { Email = "olle@example.test", PasswordHash = Security.HashPassword("olle-pass-1"), DisplayName = "Olle" };
+  new RoleGrant { Member = olle, Role = ShopRole.Customer };
 }
 
 principal Maja => ShopAccount.Single(s => s.Email == "maja@example.test");

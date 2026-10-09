@@ -1,7 +1,7 @@
-// The words staff wrote into the shop's mail BEFORE its mails held regions of blocks (D-BLOCKS1 slice 3), and the one
+// The words staff wrote into the shop's mail BEFORE its mails held regions of blocks, and the one
 // move that carries them over.
 //
-// Until slice 3 a mail's editable paragraph was an `Editable` part, its words kept here — one row per template, part and
+// A mail's editable paragraph used to be an `Editable` part, its words kept here — one row per template, part and
 // language, published (`ShopMailWords`) or still being written (`ShopMailDraft`). Those paragraphs are now the words
 // block of a region (the confirmation's "shop-order-confirmation", on its way's "shop-shipped", collected's
 // "shop-collected", refunded's "shop-refunded"), kept by Osysharp.Blocks like any page's words.
@@ -10,8 +10,8 @@
 //   its region, in every language it was written in, and each unfinished one into a draft beside it — then empties
 //   these two tables. It runs for a member of staff the first time the desk opens after the upgrade (ShopDesk), since it
 //   writes what staff own; until then a mail says the code's default words.
-// ⚑ THE TWO ENTITIES STAY until every shop has moved: a table is where its rows are, and a row cannot be moved out of a
-//   table that is gone. Drop them with a migration once nothing is left in them (ledger D-BLOCKS1, "as built — slice 3").
+// ⚑ THE TWO ENTITIES STAY while a shop has rows in them: a table is where its rows are, and a row is moved out of it,
+//   never lost with it.
 
 namespace Osysharp.Shop;
 

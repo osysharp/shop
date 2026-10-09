@@ -7,7 +7,7 @@ using Osysharp.Workflow;
 /// `/account`, which the APP serves (model/pages/account.osy, around `ShopAccountPanel()`).
 [Test(Floor)]
 void a_visitor_signs_up_and_lands_in_their_account() {
-  Ui.Visit("/account/new");
+  Ui.Visit("/sign-up");
   Ui.Fill("Your name", "Nils");
   Ui.Fill("Email", "nils@example.test");
   Ui.Fill("Password", "long-enough-1");
@@ -20,18 +20,19 @@ void a_visitor_signs_up_and_lands_in_their_account() {
 
 [Test(Floor)]
 void signing_up_with_a_taken_address_says_a_message_is_on_its_way_and_never_that_it_is_taken() {
-  Ui.Visit("/account/new");
+  Ui.Visit("/sign-up");
   Ui.Fill("Your name", "Somebody");
   Ui.Fill("Email", "maja@example.test");
   Ui.Fill("Password", "not-majas-password");
   Ui.Click("Create account");
-  Assert.Visible("We have sent a message to maja@example.test — it says what to do next.");
+  // The same step a new address would get — the mail, not the page, tells its owner the address has an account.
+  Assert.Visible("We have sent a message to maja@example.test. Type the code it gives you — or open its link.");
   Assert.Hidden("There is already an account for that address — sign in, or reset the password.");
 }
 
 [Test(Floor)]
 void a_wrong_password_is_told_and_the_right_one_signs_in() {
-  Ui.Visit("/account/sign-in");
+  Ui.Visit("/login");
   Ui.Fill("Email", "maja@example.test");
   Ui.Fill("Password", "nope");
   Ui.Click("Sign in");
@@ -43,7 +44,7 @@ void a_wrong_password_is_told_and_the_right_one_signs_in() {
 
 /// Signs in through the kit's own sign-in page, as a person would.
 void SignInThroughTheUi(string email, string password) {
-  Ui.Visit("/account/sign-in");
+  Ui.Visit("/login");
   Ui.Fill("Email", email);
   Ui.Fill("Password", password);
   Ui.Click("Sign in");
@@ -57,7 +58,7 @@ void details_saved_are_there_next_time() {
   Ui.Fill("City", "Göteborg");
   Ui.Click("Save details");
   Assert.Visible("Saved.");
-  runas (Maja) { Assert.Equal("Göteborg", Me().City); }
+  runas (Maja) { Assert.Equal("Göteborg", MyShopAccount().City); }
 }
 
 [Test(Floor)]
@@ -122,7 +123,7 @@ void a_customer_takes_a_copy_of_their_data_from_the_account() {
 
 [Test(Floor)]
 void the_forgotten_password_page_says_the_same_for_any_address() {
-  Ui.Visit("/account/forgot");
+  Ui.Visit("/forgot-password");
   Ui.Fill("Email", "nobody@example.test");
   Ui.Click("Send the link");
   Assert.Visible("If there is an account for nobody@example.test, a link is on its way.");

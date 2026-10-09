@@ -23,6 +23,7 @@
 
 namespace Osysharp.Shop;
 
+using Osysharp.Identity;
 using Osysharp.Delivery;
 using Osysharp.Payments;
 using Osysharp.Workflow;
@@ -361,7 +362,7 @@ public string ReturnWithLink(OrderLink link, Guid lineId, int quantity, string r
 /// something — other listed products, all in stock. Never the very thing being sent back.
 public List<DeskPick> ExchangeChoices(OrderLine line, string search) {
   var me = Session.CurrentUser;
-  var staff = me != null && ShopRoleGrant.Any(g => g.Member == me && g.Role == ShopRole.Staff);
+  var staff = me != null && RoleGrant.Any(g => g.Member == me && g.Role == ShopRole.Staff);
   if (me == null || (line.Order.Account != me && !staff)) { return []; }
   var product = line.Variant.Product;
   var sale = SaleRate(line.Order.Currency);

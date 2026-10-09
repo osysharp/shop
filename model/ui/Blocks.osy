@@ -1,4 +1,4 @@
-// The shop's PLAIN DESIGN of the block types (D-BLOCKS1, onto the contracts in D-SITEFRAME1 part 2) — a hero, a row of
+// The shop's PLAIN DESIGN of the block types, drawn onto the site's block contracts — a hero, a row of
 // products, the shelves as tiles, a picture with words, a quote, the newsletter's sign-up, a banner and a gallery. The TYPES are
 // contracts — the general site's (`Osysharp.Site.Looks`: Hero, PictureWithWords, Quote, SignUp, Banner, PhotoGallery) and the shop's
 // (`Osysharp.Shop.Looks`: ProductRow, CategoryTiles) — and what staff arrange is stored as the type and its values. These

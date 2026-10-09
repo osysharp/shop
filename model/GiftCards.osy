@@ -6,17 +6,17 @@
 //   money. So a gift card line is left out of the order's VAT rows, its sale is kept apart (`Order.GiftCardsSold`), and
 //   spending one is a means of PAYMENT (`Order.GiftCardUsed`, like store credit), never money off.
 //
-// ⚑ …OR A SINGLE-PURPOSE ONE, when the shop says so (`ShopSettings.GiftCardsAreSinglePurpose`, D-GIFTCARD-SPV1): a card
+// ⚑ …OR A SINGLE-PURPOSE ONE, when the shop says so (`ShopSettings.GiftCardsAreSinglePurpose`): a card
 //   for goods at ONE rate in ONE country, whose VAT is known when it is sold (art. 30a(2)). Then its VAT, at the
 //   standard rate, is due on the SALE (art. 30b(1): each transfer of it is the supply of the goods) — the card line
 //   carries it in the order's VAT rows (`Order.GiftCardsSoldVat`) — and the goods it pays for later carry no second
 //   VAT: the part of an order a single-purpose card pays is out of its VAT rows (`Order.SinglePurposeUsed`, with the
 //   VAT already paid on it in `Order.VoucherVat`). Each card keeps the kind it was SOLD as (`GiftCard.SinglePurpose`),
 //   so changing the setting never re-books a card already out there. A card staff GIVE is always multi-purpose: nothing
-//   was paid for it, so no VAT fell due, and what it buys carries its VAT (D-GIFTCARD-FREECARDS1).
+//   was paid for it, so no VAT fell due, and what it buys carries its VAT.
 //
 // ⚑ THE CODE IS NEVER STORED, AND NO CARD IS EVER LISTED. A card is found by the keyed fingerprint of its code
-//   (`Security.Fingerprint`, D-FINGERPRINT1), and a card row is the desk's to read — a buyer reads the cards they bought
+//   (`Security.Fingerprint`), and a card row is the desk's to read — a buyer reads the cards they bought
 //   without their balance. So a shopper who types a code cannot look the card up themselves: they ASK (`GiftCardCheck`),
 //   and the shop's own workflow answers, as the shop. Until a card is mailed its code is sealed with the app's key
 //   (`Crypto.Encrypt`) for the mail that carries it, and then it is gone: a lost code is replaced, never read back.
@@ -32,6 +32,7 @@
 
 namespace Osysharp.Shop;
 
+using Osysharp.Identity;
 using Osysharp.Workflow;
 
 // ⚠ Appended, never inserted: an enum is stored by position.
@@ -45,7 +46,7 @@ public enum GiftCardStatus {
 
 // ⚠ Appended, never inserted: an enum is stored by position.
 /// Why money went back to a card or to store credit — a fact, said in the reader's language when the ledger is read
-/// (D-RTL2 Q2). ⚠ Appended, never inserted: an enum is stored by position.
+///. ⚠ Appended, never inserted: an enum is stored by position.
 public enum GiveBackCause {
   [Label("Refunded")] Refunded,
   [Label("Not paid in time")] NotPaidInTime,
@@ -93,7 +94,7 @@ public entity GiftCard {
   /// What it was issued for.
   decimal Amount;
   /// The ONE currency it is in (ISO 4217) — the currency of the order that sold it; null: the shop's own. It pays only
-  /// for an order in that currency (D-SELLCURRENCY1): converting it at each day's rate would make a card worth a
+  /// for an order in that currency: converting it at each day's rate would make a card worth a
   /// different amount every day, which nobody who gave one meant.
   [MaxLength(3)] string? Currency;
   /// How many of `Currency` one unit of the shop's own bought when it was sold — the rate its debt is booked at.
@@ -126,7 +127,7 @@ public entity GiftCard {
   /// The code, sealed with the app's key, until the mail that carries it is sent — then gone.
   [MaxLength(600)] string? SealedCode;
   /// For a card staff issued: who, and why.
-  ShopAccount? IssuedBy;
+  Principal? IssuedBy;
   [MaxLength(300)] string? Reason;
   /// Reissued in the shop's own currency (its own was no longer sold): the card that carries its balance now, and on
   /// that card, the one it came from.
@@ -159,7 +160,7 @@ public entity GiftCardEntry {
   GiveBackCause? Cause;
   bool OntoNewCard;
   /// Staff who made the change, for an issue, an adjustment or a void.
-  ShopAccount? By;
+  Principal? By;
   DateTime At;
   invariant BalanceAfter >= 0 message "A gift card cannot go below nothing.";
   security {
@@ -377,7 +378,7 @@ string CardHash(string normal) { return Security.Fingerprint($"giftcard|{normal}
 GiftCardCheck AskAboutCard(string code, Bag? bag) {
   var normal = NormalCardCode(code);
   if (normal.Length != 16) { throw new Exception("A gift card's code is 16 letters and digits, like ABCD-EFGH-JKLM-NPQR."); }
-  var check = new GiftCardCheck { CodeHash = CardHash(normal), Bag = bag, Owner = Session.CurrentUser, VisitId = Visitor.Id };
+  var check = new GiftCardCheck { CodeHash = CardHash(normal), Bag = bag, Owner = MyShopAccount(), VisitId = Visitor.Id };
   UnitOfWork.Commit();
   // Answered by the shop's workflow by now.
   return check;
@@ -571,7 +572,7 @@ void TakeGiftCards(Order order) {
 
 /// Changes a card's balance by `amount` and writes the entry that says why. Called by the shop's workflows only.
 void PostGiftCard(GiftCard card, decimal amount, GiftCardEntryKind kind, string? note, Order? order, ReturnRequest? ret,
-                  ShopAccount? by, GiveBackCause? cause = null, bool ontoNewCard = false) {
+                  Principal? by, GiveBackCause? cause = null, bool ontoNewCard = false) {
   if (amount == 0 && kind != GiftCardEntryKind.Voided && kind != GiftCardEntryKind.Expired && kind != GiftCardEntryKind.SaleRefunded) { return; }
   var after = card.Balance + amount;
   if (after < 0) {
@@ -637,7 +638,7 @@ decimal GiveGiftCardsBack(Order order, decimal amount, GiveBackCause why, Return
 /// A card of `amount`, minted by the shop — its code made here, sealed for the mail, and never stored. Called by the
 /// shop's workflows only; its own workflow (GiftCardLife) mails it, now or on its date.
 GiftCard NewGiftCard(decimal amount, GiftCardEntryKind how, string? note, Order? order, OrderLine? line, ShopAccount? buyer,
-                     ShopAccount? by, string sendTo, string? toName, string? fromName, string? message, DateOnly? sendOn,
+                     Principal? by, string sendTo, string? toName, string? fromName, string? message, DateOnly? sendOn,
                      string? reason, ReturnRequest? ret, GiveBackCause? cause = null, bool ontoNewCard = false) {
   var shop = TheShop();
   var code = NewCardCode();
@@ -847,7 +848,7 @@ public entity GiftCardChange {
   [MaxLength(200)] string? ToEmail;
   [MaxLength(120)] string? ToName;
   [MaxLength(500)] string? Message;
-  ShopAccount? By;
+  Principal? By;
   DateTime At;
   GiftCardChangeStatus Status;                       // no default — GiftCardChanging owns it
   security {
@@ -875,7 +876,7 @@ void ApplyGiftCardChange(GiftCardChange change) {
   var who = by == null ? "" : by!.Email;
   if (change.Kind == GiftCardChangeKind.Issue) {
     // Given, never sold: a multi-purpose card whatever the setting — no VAT fell due on nothing paid, and what it buys
-    // carries its VAT (D-GIFTCARD-FREECARDS1).
+    // carries its VAT.
     var card = NewGiftCard(change.Amount, GiftCardEntryKind.Issued, change.Reason, null, null, null, by, change.ToEmail ?? "",
                            change.ToName, TheShop().Name, change.Message, null, change.Reason, null);
     change.Card = card;
@@ -904,7 +905,7 @@ void ApplyGiftCardChange(GiftCardChange change) {
 /// same step, both entries naming the other. The new card keeps what the old one was: its kind (single- or
 /// multi-purpose, and the VAT a single-purpose one's sale paid), its last day, whom it is for and from; its code is
 /// new and is mailed to the holder the old one went to. Not a sale and not a write-off — the same debt, moved.
-void ReissueCard(GiftCardChange change, GiftCard card, ShopAccount? by) {
+void ReissueCard(GiftCardChange change, GiftCard card, Principal? by) {
   var shop = TheShop();
   var from = card.Currency ?? shop.Currency;
   var left = card.Balance;

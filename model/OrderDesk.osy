@@ -13,6 +13,7 @@
 
 namespace Osysharp.Shop;
 
+using Osysharp.Identity;
 using Osysharp.Delivery;
 using Osysharp.Payments;
 using Osysharp.Workflow;
@@ -29,7 +30,7 @@ public entity OrderNote {
   [Required, MaxLength(2000)] string Text;
   /// Sent to the customer (and mailed) — false: the shop's own note, which the customer never sees.
   bool ToCustomer = false;
-  ShopAccount? By;
+  Principal? By;
   DateTime At;
   security {
     allow read when IsAuthenticated where ToCustomer && Order.Account == user;
@@ -255,12 +256,12 @@ string StatusDetail(Order order, string state, bool staff) {
 /// reminder, a provider's webhook).
 string WhoIs(Guid? actor) {
   if (actor == null) { return ""; }
-  var a = ShopAccount.FirstOrDefault(x => x.Id == actor.Value);
+  var a = Principal.FirstOrDefault(x => x.Id == actor.Value);
   return a == null ? "" : AccountName(a);
 }
 
-string AccountName(ShopAccount a) {
-  return a.Name ?? a.Email;
+string AccountName(Principal a) {
+  return ShopNameOf(a);
 }
 
 // ── a new address ─────────────────────────────────────────────────────────────────────────────────────────────────

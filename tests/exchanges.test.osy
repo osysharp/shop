@@ -155,7 +155,7 @@ void staff_exchange_for_a_customer_and_nobody_else_can() {
   runas (Desk) {
     var ret = ExchangeForCustomer(OrderLine.Single(l => l.Order.Reference == reference), 1, Pick("Loafer", "39"), "Asked at the counter");
     Assert.Equal(OrderStatus.Reserved, ret.Replacement!.Status);
-    Assert.Equal("Maja Berg", ret.Replacement!.Account!.Name);
+    Assert.Equal("Maja Berg", ret.Replacement!.Account!.DisplayName);
     // Not what she already has.
     Assert.Throws<Exception>(() => ExchangeForCustomer(OrderLine.Single(l => l.Order.Reference == reference), 1, Pick("Loafer", "38"), ""));
   }

@@ -65,7 +65,7 @@ public entity ShopSettings {
   bool PricesExcludeVat = false;
   /// How an amount converted INTO the shop's own currency is made a price the shop would set — the rule of its own
   /// currency, as `ExchangeRate.Rounding` is a sold currency's. Used when something agreed in a currency the shop stops
-  /// selling moves to its own (a subscription, D-SELLCURRENCY1). To the cent until staff say otherwise.
+  /// selling moves to its own (a subscription). To the cent until staff say otherwise.
   PriceRounding Rounding = PriceRounding.Cents;
   /// The shop's own words for its terms, its privacy notice and its returns policy — shown on their own pages and
   /// edited from the desk. Paragraphs are separated by a blank line.

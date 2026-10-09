@@ -23,11 +23,9 @@ void one_more_order_placed_stays_within_its_budget() {
   var reference = Checkout("v-cost-next").Reference;
   Said("Placed", mark);
   runas (Desk) { Assert.True(AddOnHeard.Any(h => h.What == "placed " + reference)); }
-  // Measured 98 statements and 85–86 round trips on 2026-10-07, three runs (D-SETTINGCACHE1), from 355 / 342–343 the same
-  // morning: the setup is configuration, worked out once and kept (it had been re-run at every `App.Setting<ShopSetup>()`,
-  // reading the settings row each time — 165); the shop reads the desk's settings where it uses them; and a unit of work
-  // sends a read once while nothing it read has changed (`TheShop()` had read the row 44 times in one checkout). 421 /
-  // 407–408 before the news went out as events. 5%.
+  // A checkout costs about 98 statements: the setup is configuration, worked out once and kept; the shop reads the desk's
+  // settings where it uses them; and a unit of work sends a read once while nothing it read has changed. The bound
+  // leaves 5% over that.
   Assert.AtMost(103, Cost.StatementsSince(mark));
   Assert.AtMost(91, Cost.RoundTripsSince(mark));
   Assert.Equal(0, Cost.RequestsSince(mark));
@@ -44,9 +42,8 @@ void one_more_order_paid_and_sent_stays_within_its_budget() {
     PayAndSend(next);
     Said("Paid and sent", mark);
     Assert.True(AddOnHeard.Any(h => h.What == "sent " + next));
-    // Measured 95 statements, 76 round trips, three runs (D-SETTINGCACHE1), from 182 / 163: the setup kept (132), reads
-    // sent once a unit of work (119), and a workflow leaving or arming a state reading its slots and their clocks once
-    // instead of once per slot definition. 205 / 184 before the events. 5%.
+    // Paying and sending costs about 95 statements: the setup kept, reads sent once a unit of work, and a workflow leaving
+    // or arming a state reading its slots and their clocks once. The bound leaves 5% over that.
     Assert.AtMost(100, Cost.StatementsSince(mark));
     Assert.AtMost(80, Cost.RoundTripsSince(mark));
   }
@@ -55,7 +52,7 @@ void one_more_order_paid_and_sent_stays_within_its_budget() {
 /// An order taken on the phone and placed from the desk's page — one more, after the first: what staff wait for.
 [Test(Floor)]
 void one_more_order_placed_from_the_desk_stays_within_its_request_budget() {
-  Ui.Visit("/account/sign-in");
+  Ui.Visit("/login");
   Ui.Fill("Email", "anna@shop.test");
   Ui.Fill("Password", "desk-pass-1");
   Ui.Click("Sign in");
@@ -67,9 +64,8 @@ void one_more_order_placed_from_the_desk_stays_within_its_request_budget() {
   Ui.Click("Place the order");
   Assert.Visible("is placed and reserved");
   Said("Placed from the desk", mark);
-  // Measured 5 requests, 3 server calls, 117 statements, 82–83 round trips, three runs (D-SETTINGCACHE1), from 5 / 3 / 270
-  // / 235–236: the setup kept (150), reads sent once a unit of work. The requests are what the page asks for and did not
-  // move. 5 / 3 / 306 / 270 before the events. One request of margin, the calls held exactly, 5% on the statements.
+  // An order placed from the desk costs 5 requests, 3 server calls and about 117 statements: the setup kept, reads sent
+  // once a unit of work. One request of margin, the calls held exactly, 5% on the statements.
   Assert.AtMost(6, Cost.RequestsSince(mark));
   Assert.AtMost(3, Cost.ServerCallsSince(mark));
   Assert.AtMost(123, Cost.StatementsSince(mark));

@@ -1,10 +1,11 @@
 // The kit's desk, driven through the screen as a member of staff.
 
+using Osysharp.Accounts;
 using Osysharp.Shop;
 using Osysharp.Workflow;
 
 void SignInAsStaff() {
-  Ui.Visit("/account/sign-in");
+  Ui.Visit("/login");
   Ui.Fill("Email", "anna@shop.test");
   Ui.Fill("Password", "desk-pass-1");
   Ui.Click("Sign in");
@@ -116,14 +117,14 @@ void a_return_is_received_from_the_desk() {
 
 [Test(Floor)]
 void the_customers_and_the_mail_are_on_the_desk() {
-  ShopRequestPasswordReset("olle@example.test");
+  runas (Desk) { GrantCredit(ShopAccount.Single(a => a.Email == "olle@example.test"), 5m, "A late parcel."); }
   SignInAsStaff();
   Ui.Click("Customers");
   Assert.Visible("Maja Berg");
   Assert.Visible("olle@example.test");
   Ui.Click("Mail");
   Assert.Visible("Mail is not being sent");
-  Assert.Visible("Reset your password at Kit Test Shop");
+  Assert.Visible("€5 store credit from Kit Test Shop");
 }
 
 [Test(Floor)]
@@ -164,7 +165,7 @@ void a_packer_sees_the_orders_and_nothing_about_money() {
     var reference = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
                                "Storgatan 1", "11122", "Stockholm", "SE").Reference;
     runas (Desk) { var o = Order.Single(x => x.Reference == reference); MarkPaid(o, ""); Workflow.Settle(o); }
-    Ui.Visit("/account/sign-in");
+    Ui.Visit("/login");
     Ui.Fill("Email", "pia@shop.test");
     Ui.Fill("Password", "pack-pass-1");
     Ui.Click("Sign in");

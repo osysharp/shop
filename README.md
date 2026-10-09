@@ -24,7 +24,7 @@ osy init shop --style atelier
 | area | what you get |
 |---|---|
 | **Catalogue** | categories as a tree, products with variants (size, colour) and their own stock and price, a spec sheet per product, photos, draft/listed/archived |
-| **Accounts** | sign-up (which never says an address is taken — the mail tells its owner), an address proven by a mailed link or six-digit code before the first sign-in (`RequireConfirmedEmail`, off by default), sign-in, password reset by mail, change email and password; one principal with a Customer or Staff role; guest checkout still works |
+| **Accounts** | customers and staff are one kind of account — `ShopAccount`, an Osysharp.Accounts `User` — so sign-up (which never says an address is taken — the mail tells its owner), sign-in, two-step sign-in, a reset by mail, a changed password, a changed address (moved once the new address confirms it), an address proven before the first sign-in (off by default) and erasure are that kit's, with the shop's own screens and mail; Customer, Staff, Packer and Counter roles; guest checkout still works |
 | **The bag** | kept per visit and saved on the account, merged at sign-in, re-checked against stock on return; "mail me when it is back"; one reminder about a bag left behind (to a reader of the list the store names), whose "Back to your bag" is a `ResumeBag` link that opens the bag on any device, signed in or not (`ShopResumeBag`), at today's prices and stock, and stops once the bag is ordered or emptied |
 | **Orders** | placing an order reserves its goods; an unpaid order lapses after the shop's hold days and puts them back; paid → sent → refunded, each step mailed. An order is read by the account it was placed from, the browser that placed it, staff — and whoever holds its link: every mail about it, the page a payment comes back to and the receipt carry an `OrderLink` (a year), opened by `ShopOrderByLink(link)` at `ShopSetup.OrderPath`; the reference alone opens nothing, and nobody lists orders. An order is priced by the shop: its workflow prices every customer's order again from the bag it came from, with the checkout's own computation, before it holds anything — an order written at any other price is refused. The link also sends things back — a guest has no account to return from: `ReturnWithLink`, by the account's own rules, refunded the way it was paid — and fetches the receipt. "Bought together" is a tally the order's workflow keeps; `BoughtTogetherRecount` (a row in the store's data, or `RecountBoughtTogether` at the desk) counts it again from every order, once or as often as asked, for orders paid before it existed |
 | **Payments** | Stripe Checkout (card, wallets) with its signed webhook; Klarna's hosted page (charged when the order is sent); bank transfer; pay on collection; a payment link for an order staff took by phone, or an exchange's difference — a `Pay` grant (`SendPayLink`, `ShopPayByLink`) that works for seven days and is taken back once the order is paid or called off |
@@ -69,11 +69,15 @@ app MyShop {
   use Osysharp.Storage;
   use Osysharp.Http;
   // The shop reaches Stripe, Klarna and Resend and reads their keys. This is where the app allows each one.
-  use Osysharp.Shop@0 {
+  use Osysharp.Shop@1 {
     egress "api.stripe.com"; egress "api.resend.com"; egress "api.klarna.com"; egress "api.playground.klarna.com";
     secret "StripeApiKey"; secret "StripeWebhookSecret"; secret "ResendApiKey";
     secret "KlarnaUsername"; secret "KlarnaPassword";
   }
+  // Who signs in — customers and staff — is Osysharp.Accounts'; its mail goes through Osysharp.Mail.
+  use Osysharp.Identity@0;
+  use Osysharp.Accounts@1;
+  use Osysharp.Mail@0;
   use Osysharp.Payments.Stripe@0 { egress "api.stripe.com"; }
   use Osysharp.Payments.Klarna@0 { egress "api.klarna.com"; egress "api.playground.klarna.com"; }
   use Osysharp.Resend@0 { egress "api.resend.com"; }
@@ -81,20 +85,19 @@ app MyShop {
 }
 ```
 
-Then three pieces of wiring, which are the app's to state because a package does not open routes or choose a login
-page for you:
+Then the wiring, which is the app's to state because a setting, a role grant's readers and the payment providers'
+routes are the app's:
 
 ```osy
+using Osysharp.Identity;
+using Osysharp.Accounts;
 using Osysharp.Shop;
 
-app.Auth = new PasswordAuth { LoginField = Email, PasswordField = PasswordHash };
-app.AuthBootstrap = new AuthBootstrap {
-  Role = ShopRole.Authenticator, LoginPage = AccountSignIn,          // AccountSignIn is YOUR page, around ShopSignIn()
-  Login = ShopLogin, Signup = ShopSignup,
-  PasswordResetRequest = ShopRequestPasswordReset, PasswordReset = ShopResetPassword,
-  PasswordChange = ShopChangePassword, EmailChange = ShopChangeEmail,
-  EmailVerify = ShopConfirmEmail, EmailVerifyCode = ShopConfirmEmailCode,
-};
+// Every sign-up makes a ShopAccount with the Customer role, and the account's mail is the shop's. Osysharp.Accounts
+// wires the sign-in itself.
+app.Accounts = ShopAccounts("My Shop");
+// Staff see who holds which role — the desk's packers and counter staff.
+partial entity RoleGrant { security { allow read when IsShopStaff; } }
 
 app.Apis = [
   new RestApi("Stripe") { Route = "stripe", Auth = new ApiAuth { Anonymous = true },
@@ -115,16 +118,33 @@ osy secret set ResendApiKey          # and "Mail from" in the desk's settings
 osy user add you@yourshop.se --role Staff
 ```
 
-**Proving an address before the first sign-in** is one setting — `app.Shop = new ShopSetup { …, RequireConfirmedEmail = true };`
-— and a page for the link the mail carries: `[Route("/account/confirm/{token}")] [AllowAnonymous] component Confirm(string
-token) { render { ShopConfirmAddress(token); } }`. Sign-up and sign-in then ask for the six-digit code the mail carries
-(`ShopSignUp` and `ShopSignIn` show the step themselves), a new address and a taken one are answered alike (the mail
-says which), and the FIRST proof of an address takes the account's password — or a new one, which signs every other
-session out — so somebody who signed up first with another person's address loses it to its owner. It asks every
-account that has not proven its address, those made before it was turned on too: each is sent a code at its next
-sign-in. `EmailVerify`/`EmailVerifyCode` in the wiring above are what make the code and the link reachable before
-sign-in; with them wired the platform's own password paths (`osyrin login`, `--as`) ask the shop too, and refuse an
-account that has not proven its address.
+**The account pages are at Osysharp.Accounts' addresses** — `/login`, `/sign-up`, `/forgot-password`,
+`/reset-password/{token}`, `/verify-email/{token}` and `/account` — which its mail links to and where the platform sends
+a visitor who must sign in. That kit serves a plain page at each; a store takes one over in its own frame by declaring a
+component of the same name around the shop's screen:
+
+```osy
+[Route("/login")] [Layout(Shop)] [AllowAnonymous] component SignInPage() { render { ShopSignIn(); } }
+[Route("/sign-up")] [Layout(Shop)] [AllowAnonymous] component SignUpPage() { render { ShopSignUp(); } }
+[Route("/forgot-password")] [Layout(Shop)] [AllowAnonymous] component ForgotPasswordPage() { render { ShopForgotPassword(); } }
+[Route("/reset-password/{token}")] [Layout(Shop)] [AllowAnonymous]
+component ResetPasswordPage(string token) { render { ShopChooseNewPassword(token); } }
+[Route("/verify-email/{token}")] [Layout(Shop)] [AllowAnonymous]
+component VerifyEmailPage(string token) { render { ShopConfirmAddress(token); } }
+[Route("/account")] [Layout(Shop)] component AccountPage() { render { ShopAccountPanel(); } }
+```
+
+**Proving an address before the first sign-in** is one argument — `app.Accounts = ShopAccounts("My Shop",
+requireVerifiedEmail: true);`. Sign-up and sign-in then ask for the six-digit code the mail carries (`ShopSignUp` and
+`ShopSignIn` show the step themselves), a new address and a taken one are answered alike (the mail says which), and the
+FIRST proof of an address takes the account's password — or a new one, which signs every other session out — so
+somebody who signed up first with another person's address loses it to its owner. It asks every account that has not
+proven its address, those made before it was turned on too: each is sent a code at its next sign-in.
+
+**Staff are accounts too.** `osy user add you@yourshop.se --role Staff` makes one (an Osysharp.Accounts `User`, which
+has no bag or orders of its own); a customer who signs up and is then given `Staff` is both. The staff sign-in page
+(`/staff`) is Osysharp.Accounts' own form, so an app that requires two-step sign-in of its staff
+(`SecondFactor = …` in an `AccountsSetup` of its own) has it there too.
 
 To show prices in a visitor's own currency, list a rate provider and the currencies (the ECB's host is granted on its
 own `use`, so a shop that shows one currency grants nothing):
@@ -137,8 +157,7 @@ app.Shop = new ShopSetup { …, ExchangeRates = new EcbRates(), DisplayCurrencie
 Then press "Show prices in other currencies" on the desk's settings (or call `StartExchangeRates()` as staff). A store
 reads `VisitCurrency.Include(v => v.Rate).SingleOrDefault(v => v.VisitId == Visitor.Id)` once per page and hands it
 to its own price function; the Grounds & Grapes demo store shows the picker, the estimates and the checkout's total in
-kronor. Whether a visitor's country or browser language should choose the default is not decided — until then it is
-the shop's own currency.
+kronor. A visitor starts in the shop's own currency and chooses another from the picker.
 
 To SELL in a currency rather than show it, press "Sell in EUR" beside its rate (`SellInCurrency("EUR", true)`), then
 "Prices and delivery…" for its rounding rule, its free-delivery threshold and each delivery option's own price. A
@@ -371,7 +390,7 @@ Z report are a cash register's job.
   }
   ```
   Your own staff pages stand in the same frame (`[Layout(WorkspaceFrame)] [Nav("Orders", Order = 15)]`). To change one
-  of the kit's, write a component of its name (`ShopDeskPage`); to leave one out, `use Osysharp.Shop@0 { without
+  of the kit's, write a component of its name (`ShopDeskPage`); to leave one out, `use Osysharp.Shop@1 { without
   ShopCounterPage; }`. Their headings are `PageTitle`, which your own `PageTitle` dresses.
 - **Your look.** The components read your theme's tokens (`Bg`, `Surface`, `Primary`, `TextMuted`, your fonts). Change
   the theme and the account pages, the search and the desk change with it.

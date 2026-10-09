@@ -1,4 +1,4 @@
-// The shop's mail as a customer receives it (D-EMAILTEMPLATES1): a designed HTML mail in the store's theme and a
+// The shop's mail as a customer receives it: a designed HTML mail in the store's theme and a
 // plain-text twin saying the same thing, filled from the order — and a store's own template, where it has one.
 
 using Osysharp.Shop;
@@ -22,8 +22,8 @@ void the_order_confirmation_is_a_designed_mail_with_a_text_twin() {
       Assert.Contains(words, mail.Text);
     }
     Assert.Contains($"order {reference} is reserved", mail.Text);
-    // The reference never breaks across two lines — on a phone "KT-1041" wrapped as "KT-" / "1041" (measured in Gmail
-    // on an iPhone) — and it is still the same characters, so it copies and searches as itself.
+    // The reference never breaks across two lines — a phone's mail app would otherwise wrap "KT-1041" as "KT-" / "1041"
+    // — and it is still the same characters, so it copies and searches as itself.
     Assert.Contains($"order <span style=\"white-space:nowrap;\">{reference}</span> is reserved", html);
     // Greeted by the first name the customer gave.
     Assert.Contains("Thank you, Maja<", html);
@@ -125,7 +125,7 @@ Guid WordsOf(Guid draft) {
   return DraftOf(draft, "en").Blocks.First(b => b.Block == "Osysharp.EmailTemplates.EmailWords").Id;
 }
 
-/// ⭐ STAFF OWN THE WORDS, CODE OWNS THE LAYOUT (D-BLOCKS1 slice 3). The confirmation's words are the words block of its
+/// ⭐ STAFF OWN THE WORDS, CODE OWNS THE LAYOUT. The confirmation's words are the words block of its
 /// region: staff write them in a DRAFT nobody is mailed and PUBLISH it; a placeholder the mail does not fill is refused
 /// at that save, by name. The next customer gets the new words, and nothing was deployed. Back to the code's own puts
 /// the template's words back.
@@ -174,7 +174,7 @@ void staff_place_a_quote_beside_the_order_and_cannot_take_the_order_out() {
   }
 }
 
-/// ⭐ STAFF'S WORDS ARE KEPT PER LANGUAGE (D-I18N1). A mail is in the language its customer shopped in, and it says the
+/// ⭐ STAFF'S WORDS ARE KEPT PER LANGUAGE. A mail is in the language its customer shopped in, and it says the
 /// words staff published in THAT language — a Swedish order the Swedish words, an English order the English — and a
 /// language staff wrote nothing in says the template's own words, translated: never the other language's.
 [Test(Floor)]

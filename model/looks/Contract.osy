@@ -1,4 +1,4 @@
-// Osysharp.Shop.Looks — the SHOP's contract for looks (D-SITEFRAME1 part 2), on top of the general site contract
+// Osysharp.Shop.Looks — the SHOP's contract for looks, on top of the general site contract
 // (`Osysharp.Site.Looks`): the block types only a shop has — a row of its products, its shelves as tiles — and the PARTS
 // of a store a look draws: its frame around every page, its front page, a page's content column, a listing, a grid of
 // pieces, a piece's own page, and a "not here". The shape only; a LOOK kit draws each in its own design

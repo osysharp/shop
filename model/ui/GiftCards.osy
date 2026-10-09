@@ -275,7 +275,7 @@ public component DeskGiftCards(Action onStoreCredit) {
     if (issuing) {
       Dialog("Issue a gift card", onDismiss: CloseIssue, subtitle: "Mailed at once, with its code. The reason stays with the card.") {
         Stack(gap: 3) {
-          // A free card's goods still carry their VAT when it is spent (D-GIFTCARD-FREECARDS1) — for a sorry or a thank
+          // A free card's goods still carry their VAT when it is spent — for a sorry or a thank
           // you, money off or credit on their account is usually the simpler gift.
           Stack(gap: 2, p: 3, borderW: 1, border: Colors.Border, label: "Usually simpler") {
             Text("For goodwill — a sorry, a thank-you — a discount code or store credit is usually simpler. A gift card given away is still a multi-purpose voucher: what it pays for carries its VAT when it is spent.",

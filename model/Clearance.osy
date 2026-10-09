@@ -6,7 +6,7 @@
 //   to each of them — and the one that was missed would charge the regular price. What the markdown keeps is the
 //   REGULAR price, so ending it is exact.
 //
-// ⭐ A SALE IS DATED CONTENT (D-BLOCKS1): it may be SCHEDULED — from one date until another — and whether it is on at a
+// ⭐ A SALE IS DATED CONTENT: it may be SCHEDULED — from one date until another — and whether it is on at a
 //   date is the platform's one rule for dated content, `ShowsAt` (Osysharp.Blocks), the same one a dated block and a
 //   version of the site obey. So a member of staff previewing the site as of a date (`SiteDate()`) sees the sales that
 //   will be on then — the prices, the struck-through ones, the sale shelf — and a customer never sees a sale before it

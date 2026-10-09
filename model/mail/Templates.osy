@@ -1,4 +1,4 @@
-// The shop's mail, as templates filled from the order (D-EMAILTEMPLATES1). Each is an `[Email]` component: calling it
+// The shop's mail, as templates filled from the order. Each is an `[Email]` component: calling it
 // renders the mail — HTML in the store's own theme and its plain-text twin — and `Mail(to, …)` puts it in the outbox.
 //
 // ⚑ OVERRIDABLE, NOT FORKED. The shop never calls these by name: it asks `App.Setting<ShopSetup>().Mails` (ShopMails, in Mail.osy), whose
@@ -8,7 +8,7 @@
 // ⚑ THE WORDS A CUSTOMER'S RIGHTS DEPEND ON ARE HERE, not in a store's override by accident: the confirmation carries
 //   the right of withdrawal and its model form, which an EU distance sale must hand the customer (legal.test.osy).
 //
-// ⭐ STAFF ARRANGE WHAT THE MAIL SAYS AROUND THE ORDER (D-BLOCKS1 slice 3). The confirmation, on its way / collected and
+// ⭐ STAFF ARRANGE WHAT THE MAIL SAYS AROUND THE ORDER. The confirmation, on its way / collected and
 //    refunded each hold a REGION — the words the shop greets with, and whatever staff place beside them (a picture, a
 //    quote, a button) — arranged at the page desk like a page, per language, drafted and published, in the site's
 //    versions (a Christmas confirmation goes out with the Christmas site). The code writes the default; the layout,
@@ -358,7 +358,7 @@ public component ShopNotice(string subject, string heading, string text, string?
 /// A link to choose a new password — the one way back into an account whose password is lost. In the account's
 /// language: the person asking may be on a borrowed computer, reading the shop in another.
 [Email]
-public component ShopPasswordResetMail(ShopAccount account, string token, string link) {
+public component ShopPasswordResetMail(ShopAccount account, string link) {
   language => account.Language;
   subject => $"Reset your password at {TheShop().Name}";
   render {
@@ -366,31 +366,29 @@ public component ShopPasswordResetMail(ShopAccount account, string token, string
     ShopMailLayout("Reset your password") {
       EmailHeading("Reset your password");
       EmailText($"Somebody — hopefully you — asked to reset the password for your {shop.Name} account.");
-      if (link == "") { EmailText($"Your reset code: {token}"); }
-      else {
-        EmailText($"Choose a new password here: {link}");
-        EmailButton("Choose a new password", link);
-      }
+      EmailText($"Choose a new password here: {link}");
+      EmailButton("Choose a new password", link);
       EmailNote("The link works once, for an hour. If you did not ask, ignore this mail and nothing changes.");
     }
   }
 }
 
-/// What proves the account's address (`ShopSetup.RequireConfirmedEmail`) — a six-digit code AND a link, either one
-/// enough. In the account's language, as a reset is.
+/// What proves an address — a six-digit code AND a link, either one enough: the account's own (a new account, or one the
+/// shop asks to prove it), or the new address it asked to move to (`isChange`). In the account's language, as a reset is.
 [Email]
-public component ShopConfirmAddressMail(ShopAccount account, string code, string link) {
+public component ShopConfirmAddressMail(ShopAccount account, string address, string code, string link, bool isChange) {
   language => account.Language;
-  subject => $"Confirm your address at {TheShop().Name}";
+  subject => isChange ? $"Confirm your new address at {TheShop().Name}" : $"Confirm your address at {TheShop().Name}";
   render {
     var shop = TheShop();
     ShopMailLayout($"Your code is {code}") {
-      EmailHeading("Confirm your address");
-      EmailText($"Confirm that {account.Email} is yours, and your {shop.Name} account is ready.");
+      EmailHeading(isChange ? "Confirm your new address" : "Confirm your address");
+      if (isChange) { EmailText($"Confirm that {address} is yours, and your {shop.Name} account moves to it."); }
+      else { EmailText($"Confirm that {address} is yours, and your {shop.Name} account is ready."); }
       EmailText($"Type this code where you were asked for it: {code}");
       EmailText($"Or open this link: {link}");
-      EmailButton("Confirm my address", link);
-      EmailNote("The code works for fifteen minutes, the link for three days. If you did not open an account, ignore this mail — nothing happens.");
+      EmailButton(isChange ? "Confirm my new address" : "Confirm my address", link);
+      EmailNote("The code works for fifteen minutes, the link for three days. If you did not ask for this, ignore this mail — nothing happens.");
     }
   }
 }
@@ -398,8 +396,8 @@ public component ShopConfirmAddressMail(ShopAccount account, string code, string
 /// Somebody tried to open an account with an address that has one — sent to that address instead of a second account.
 /// The sign-up page says only that a message is on its way, so a stranger learns nothing; the owner learns here.
 [Email]
-public component ShopAccountExistsMail(ShopAccount account, string signIn, string reset) {
-  language => account.Language;
+public component ShopAccountExistsMail(string address, string signIn, string reset) {
+  language => ShopLanguageOf(address);
   subject => $"You already have an account at {TheShop().Name}";
   render {
     var shop = TheShop();
@@ -414,17 +412,22 @@ public component ShopAccountExistsMail(ShopAccount account, string signIn, strin
   }
 }
 
-/// The account now signs in with another address — told to BOTH: the old one is how the owner finds out if it was
-/// not them, the new one says it arrived.
+/// The account asked to sign in with another address — told to the OLD one, which is how the owner finds out if it was
+/// not them (`toTheOldAddress`); nothing moves until the new address confirms it. With `toTheOldAddress` false: the new
+/// address, once the account moved there.
 [Email]
 public component ShopAddressChangedMail(ShopAccount account, string address, bool toTheOldAddress) {
   language => account.Language;
-  subject => toTheOldAddress ? $"Your {TheShop().Name} account's address changed" : $"Welcome to your {TheShop().Name} account at this address";
+  subject => toTheOldAddress ? $"Your {TheShop().Name} account's address is changing" : $"Welcome to your {TheShop().Name} account at this address";
   render {
-    ShopMailLayout(toTheOldAddress ? "Your account's address changed" : "Welcome to this address") {
-      EmailHeading(toTheOldAddress ? "Your account's address changed" : "Welcome to this address");
-      EmailText($"Your account now signs in as {address}.");
-      if (toTheOldAddress) { EmailText("If you did not do this, reply to this mail straight away."); }
+    ShopMailLayout(toTheOldAddress ? "Your account's address is changing" : "Welcome to this address") {
+      EmailHeading(toTheOldAddress ? "Your account's address is changing" : "Welcome to this address");
+      if (toTheOldAddress) {
+        EmailText($"Your account asked to sign in as {address} from now on. It moves once that address confirms it.");
+        EmailText("If you did not do this, reply to this mail straight away.");
+      } else {
+        EmailText($"Your account now signs in as {address}.");
+      }
     }
   }
 }
@@ -438,7 +441,7 @@ public component ShopStoreCreditMail(ShopAccount account, decimal amount, string
     var shop = TheShop();
     ShopMailLayout($"{Money(amount, shop)} store credit") {
       EmailHeading($"{Money(amount, shop)} store credit from {shop.Name}");
-      EmailText(account.Name == null ? "Hello," : $"Hello {FirstName(account.Name!)},");
+      EmailText(account.DisplayName.Trim() == "" ? "Hello," : $"Hello {FirstName(account.DisplayName)},");
       EmailText($"We have added {Money(amount, shop)} to your store credit: {reason}");
       EmailText("It comes off your next order when you choose to pay with it at the checkout.");
       EmailButton("Your store credit", ShopLink(App.Setting<ShopSetup>().AccountPath));

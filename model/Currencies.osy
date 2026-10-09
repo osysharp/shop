@@ -1,4 +1,4 @@
-// Prices in the visitor's own currency — per currency, SHOWN or SOLD (D-SELLCURRENCY1).
+// Prices in the visitor's own currency — per currency, SHOWN or SOLD.
 //
 // SHOWN (every offered currency, until the desk says otherwise) is a DISPLAY: the order, its invoice, its VAT and its
 // payment stay in the shop's own currency (`ShopSettings.Currency`), and a price says "≈ €15.20", and wherever money
@@ -190,7 +190,7 @@ public workflow ExchangeRateRefresh {
   // ⚑ THE FIRST FETCH IS ON A CLOCK DUE AT ONCE, NOT IN `enter`. The watch row is written by somebody's commit (the
   //   desk's "Show other currencies", the app's data), and an autostarted run's `enter` is part of that commit: it
   //   would wait on the provider — the ECB, over the network — and past five seconds the commit stops waiting
-  //   (`workflow-first-step-waits-on-a-slow-call`, D-AUTOSTART1). The reminder that already polls every six hours
+  //   (`workflow-first-step-waits-on-a-slow-call`). The reminder that already polls every six hours
   //   simply starts at zero: the same clock, due as the run parks, fired after the commit.
   state Watching {
     subscribe Stop() as StopAsking {
@@ -565,7 +565,7 @@ public void SellInCurrency(string currency, bool sold) {
 
 /// The shop no longer sells in `rate`'s currency — ONLY an explicit stop: "Only show it", stopping the rates, or the
 /// app no longer offering it. A rate that has merely gone stale stops nothing here: it sells nothing while stale, and
-/// what waits on it (a renewal) waits for a fresh one (D-SELLCURRENCY1). Each add-on is told while the rate still
+/// what waits on it (a renewal) waits for a fresh one. Each add-on is told while the rate still
 /// stands, so what it converts is converted at that day's rate.
 void StopSelling(ExchangeRate rate) {
   foreach (var addOn in ShopAddOns()) { addOn.CurrencyNoLongerSold(rate); }

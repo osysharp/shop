@@ -10,6 +10,62 @@ translations sv {
   /// also in SettleReturn
   error "That return has nothing in it." => "Den returen är tom.";
 
+  // ── AccountExistsMail ──
+  /// AccountExistsMail · a button's label · at most ~13 characters
+  /// shown through EmailButton.label
+  /// beside: "You already have an account", "If this was not you, ignore this mail — your account has not changed."
+  /// also in SignInForm
+  /// also in ShopAccountExistsMail
+  /// also in ShopSignIn
+  button "Sign in" => "Logga in";
+  /// AccountExistsMail · text on the page
+  /// shown through EmailHeading.text
+  /// beside: "Sign in", "If this was not you, ignore this mail — your account has not changed."
+  /// also in ShopAccountExistsMail
+  text "You already have an account" => "Du har redan ett konto";
+
+  // ── AccountPage (/account) ──
+  /// AccountPage · /account · a title
+  /// shown through [Title]
+  /// also in ShopAccountPanel
+  title "Your account" => "Ditt konto";
+
+  // ── AccountResetMail ──
+  /// AccountResetMail · a button's label · at most ~30 characters
+  /// shown through EmailButton.label
+  /// beside: "The link works once, for an hour. If you did not ask, ignore this mail: your password has not changed."
+  /// also in ShopPasswordResetMail
+  button "Choose a new password" => "Välj ett nytt lösenord";
+
+  // ── AccountVerifyMail ──
+  /// AccountVerifyMail · a button's label · at most ~26 characters
+  /// shown through EmailButton.label
+  /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask, ignore this mail — nothing changes."
+  /// also in ShopConfirmAddressMail
+  button "Confirm my address" => "Bekräfta min adress";
+  /// AccountVerifyMail · a button's label · at most ~31 characters
+  /// shown through EmailButton.label
+  /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask, ignore this mail — nothing changes."
+  /// also in ShopConfirmAddressMail
+  button "Confirm my new address" => "Bekräfta min nya adress";
+  /// AccountVerifyMail · text on the page
+  /// shown through EmailHeading.text
+  /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask, ignore this mail — nothing changes."
+  /// also in ShopConfirmAddressMail
+  text "Confirm your address" => "Bekräfta din adress";
+  /// AccountVerifyMail · text on the page
+  /// shown through EmailHeading.text
+  /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask, ignore this mail — nothing changes."
+  /// also in ShopConfirmAddressMail
+  text "Confirm your new address" => "Bekräfta din nya adress";
+  /// AccountVerifyMail · text on the page
+  /// placeholders: {code} = code (string)
+  /// shown through EmailText.text
+  /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask, ignore this mail — nothing changes."
+  /// also in AccountStepUpMail
+  /// also in ShopConfirmAddressMail
+  text "Type this code where you were asked for it: {code}" => "Skriv den här koden där du blev ombedd: {code}";
+
   // ── AddLocation ──
   /// AddLocation · an error message
   /// shown through Exception
@@ -67,6 +123,13 @@ translations sv {
   /// AddVariant · an error message
   /// shown through Exception
   error "Stock cannot be negative." => "Lagersaldot kan inte vara negativt.";
+
+  // ── AddressCodeStep ──
+  /// AddressCodeStep · a button's label · at most ~13 characters
+  /// shown through Button.label
+  /// beside: "Code from the mail"
+  /// also in ShopAddressCodeStep
+  button "Confirm" => "Bekräfta";
 
   // ── AdjustGiftCard ──
   /// AdjustGiftCard · an error message
@@ -377,6 +440,13 @@ translations sv {
   /// shown through Exception
   error "That point is not among those near the address you gave — choose one from the list." => "Det stället finns inte bland dem nära adressen du angav. Välj ett i listan.";
 
+  // ── ConfirmPasswordStep ──
+  /// ConfirmPasswordStep · a button's label · at most ~27 characters
+  /// shown through Button.label
+  /// beside: "Your password", "I did not make this account, or forgot its password"
+  /// also in ShopConfirmAddress
+  button "Confirm and sign in" => "Bekräfta och logga in";
+
   // ── CounterCode ──
   /// CounterCode · an error message
   /// shown through Exception
@@ -438,6 +508,12 @@ translations sv {
   /// shown through CreditNote()
   note "Order {order}" => "Order {order}";
 
+  // ── CreditNoteCode ──
+  /// CreditNoteCode · a title
+  /// placeholders: {OrderPrefix} = ….OrderPrefix (string), {note.Number} = note.Number (int) — {note.Number} is a count: give one text per plural form
+  /// shown through CreditNoteCode()
+  title "{OrderPrefix}CN-{note.Number}" => { one: "{OrderPrefix}CN-{note.Number}", other: "{OrderPrefix}CN-{note.Number}" };
+
   // ── CreditNoteLink ──
   /// CreditNoteLink · an error message
   /// shown through Exception
@@ -453,9 +529,9 @@ translations sv {
   title "Credit note {CreditNoteCode} — {shop.Name}" => "Kreditnota {CreditNoteCode}, {shop.Name}";
 
   // ── CurrencyLookOf ──
-  /// CurrencyLookOf · text in an email
+  /// CurrencyLookOf · text on the page
   /// shown through CurrencyLook.Symbol
-  mailText "kr" => "kr";
+  text "kr" => "kr";
 
   // ── CustomsFor ──
   /// CustomsFor · an error message
@@ -774,6 +850,7 @@ translations sv {
   /// DeskFigures · a label (a field, a list item, a menu entry) · at most ~13 characters
   /// shown through Metric.label
   /// beside: "Orders, 30 days", "Revenue", "Average order"
+  /// also in ShopStaffSignInPage /staff
   label "Returns" => "Returer";
   /// DeskFigures · a label (a field, a list item, a menu entry) · at most ~13 characters
   /// shown through Metric.label
@@ -882,8 +959,6 @@ translations sv {
   /// DeskGiftCards · a control's name for screen readers
   accessibleName "Change it" => "Ändra det";
   /// DeskGiftCards · a control's name for screen readers
-  accessibleName "Discount codes" => "Rabattkoder";
-  /// DeskGiftCards · a control's name for screen readers
   accessibleName "Ledger" => "Huvudbok";
   /// DeskGiftCards · a control's name for screen readers
   accessibleName "Reissue it" => "Återutfärda det";
@@ -983,8 +1058,6 @@ translations sv {
   /// DeskGiftCards · text on the page
   /// beside: "Give store credit instead"
   text "For goodwill — a sorry, a thank-you — a discount code or store credit is usually simpler. A gift card given away is still a multi-purpose voucher: what it pays for carries its VAT when it is spent." => "Som gest, ett förlåt eller ett tack, är en rabattkod eller ett tillgodohavande oftast enklare. Ett presentkort som ges bort är ändå en flerfunktionsvoucher: det som köps med det har sin moms när kortet används.";
-  /// DeskGiftCards · text on the page
-  text "Make a discount code" => "Gör en rabattkod";
   /// DeskGiftCards · text on the page
   text "No gift cards yet." => "Inga presentkort än.";
   /// DeskGiftCards · text on the page
@@ -2417,6 +2490,14 @@ translations sv {
   /// also in ShopOrderByLink
   accessibleName "Progress" => "Förlopp";
 
+  // ── ForgotPasswordForm ──
+  /// ForgotPasswordForm · a link · at most ~21 characters
+  /// shown through TextLink.label
+  /// also in ProviderSignIn
+  /// also in ShopAddressCodeStep
+  /// also in ShopForgotPassword
+  link "Back to sign in" => "Tillbaka till inloggning";
+
   // ── FulfilmentFor ──
   /// FulfilmentFor · text on the page
   /// shown through FulfilFrom.Problem
@@ -2622,14 +2703,6 @@ translations sv {
   /// beside: "Confirm my subscription", "The link works for seven days. If you did not ask, ignore this mail — you will not hear from us again."
   /// also in ShopListConfirmation
   text "Please confirm your address" => "Bekräfta din adress";
-
-  // ── ListSignupForm ──
-  /// ListSignupForm · a label (a field, a list item, a menu entry) · at most ~11 characters
-  /// shown through Field.label
-  /// also in ShopSignIn
-  /// also in ShopSignUp
-  /// also in ShopForgotPassword
-  label "Email" => "E-post";
 
   // ── LocationDoes ──
   /// LocationDoes · text on the page
@@ -2938,14 +3011,27 @@ translations sv {
   /// shown through TimelineEntry.Detail
   text "{OrderMoney} to store credit" => "{OrderMoney} till tillgodohavande";
 
+  // ── Osysharp.ActionOutcome ──
+  /// Osysharp.ActionOutcome · a label (a field, a list item, a menu entry) · at most ~10 characters
+  /// shown through Osysharp.ActionOutcome.Done
+  /// beside: "Refused", "Not allowed", "Gone", "Failed"
+  /// also in Osysharp.Shop.GiftCardChangeStatus
+  /// also in Osysharp.Shop.TallyRecountStatus
+  label "Done" => "Klar";
+  /// Osysharp.ActionOutcome · a label (a field, a list item, a menu entry) · at most ~12 characters
+  /// shown through Osysharp.ActionOutcome.Failed
+  /// beside: "Done", "Refused", "Not allowed", "Gone"
+  /// also in Osysharp.EventProblemKind
+  /// also in Osysharp.Payments.PaymentState
+  /// also in Osysharp.Payments.RefundState
+  label "Failed" => "Misslyckades";
+  /// Osysharp.ActionOutcome · a label (a field, a list item, a menu entry) · at most ~13 characters
+  /// shown through Osysharp.ActionOutcome.Invalid
+  /// beside: "Done", "Not allowed", "Gone", "Failed"
+  /// also in Osysharp.Shop.CounterReturnStatus
+  label "Refused" => "Nekad";
+
   // ── Osysharp.Delivery.DeliveryState ──
-  /// Osysharp.Delivery.DeliveryState · a label (a field, a list item, a menu entry) · at most ~15 characters
-  /// shown through Osysharp.Delivery.DeliveryState.Delivered
-  /// beside: "Booked", "On its way", "Ready to collect", "Problem", "Returned"
-  /// also in Osysharp.Shop.OrderStatus
-  /// also in OrderProgress
-  /// also in OrderStageTabs
-  label "Delivered" => "Levererad";
   /// Osysharp.Delivery.DeliveryState · a label (a field, a list item, a menu entry) · at most ~16 characters
   /// shown through Osysharp.Delivery.DeliveryState.InTransit
   /// beside: "Booked", "Ready to collect", "Delivered", "Problem", "Returned"
@@ -2958,6 +3044,15 @@ translations sv {
   /// also in Osysharp.Shop.StockReason
   /// also in Osysharp.Shop.GiveBackCause
   label "Returned" => "Returnerad";
+
+  // ── Osysharp.Mail.MailStatus ──
+  /// Osysharp.Mail.MailStatus · a label (a field, a list item, a menu entry) · at most ~10 characters
+  /// shown through Osysharp.Mail.MailStatus.Sent
+  /// beside: "Waiting", "Not sent — no mail sender"
+  /// also in Osysharp.Sms.SmsStatus
+  /// also in Osysharp.Shop.MailStatus
+  /// also in Osysharp.Shop.OrderStatus
+  label "Sent" => "Skickad";
 
   // ── Osysharp.MailingLists.SubscriberState ──
   /// Osysharp.MailingLists.SubscriberState · a label (a field, a list item, a menu entry) · at most ~12 characters
@@ -2983,11 +3078,39 @@ translations sv {
   /// also in Osysharp.Shop.OrderStatus
   label "Refunded" => "Återbetald";
 
+  // ── Osysharp.RaisedEventState ──
+  /// Osysharp.RaisedEventState · a label (a field, a list item, a menu entry) · at most ~15 characters
+  /// shown through Osysharp.RaisedEventState.Delivered
+  /// beside: "Waiting"
+  /// also in Osysharp.Delivery.DeliveryState
+  /// also in Osysharp.Shop.OrderStatus
+  /// also in OrderProgress
+  label "Delivered" => "Levererad";
+  /// Osysharp.RaisedEventState · a label (a field, a list item, a menu entry) · at most ~13 characters
+  /// shown through Osysharp.RaisedEventState.Queued
+  /// beside: "Delivered"
+  /// also in Osysharp.Mail.MailStatus
+  /// also in Osysharp.Sms.SmsStatus
+  /// also in Osysharp.Shop.AgeCheckStatus
+  label "Waiting" => "Väntar";
+
+  // ── Osysharp.Shop.AgeCheckStatus ──
+  /// Osysharp.Shop.AgeCheckStatus · a label (a field, a list item, a menu entry) · at most ~14 characters
+  /// shown through Osysharp.Shop.AgeCheckStatus.Verified
+  /// beside: "Waiting", "Failed"
+  label "Verified" => "Verifierad";
+
   // ── Osysharp.Shop.AgeVerifier.Start ──
   /// Osysharp.Shop.AgeVerifier.Start · an error message
   /// placeholders: {Label} = Label (string)
   /// shown through Exception
   error "{Label} cannot start a check." => "{Label} kan inte starta en kontroll.";
+
+  // ── Osysharp.Shop.BagReminderState ──
+  /// Osysharp.Shop.BagReminderState · a label (a field, a list item, a menu entry) · at most ~13 characters
+  /// shown through Osysharp.Shop.BagReminderState.Skipped
+  /// beside: "Waiting", "Sent"
+  label "Skipped" => "Hoppades över";
 
   // ── Osysharp.Shop.CounterCustomerStatus ──
   /// Osysharp.Shop.CounterCustomerStatus · a label (a field, a list item, a menu entry) · at most ~11 characters
@@ -3009,10 +3132,6 @@ translations sv {
   label "Code sent" => "Kod skickad";
 
   // ── Osysharp.Shop.CounterReturnStatus ──
-  /// Osysharp.Shop.CounterReturnStatus · a label (a field, a list item, a menu entry) · at most ~13 characters
-  /// shown through Osysharp.Shop.CounterReturnStatus.Refused
-  /// beside: "Asked", "Settled"
-  label "Refused" => "Nekad";
   /// Osysharp.Shop.CounterReturnStatus · a label (a field, a list item, a menu entry) · at most ~13 characters
   /// shown through Osysharp.Shop.CounterReturnStatus.Settled
   /// beside: "Asked", "Refused"
@@ -3063,12 +3182,6 @@ translations sv {
   /// shown through Osysharp.Shop.GiftCardChangeKind.SendNow
   /// beside: "Issued", "Adjusted", "Voided", "New code", "Reissued"
   label "Sent now" => "Skickat nu";
-
-  // ── Osysharp.Shop.GiftCardChangeStatus ──
-  /// Osysharp.Shop.GiftCardChangeStatus · a label (a field, a list item, a menu entry) · at most ~10 characters
-  /// shown through Osysharp.Shop.GiftCardChangeStatus.Done
-  /// beside: "Asked"
-  label "Done" => "Klar";
 
   // ── Osysharp.Shop.GiftCardCheckStatus ──
   /// Osysharp.Shop.GiftCardCheckStatus · a label (a field, a list item, a menu entry) · at most ~14 characters
@@ -3165,17 +3278,6 @@ translations sv {
   /// shown through Osysharp.Shop.MailStatus.Held
   /// beside: "Waiting", "Sent"
   label "Not sent — no mail provider" => "Inte skickat, ingen e-posttjänst";
-  /// Osysharp.Shop.MailStatus · a label (a field, a list item, a menu entry) · at most ~10 characters
-  /// shown through Osysharp.Shop.MailStatus.Sent
-  /// beside: "Waiting", "Not sent — no mail provider"
-  /// also in Osysharp.Shop.OrderStatus
-  /// also in OrderProgress
-  /// also in OrderStageTabs
-  label "Sent" => "Skickad";
-  /// Osysharp.Shop.MailStatus · a label (a field, a list item, a menu entry) · at most ~13 characters
-  /// shown through Osysharp.Shop.MailStatus.Queued
-  /// beside: "Sent", "Not sent — no mail provider"
-  label "Waiting" => "Väntar";
 
   // ── Osysharp.Shop.OrderEventKind ──
   /// Osysharp.Shop.OrderEventKind · a label (a field, a list item, a menu entry) · at most ~21 characters
@@ -3283,11 +3385,18 @@ translations sv {
   /// Osysharp.Shop.ProductStatus · a label (a field, a list item, a menu entry) · at most ~11 characters
   /// shown through Osysharp.Shop.ProductStatus.Draft
   /// beside: "Listed", "Archived"
+  /// also in Osysharp.Shop.ShopCampaignState
   label "Draft" => "Utkast";
   /// Osysharp.Shop.ProductStatus · a label (a field, a list item, a menu entry) · at most ~12 characters
   /// shown through Osysharp.Shop.ProductStatus.Listed
   /// beside: "Draft", "Archived"
   label "Listed" => "Publicerad";
+
+  // ── Osysharp.Shop.RateWatchStatus ──
+  /// Osysharp.Shop.RateWatchStatus · a label (a field, a list item, a menu entry) · at most ~14 characters
+  /// shown through Osysharp.Shop.RateWatchStatus.Watching
+  /// beside: "Stopped"
+  label "Watching" => "Bevakas";
 
   // ── Osysharp.Shop.ReturnStatus ──
   /// Osysharp.Shop.ReturnStatus · a label (a field, a list item, a menu entry) · at most ~14 characters
@@ -3317,6 +3426,29 @@ translations sv {
   /// shown through Osysharp.Shop.SaleState.Scheduled
   /// beside: "On sale", "Ended"
   label "Scheduled" => "Planerad";
+
+  // ── Osysharp.Shop.ShopRole ──
+  /// Osysharp.Shop.ShopRole · a label (a field, a list item, a menu entry) · at most ~19 characters
+  /// shown through Osysharp.Shop.ShopRole.Authenticator
+  /// beside: "Staff", "Customer", "Packer", "Counter"
+  label "Authenticator" => "Inloggningen";
+  /// Osysharp.Shop.ShopRole · a label (a field, a list item, a menu entry) · at most ~13 characters
+  /// shown through Osysharp.Shop.ShopRole.Counter
+  /// beside: "Staff", "Authenticator", "Customer", "Packer"
+  /// also in ShopStaffSignInPage /staff
+  label "Counter" => "Kassa";
+  /// Osysharp.Shop.ShopRole · a label (a field, a list item, a menu entry) · at most ~14 characters
+  /// shown through Osysharp.Shop.ShopRole.Customer
+  /// beside: "Staff", "Authenticator", "Packer", "Counter"
+  label "Customer" => "Kund";
+  /// Osysharp.Shop.ShopRole · a label (a field, a list item, a menu entry) · at most ~12 characters
+  /// shown through Osysharp.Shop.ShopRole.Packer
+  /// beside: "Staff", "Authenticator", "Customer", "Counter"
+  label "Packer" => "Packare";
+  /// Osysharp.Shop.ShopRole · a label (a field, a list item, a menu entry) · at most ~11 characters
+  /// shown through Osysharp.Shop.ShopRole.Staff
+  /// beside: "Authenticator", "Customer", "Packer", "Counter"
+  label "Staff" => "Personal";
 
   // ── Osysharp.Shop.ShopSetup ──
   /// Osysharp.Shop.ShopSetup · a description
@@ -3702,6 +3834,45 @@ translations sv {
   /// shown through Exception
   error "That card is {card.Status.Label} . Only an active card gets a new code." => "Det kortet är {card.Status.Label}. Bara ett aktivt kort får en ny kod.";
 
+  // ── ResetPasswordForm ──
+  /// ResetPasswordForm · a button's label · at most ~23 characters
+  /// shown through Button.label
+  /// beside: "New password", "The same again", "Ask for a new link"
+  /// also in ConfirmPasswordStep
+  /// also in ShopChooseNewPassword
+  button "Save and sign in" => "Spara och logga in";
+  /// ResetPasswordForm · a label (a field, a list item, a menu entry) · at most ~18 characters
+  /// shown through Field.label
+  /// beside: "The same again", "Save and sign in", "Ask for a new link"
+  /// also in ConfirmPasswordStep
+  /// also in AccountSettings
+  /// also in ShopConfirmAddress
+  label "New password" => "Nytt lösenord";
+  /// ResetPasswordForm · a label (a field, a list item, a menu entry) · at most ~20 characters
+  /// shown through Field.label
+  /// beside: "New password", "Save and sign in", "Ask for a new link"
+  /// also in ConfirmPasswordStep
+  /// also in ShopChooseNewPassword
+  label "The same again" => "Samma igen";
+  /// ResetPasswordForm · a link · at most ~13 characters
+  /// shown through TextLink.label
+  /// beside: "Your password is changed. Sign in with it now — two-step sign-in comes next."
+  /// also in VerifyEmailResult
+  /// also in ShopConfirmAddress
+  /// also in ShopChooseNewPassword
+  link "Sign in" => "Logga in";
+  /// ResetPasswordForm · text on the page
+  /// shown through problem
+  /// also in ConfirmPasswordStep
+  /// also in ShopChooseNewPassword
+  text "The two passwords are not the same." => "Lösenorden är inte likadana.";
+
+  // ── ResetPasswordPage (/reset-password/{token}) ──
+  /// ResetPasswordPage · /reset-password/{token} · a title
+  /// shown through [Title]
+  /// also in ShopChooseNewPassword
+  title "Choose a new password" => "Välj ett nytt lösenord";
+
   // ── ReturnItem ──
   /// ReturnItem · an error message
   /// placeholders: {order.Reference} = order.Reference (string), {OrderCurrency} = OrderCurrency(…) (string), {Currency} = ….Currency (string)
@@ -3710,6 +3881,20 @@ translations sv {
   /// ReturnItem · an error message
   /// shown through Exception
   error "Sign in with the account that placed the order to return from it." => "Logga in med kontot som lade ordern för att returnera från den.";
+
+  // ── ReturnKindText ──
+  /// ReturnKindText · a subtitle
+  /// shown through ReturnKindText()
+  subtitle "Exchange" => "Byte";
+  /// ReturnKindText · a subtitle
+  /// shown through ReturnKindText()
+  subtitle "For store credit" => "Mot tillgodohavande";
+  /// ReturnKindText · a subtitle
+  /// shown through ReturnKindText()
+  subtitle "For the money" => "Mot pengarna";
+  /// ReturnKindText · a subtitle
+  /// shown through ReturnKindText()
+  subtitle "Not sent" => "Inte skickad";
 
   // ── ReturnLabelLine ──
   /// ReturnLabelLine · text on the page
@@ -3771,6 +3956,14 @@ translations sv {
   /// shown through ReturnOutcome()
   text "{MoneyIn} to your store credit" => "{MoneyIn} till ditt tillgodohavande";
 
+  // ── ReturnStatusText ──
+  /// ReturnStatusText · a title
+  /// shown through ReturnStatusText()
+  title "Exchanged" => "Bytt";
+  /// ReturnStatusText · a title
+  /// shown through ReturnStatusText()
+  title "Given as store credit" => "Givet som tillgodohavande";
+
   // ── ReturnWhatNext ──
   /// ReturnWhatNext · text on the page
   /// shown through ReturnWhatNext()
@@ -3796,11 +3989,6 @@ translations sv {
   /// also in DeskLocations
   /// also in DeskCampaignEditor
   button "Save" => "Spara";
-
-  // ── SaveMyDetails ──
-  /// SaveMyDetails · an error message
-  /// shown through Exception
-  error "Sign in first." => "Logga in först.";
 
   // ── SavePriceList ──
   /// SavePriceList · an error message
@@ -4039,12 +4227,6 @@ translations sv {
   button "Your account" => "Ditt konto";
 
   // ── ShopAccountExistsMail ──
-  /// ShopAccountExistsMail · a button's label · at most ~13 characters
-  /// shown through EmailButton.label
-  /// beside: "You already have an account", "If it was not you, ignore this mail — nothing changed on your account."
-  /// also in ShopSignIn
-  /// also in ShopAccountButton
-  button "Sign in" => "Logga in";
   /// ShopAccountExistsMail · the preview line an inbox shows beside an email's subject
   /// shown through ShopMailLayout.preview
   mailPreview "You already have an account" => "Du har redan ett konto";
@@ -4070,10 +4252,6 @@ translations sv {
   /// shown through EmailText.text
   /// beside: "You already have an account", "Sign in", "If it was not you, ignore this mail — nothing changed on your account."
   text "Somebody — hopefully you — tried to open a {shop.Name} account with this address. It already has one, so nothing new was made." => "Någon — förhoppningsvis du — försökte skapa ett konto hos {shop.Name} med den här adressen. Den har redan ett, så inget nytt skapades.";
-  /// ShopAccountExistsMail · text on the page
-  /// shown through EmailHeading.text
-  /// beside: "Sign in", "If it was not you, ignore this mail — nothing changed on your account."
-  text "You already have an account" => "Du har redan ett konto";
 
   // ── ShopAccountPanel ──
   /// ShopAccountPanel · a button's label · at most ~13 characters
@@ -4113,10 +4291,6 @@ translations sv {
   /// shown through Tab.label
   /// beside: "Orders", "Store credit", "Downloads", "Gift cards"
   button "Your data" => "Dina data";
-  /// ShopAccountPanel · a title
-  /// shown through PageHead.title
-  /// beside: "Sign out"
-  title "Your account" => "Ditt konto";
 
   // ── ShopAddress ──
   /// ShopAddress · a control's name for screen readers
@@ -4138,13 +4312,13 @@ translations sv {
   mailPreview "Welcome to this address" => "Välkommen till den här adressen";
   /// ShopAddressChangedMail · the preview line an inbox shows beside an email's subject
   /// shown through ShopMailLayout.preview
-  mailPreview "Your account's address changed" => "Ditt kontos adress har ändrats";
+  mailPreview "Your account's address is changing" => "Ditt kontos adress håller på att ändras";
   /// ShopAddressChangedMail · an email's subject line
   /// placeholders: {Name} = ….Name (string)
   mailSubject "Welcome to your {Name} account at this address" => "Välkommen till ditt konto hos {Name} på den här adressen";
   /// ShopAddressChangedMail · an email's subject line
   /// placeholders: {Name} = ….Name (string)
-  mailSubject "Your {Name} account's address changed" => "Adressen till ditt konto hos {Name} har ändrats";
+  mailSubject "Your {Name} account's address is changing" => "Adressen till ditt konto hos {Name} håller på att ändras";
   /// ShopAddressChangedMail · text on the page
   /// shown through EmailText.text
   text "If you did not do this, reply to this mail straight away." => "Om det inte var du som gjorde det, svara på det här mejlet direkt.";
@@ -4154,24 +4328,24 @@ translations sv {
   /// ShopAddressChangedMail · text on the page
   /// placeholders: {address} = address (string)
   /// shown through EmailText.text
+  /// beside: "If you did not do this, reply to this mail straight away."
+  text "Your account asked to sign in as {address} from now on. It moves once that address confirms it." => "Ditt konto har bett om att logga in som {address} från och med nu. Det flyttas när den adressen har bekräftat det.";
+  /// ShopAddressChangedMail · text on the page
+  /// placeholders: {address} = address (string)
+  /// shown through EmailText.text
   text "Your account now signs in as {address}." => "Du loggar nu in på ditt konto med {address}.";
   /// ShopAddressChangedMail · text on the page
   /// shown through EmailHeading.text
-  text "Your account's address changed" => "Ditt kontos adress har ändrats";
+  text "Your account's address is changing" => "Ditt kontos adress håller på att ändras";
 
   // ── ShopAddressCodeStep ──
-  /// ShopAddressCodeStep · a button's label · at most ~13 characters
-  /// shown through Button.label
-  /// beside: "Code", "Back to sign in"
-  button "Confirm" => "Bekräfta";
   /// ShopAddressCodeStep · a hint under a field
   /// shown through Field.hint
   /// beside: "Confirm", "Back to sign in"
   hint "Six digits. It works for fifteen minutes." => "Sex siffror. Den gäller i femton minuter.";
-  /// ShopAddressCodeStep · a label (a field, a list item, a menu entry) · at most ~10 characters
-  /// shown through Field.label
-  /// beside: "Confirm", "Back to sign in"
-  label "Code" => "Kod";
+  /// ShopAddressCodeStep · text on the page
+  /// shown through problem
+  text "Type the password you chose for this account." => "Skriv lösenordet du valde för det här kontot.";
 
   // ── ShopBackInStock ──
   /// ShopBackInStock · a button's label · at most ~18 characters
@@ -4245,11 +4419,6 @@ translations sv {
   /// placeholders: {title} = title (string)
   accessibleName "Shelves: {title}" => "Hyllor: {title}";
 
-  // ── ShopChangeEmail ──
-  /// ShopChangeEmail · an error message
-  /// shown through Exception
-  error "Another account already uses that address." => "Ett annat konto använder redan den adressen.";
-
   // ── ShopChangeOrderAddress ──
   /// ShopChangeOrderAddress · a button's label · at most ~23 characters
   /// shown through Button.label
@@ -4267,69 +4436,30 @@ translations sv {
   /// shown through Dialog.title
   title "Send order {order.Reference} somewhere else" => "Skicka order {order.Reference} till en annan adress";
 
-  // ── ShopChangePassword ──
-  /// ShopChangePassword · an error message
-  /// shown through Exception
-  /// also in ShopChangeEmail
-  error "That is not your current password." => "Det är inte ditt nuvarande lösenord.";
-
   // ── ShopChooseNewPassword ──
-  /// ShopChooseNewPassword · a button's label · at most ~23 characters
-  /// shown through Button.label
-  /// beside: "Choose a new password", "New password", "The same again"
-  button "Save and sign in" => "Spara och logga in";
-  /// ShopChooseNewPassword · a label (a field, a list item, a menu entry) · at most ~20 characters
-  /// shown through Field.label
-  /// beside: "Choose a new password", "New password", "Save and sign in"
-  label "The same again" => "Samma igen";
-  /// ShopChooseNewPassword · text on the page
-  /// shown through problem
-  text "The two passwords are not the same." => "Lösenorden är inte likadana.";
-  /// ShopChooseNewPassword · a title
-  /// shown through PageHead.title
-  /// beside: "New password", "The same again", "Save and sign in"
-  title "Choose a new password" => "Välj ett nytt lösenord";
-
-  // ── ShopClaimAddress ──
-  /// ShopClaimAddress · an error message
-  /// shown through Exception
-  error "That is not the password this account was made with. Type it again — or, if you did not make this account or do not know its password, choose a new one." => "Det är inte lösenordet som kontot skapades med. Skriv det igen — eller, om du inte skapade kontot eller inte vet lösenordet, välj ett nytt.";
-  /// ShopClaimAddress · an error message
-  /// shown through Exception
-  error "That link is for an address this account no longer uses." => "Länken gäller en adress som kontot inte längre använder.";
+  /// ShopChooseNewPassword · message
+  /// shown through Alert.message
+  /// beside: "Sign in"
+  message "Your password is changed. Sign in with it now." => "Ditt lösenord är ändrat. Logga in med det nu.";
 
   // ── ShopConfirmAddress ──
   /// ShopConfirmAddress · a button's label · at most ~30 characters
   /// shown through Button.label
-  /// beside: "Confirm your address", "Password", "Confirm and sign in", "Did you not make this account, or do you not know its password? Choose a new one — any other way into it stops working."
+  /// beside: "Password", "Confirm and sign in", "Did you not make this account, or do you not know its password? Choose a new one — any other way into it stops working.", "New password"
   button "Choose it and sign in" => "Välj det och logga in";
-  /// ShopConfirmAddress · a button's label · at most ~27 characters
-  /// shown through Button.label
-  /// beside: "Confirm your address", "Password", "Did you not make this account, or do you not know its password? Choose a new one — any other way into it stops working.", "New password"
-  button "Confirm and sign in" => "Bekräfta och logga in";
-  /// ShopConfirmAddress · a label (a field, a list item, a menu entry) · at most ~18 characters
-  /// shown through Field.label
-  /// beside: "Confirm your address", "Password", "Confirm and sign in", "Did you not make this account, or do you not know its password? Choose a new one — any other way into it stops working."
-  /// also in ShopChooseNewPassword
-  /// also in ShopMySignIn
-  label "New password" => "Nytt lösenord";
+  /// ShopConfirmAddress · message
+  /// placeholders: {proven} = proven (string)
+  /// shown through Alert.message
+  /// beside: "Sign in"
+  message "{proven} is confirmed — sign in with it from now on." => "{proven} är bekräftad — logga in med den från och med nu.";
   /// ShopConfirmAddress · a subtitle
   /// shown through PageHead.subtitle
-  /// beside: "Password", "Confirm and sign in", "Did you not make this account, or do you not know its password? Choose a new one — any other way into it stops working.", "New password"
   subtitle "Type the password you chose for this account." => "Skriv lösenordet du valde för det här kontot.";
   /// ShopConfirmAddress · text on the page
-  /// beside: "Confirm your address", "Password", "Confirm and sign in", "New password"
+  /// beside: "Password", "Confirm and sign in", "New password", "Choose it and sign in"
   text "Did you not make this account, or do you not know its password? Choose a new one — any other way into it stops working." => "Har du inte skapat det här kontot, eller vet du inte lösenordet? Välj ett nytt — alla andra sätt att komma in slutar fungera.";
-  /// ShopConfirmAddress · a title
-  /// shown through PageHead.title
-  /// beside: "Password", "Confirm and sign in", "Did you not make this account, or do you not know its password? Choose a new one — any other way into it stops working.", "New password"
-  title "Confirm your address" => "Bekräfta din adress";
 
   // ── ShopConfirmAddressMail ──
-  /// ShopConfirmAddressMail · a button's label · at most ~26 characters
-  /// shown through EmailButton.label
-  /// beside: "Confirm your address", "The code works for fifteen minutes, the link for three days. If you did not open an account, ignore this mail — nothing happens."
-  button "Confirm my address" => "Bekräfta min adress";
   /// ShopConfirmAddressMail · the preview line an inbox shows beside an email's subject
   /// placeholders: {code} = code (string)
   /// shown through ShopMailLayout.preview
@@ -4337,39 +4467,25 @@ translations sv {
   /// ShopConfirmAddressMail · an email's subject line
   /// placeholders: {Name} = ….Name (string)
   mailSubject "Confirm your address at {Name}" => "Bekräfta din adress hos {Name}";
+  /// ShopConfirmAddressMail · an email's subject line
+  /// placeholders: {Name} = ….Name (string)
+  mailSubject "Confirm your new address at {Name}" => "Bekräfta din nya adress hos {Name}";
   /// ShopConfirmAddressMail · text on the page
-  /// placeholders: {account.Email} = account.Email (string), {shop.Name} = shop.Name (string)
+  /// placeholders: {address} = address (string), {shop.Name} = shop.Name (string)
   /// shown through EmailText.text
-  /// beside: "Confirm your address", "Confirm my address", "The code works for fifteen minutes, the link for three days. If you did not open an account, ignore this mail — nothing happens."
-  text "Confirm that {account.Email} is yours, and your {shop.Name} account is ready." => "Bekräfta att {account.Email} är din, så är ditt konto hos {shop.Name} klart.";
+  text "Confirm that {address} is yours, and your {shop.Name} account is ready." => "Bekräfta att {address} är din, så är ditt konto hos {shop.Name} klart.";
   /// ShopConfirmAddressMail · text on the page
-  /// shown through EmailHeading.text
-  /// beside: "Confirm my address", "The code works for fifteen minutes, the link for three days. If you did not open an account, ignore this mail — nothing happens."
-  text "Confirm your address" => "Bekräfta din adress";
+  /// placeholders: {address} = address (string), {shop.Name} = shop.Name (string)
+  /// shown through EmailText.text
+  text "Confirm that {address} is yours, and your {shop.Name} account moves to it." => "Bekräfta att {address} är din, så flyttas ditt konto hos {shop.Name} dit.";
   /// ShopConfirmAddressMail · text on the page
   /// placeholders: {link} = link (string)
   /// shown through EmailText.text
-  /// beside: "Confirm your address", "Confirm my address", "The code works for fifteen minutes, the link for three days. If you did not open an account, ignore this mail — nothing happens."
+  /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask for this, ignore this mail — nothing happens."
   text "Or open this link: {link}" => "Eller öppna den här länken: {link}";
   /// ShopConfirmAddressMail · text on the page
   /// shown through EmailNote.text
-  /// beside: "Confirm your address", "Confirm my address"
-  text "The code works for fifteen minutes, the link for three days. If you did not open an account, ignore this mail — nothing happens." => "Koden gäller i femton minuter, länken i tre dagar. Om du inte har skapat något konto kan du bortse från det här mejlet — ingenting händer.";
-  /// ShopConfirmAddressMail · text on the page
-  /// placeholders: {code} = code (string)
-  /// shown through EmailText.text
-  /// beside: "Confirm your address", "Confirm my address", "The code works for fifteen minutes, the link for three days. If you did not open an account, ignore this mail — nothing happens."
-  text "Type this code where you were asked for it: {code}" => "Skriv den här koden där du blev ombedd: {code}";
-
-  // ── ShopConfirmEmail ──
-  /// ShopConfirmEmail · an error message
-  /// shown through Exception
-  error "That link has expired or was already used — sign in to have a new one sent." => "Länken har gått ut eller redan använts — logga in så skickar vi en ny.";
-
-  // ── ShopConfirmEmailCode ──
-  /// ShopConfirmEmailCode · an error message
-  /// shown through Exception
-  error "Type the password you chose for this account." => "Skriv lösenordet du valde för det här kontot.";
+  text "The code works for fifteen minutes, the link for three days. If you did not ask for this, ignore this mail — nothing happens." => "Koden gäller i femton minuter, länken i tre dagar. Om du inte har bett om det här kan du bortse från mejlet — ingenting händer.";
 
   // ── ShopCounter ──
   /// ShopCounter · a control's name for screen readers
@@ -4675,6 +4791,14 @@ translations sv {
   /// shown through EmptyState.title
   title "Nothing rung up yet" => "Inget slaget än";
 
+  // ── ShopCounterPage (/staff/counter) ──
+  /// ShopCounterPage · /staff/counter · text on the page
+  /// shown through PageTitle.text
+  text "Counter" => "Kassa";
+  /// ShopCounterPage · /staff/counter · a title
+  /// shown through [Title]
+  title "Counter" => "Kassa";
+
   // ── ShopDesk ──
   /// ShopDesk · a button's label · at most ~15 characters
   /// shown through Tab.label
@@ -4712,6 +4836,14 @@ translations sv {
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Products", "Stock"
   button "Wholesale" => "Grossist";
+
+  // ── ShopDeskPage (/staff/desk) ──
+  /// ShopDeskPage · /staff/desk · text on the page
+  /// shown through PageTitle.text
+  text "Desk" => "Kontoret";
+  /// ShopDeskPage · /staff/desk · a title
+  /// shown through [Title]
+  title "Desk" => "Kontoret";
 
   // ── ShopDownload ──
   /// ShopDownload · a control's name for screen readers
@@ -5108,39 +5240,6 @@ translations sv {
   /// placeholders: {c.State} = c.State (string), {c.ValidUntil} = c.ValidUntil (string), {value} = … (string)
   text "{c.State} · valid until {c.ValidUntil}{value}" => "{c.State} · giltigt till {c.ValidUntil}{value}";
 
-  // ── ShopMySignIn ──
-  /// ShopMySignIn · a button's label · at most ~18 characters
-  /// shown through Button.label
-  /// beside: "Email address", "New email address", "Current password"
-  button "Change email" => "Byt e-post";
-  /// ShopMySignIn · a button's label · at most ~21 characters
-  /// shown through Button.label
-  /// beside: "Password", "Current password", "New password"
-  button "Change password" => "Byt lösenord";
-  /// ShopMySignIn · a label (a field, a list item, a menu entry) · at most ~23 characters
-  /// shown through Field.label
-  /// beside: "Password", "New password", "Change password"
-  label "Current password" => "Nuvarande lösenord";
-  /// ShopMySignIn · a label (a field, a list item, a menu entry) · at most ~24 characters
-  /// shown through Field.label
-  /// beside: "Email address", "Current password", "Change email"
-  label "New email address" => "Ny e-postadress";
-  /// ShopMySignIn · text on the page
-  /// shown through SectionLabel.text
-  /// beside: "New email address", "Current password", "Change email"
-  text "Email address" => "E-postadress";
-  /// ShopMySignIn · text on the page
-  /// shown through SectionLabel.text
-  /// beside: "Current password", "New password", "Change password"
-  text "Password" => "Lösenord";
-  /// ShopMySignIn · text on the page
-  /// placeholders: {newEmail} = newEmail (string)
-  /// shown through emailNote
-  text "You now sign in as {newEmail}. We have told your old address too." => "Nu loggar du in som {newEmail}. Vi har meddelat din gamla adress också.";
-  /// ShopMySignIn · text on the page
-  /// shown through passwordNote
-  text "Your password is changed." => "Ditt lösenord är bytt.";
-
   // ── ShopMyStoreCredit ──
   /// ShopMyStoreCredit · a control's name for screen readers
   /// also in DeskCustomers
@@ -5171,10 +5270,6 @@ translations sv {
   /// shown through Field.label
   /// also in ShopNotifyWhenBack
   label "Tell me when it is back" => "Säg till när den är tillbaka";
-  /// ShopNotifyMe · placeholder text inside an empty field · at most ~21 characters
-  /// shown through Field.placeholder
-  /// also in ShopNotifyWhenBack
-  placeholder "you@example.com" => "du@exempel.se";
 
   // ── ShopOpeningHours ──
   /// ShopOpeningHours · a control's name for screen readers
@@ -5432,6 +5527,7 @@ translations sv {
   /// ShopOrderHistory · text on the page
   /// shown through SectionLabel.text
   /// also in ShopPolicy
+  /// also in ShopReturnsPage /staff/returns
   /// also in ShopOrderByLink
   text "Returns" => "Returer";
   /// ShopOrderHistory · text on the page
@@ -5496,9 +5592,6 @@ translations sv {
   text "Order {order.Reference}, placed {ToString} · {StatusText}" => "Order {order.Reference}, lagd {ToString} · {StatusText}";
 
   // ── ShopPasswordResetMail ──
-  /// ShopPasswordResetMail · a button's label · at most ~30 characters
-  /// shown through EmailButton.label
-  button "Choose a new password" => "Välj ett nytt lösenord";
   /// ShopPasswordResetMail · the preview line an inbox shows beside an email's subject
   /// shown through ShopMailLayout.preview
   mailPreview "Reset your password" => "Återställ ditt lösenord";
@@ -5508,25 +5601,21 @@ translations sv {
   /// ShopPasswordResetMail · text on the page
   /// placeholders: {link} = link (string)
   /// shown through EmailText.text
-  /// beside: "Choose a new password"
+  /// beside: "Reset your password", "Choose a new password", "The link works once, for an hour. If you did not ask, ignore this mail and nothing changes."
   text "Choose a new password here: {link}" => "Välj ett nytt lösenord här: {link}";
   /// ShopPasswordResetMail · text on the page
   /// shown through EmailHeading.text
-  /// beside: "The link works once, for an hour. If you did not ask, ignore this mail and nothing changes."
+  /// beside: "Choose a new password", "The link works once, for an hour. If you did not ask, ignore this mail and nothing changes."
   text "Reset your password" => "Återställ ditt lösenord";
   /// ShopPasswordResetMail · text on the page
   /// placeholders: {shop.Name} = shop.Name (string)
   /// shown through EmailText.text
-  /// beside: "Reset your password", "The link works once, for an hour. If you did not ask, ignore this mail and nothing changes."
+  /// beside: "Reset your password", "Choose a new password", "The link works once, for an hour. If you did not ask, ignore this mail and nothing changes."
   text "Somebody — hopefully you — asked to reset the password for your {shop.Name} account." => "Någon — förhoppningsvis du — har bett om att få återställa lösenordet till ditt konto hos {shop.Name}.";
   /// ShopPasswordResetMail · text on the page
   /// shown through EmailNote.text
-  /// beside: "Reset your password"
+  /// beside: "Reset your password", "Choose a new password"
   text "The link works once, for an hour. If you did not ask, ignore this mail and nothing changes." => "Länken fungerar en gång, i en timme. Om det inte var du som bad om det kan du strunta i det här mejlet — ingenting ändras.";
-  /// ShopPasswordResetMail · text on the page
-  /// placeholders: {token} = token (string)
-  /// shown through EmailText.text
-  text "Your reset code: {token}" => "Din återställningskod: {token}";
 
   // ── ShopPayByLink ──
   /// ShopPayByLink · a button's label · at most ~49 characters
@@ -5699,11 +5788,6 @@ translations sv {
   /// beside: "See your order"
   text "Your refund is on its way" => "Din återbetalning är på väg";
 
-  // ── ShopResetPassword ──
-  /// ShopResetPassword · an error message
-  /// shown through Exception
-  error "That reset link has expired or was already used — ask for a new one." => "Länken för att återställa lösenordet har gått ut eller redan använts. Be om en ny.";
-
   // ── ShopResumeBag ──
   /// ShopResumeBag · a control's name for screen readers
   /// beside: "Your bag, as you left it"
@@ -5783,6 +5867,11 @@ translations sv {
   /// beside: "Sending your return back", "See your order"
   text "We have accepted your return. Please post the parcel to:" => "Vi har godkänt din retur. Posta paketet till:";
 
+  // ── ShopReturnsPage (/staff/returns) ──
+  /// ShopReturnsPage · /staff/returns · a title
+  /// shown through [Title]
+  title "Returns" => "Returer";
+
   // ── ShopSearchPage ──
   /// ShopSearchPage · a control's name for screen readers
   accessibleName "Size" => "Storlek";
@@ -5841,19 +5930,6 @@ translations sv {
   text "Your order is on its way" => "Din order är på väg";
 
   // ── ShopSignIn ──
-  /// ShopSignIn · a heading
-  /// shown through ShopAddressCodeStep.heading
-  heading "Sign in" => "Logga in";
-  /// ShopSignIn · a label (a field, a list item, a menu entry) · at most ~14 characters
-  /// shown through Field.label
-  /// beside: "Sign in", "Email", "Sign in", "Create an account"
-  /// also in ShopSignUp
-  /// also in ShopConfirmAddress
-  label "Password" => "Lösenord";
-  /// ShopSignIn · a link · at most ~24 characters
-  /// shown through TextLink.label
-  /// beside: "Forgotten your password?"
-  link "Create an account" => "Skapa ett konto";
   /// ShopSignIn · a link · at most ~34 characters
   /// shown through TextLink.label
   /// beside: "Create an account"
@@ -5869,66 +5945,42 @@ translations sv {
   /// ShopSignIn · text on the page
   /// shown through problem
   text "That email and password do not match an account." => "E-postadressen och lösenordet matchar inget konto.";
-  /// ShopSignIn · a title
-  /// shown through PageHead.title
-  /// beside: "Email", "Password", "Create an account"
-  title "Sign in" => "Logga in";
 
   // ── ShopSignUp ──
-  /// ShopSignUp · a button's label · at most ~20 characters
-  /// shown through Button.label
-  /// beside: "Your name", "Email", "Password", "I already have an account"
-  button "Create account" => "Skapa konto";
-  /// ShopSignUp · a heading
-  /// shown through ShopAddressCodeStep.heading
-  heading "Create an account" => "Skapa ett konto";
   /// ShopSignUp · a hint under a field
   /// shown through Field.hint
-  /// beside: "Your name", "Email", "Create account", "I already have an account"
+  /// beside: "Create an account", "Your name", "Email", "Create account"
   /// also in ShopConfirmAddress
   /// also in ShopChooseNewPassword
-  /// also in ShopMySignIn
   hint "At least 8 characters." => "Minst 8 tecken.";
-  /// ShopSignUp · a label (a field, a list item, a menu entry) · at most ~15 characters
-  /// shown through Field.label
-  /// beside: "Email", "Password", "Create account", "I already have an account"
-  label "Your name" => "Ditt namn";
-  /// ShopSignUp · a link · at most ~21 characters
-  /// shown through TextLink.label
-  /// also in ShopAddressCodeStep
-  /// also in ShopForgotPassword
-  link "Back to sign in" => "Tillbaka till inloggning";
-  /// ShopSignUp · a link · at most ~35 characters
-  /// shown through TextLink.label
-  /// beside: "Your name", "Email", "Password", "Create account"
-  link "I already have an account" => "Jag har redan ett konto";
-  /// ShopSignUp · message
-  /// placeholders: {mailed} = mailed (string)
-  /// shown through Alert.message
-  /// beside: "Back to sign in"
-  message "We have sent a message to {mailed} — it says what to do next." => "Vi har skickat ett meddelande till {mailed} — där står vad du gör härnäst.";
   /// ShopSignUp · message
   /// placeholders: {mailed} = mailed (string)
   /// shown through ShopAddressCodeStep.intro
   message "We have sent a message to {mailed}. Type the code it gives you — or open its link." => "Vi har skickat ett meddelande till {mailed}. Skriv koden som står i det — eller öppna länken.";
   /// ShopSignUp · a subtitle
   /// shown through PageHead.subtitle
+  /// beside: "Your name", "Email", "Password", "Create account"
   subtitle "Keep your bag between visits, follow your orders and send things back." => "Spara din kasse mellan besöken, följ dina ordrar och skicka tillbaka saker.";
-  /// ShopSignUp · a title
-  /// shown through PageHead.title
-  title "Create an account" => "Skapa ett konto";
 
-  // ── ShopSignup ──
-  /// ShopSignup · an error message
-  /// shown through Exception
-  /// also in ShopResetPassword
-  /// also in ShopChangePassword
-  /// also in ShopClaimAddress
-  error "Choose a password of at least 8 characters." => "Välj ett lösenord på minst 8 tecken.";
-  /// ShopSignup · an error message
-  /// shown through Exception
-  /// also in ShopChangeEmail
-  error "That does not look like an email address." => "Det ser inte ut som en e-postadress.";
+  // ── ShopStaffSignInPage (/staff) ──
+  /// ShopStaffSignInPage · /staff · a control's name for screen readers
+  /// beside: "Signed in"
+  accessibleName "Staff pages" => "Personalens sidor";
+  /// ShopStaffSignInPage · /staff · a control's name for screen readers
+  accessibleName "Staff sign-in" => "Personalinloggning";
+  /// ShopStaffSignInPage · /staff · a label (a field, a list item, a menu entry) · at most ~10 characters
+  /// shown through NavLink.Label
+  label "Desk" => "Kontoret";
+  /// ShopStaffSignInPage · /staff · text on the page
+  /// shown through PageTitle.text
+  text "Sign in" => "Logga in";
+  /// ShopStaffSignInPage · /staff · text on the page
+  /// shown through PageTitle.text
+  /// beside: "Staff pages"
+  text "Signed in" => "Inloggad";
+  /// ShopStaffSignInPage · /staff · a title
+  /// shown through [Title]
+  title "Staff sign-in" => "Personalinloggning";
 
   // ── ShopStoreCreditMail ──
   /// ShopStoreCreditMail · a button's label · at most ~24 characters
@@ -5973,6 +6025,79 @@ translations sv {
   /// shown through Exception
   error "This shop does not show prices in {code}." => "Butiken visar inte priser i {code}.";
 
+  // ── SignInForm ──
+  /// SignInForm · a label (a field, a list item, a menu entry) · at most ~10 characters
+  /// shown through Field.label
+  /// also in SecondFactorCodeStep
+  /// also in ShopAddressCodeStep
+  label "Code" => "Kod";
+  /// SignInForm · a label (a field, a list item, a menu entry) · at most ~11 characters
+  /// shown through Field.label
+  /// beside: "Password", "Sign in", "Forgot your password?"
+  /// also in SignUpForm
+  /// also in ForgotPasswordForm
+  /// also in ListSignupForm
+  label "Email" => "E-post";
+  /// SignInForm · a label (a field, a list item, a menu entry) · at most ~14 characters
+  /// shown through Field.label
+  /// beside: "Email", "Sign in", "Forgot your password?"
+  /// also in SignUpForm
+  /// also in ShopSignIn
+  /// also in ShopSignUp
+  label "Password" => "Lösenord";
+  /// SignInForm · a link · at most ~24 characters
+  /// shown through TextLink.label
+  /// also in ShopSignIn
+  link "Create an account" => "Skapa ett konto";
+  /// SignInForm · placeholder text inside an empty field · at most ~21 characters
+  /// shown through Field.placeholder
+  /// beside: "Password", "Sign in", "Forgot your password?"
+  /// also in SignUpForm
+  /// also in ForgotPasswordForm
+  /// also in ShopNotifyMe
+  placeholder "you@example.com" => "du@exempel.se";
+
+  // ── SignInPage (/login) ──
+  /// SignInPage · /login · a title
+  /// shown through [Title]
+  /// also in ShopSignIn
+  title "Sign in" => "Logga in";
+
+  // ── SignInScreen ──
+  /// SignInScreen · a heading
+  /// shown through AccountsFrame.heading
+  /// also in ShopSignIn
+  heading "Sign in" => "Logga in";
+
+  // ── SignUpForm ──
+  /// SignUpForm · a button's label · at most ~20 characters
+  /// shown through Button.label
+  /// beside: "Your name", "Email", "Password", "I already have an account"
+  /// also in ShopSignUp
+  button "Create account" => "Skapa konto";
+  /// SignUpForm · a label (a field, a list item, a menu entry) · at most ~15 characters
+  /// shown through Field.label
+  /// beside: "Email", "Password", "Create account", "I already have an account"
+  /// also in ShopSignUp
+  label "Your name" => "Ditt namn";
+  /// SignUpForm · a link · at most ~35 characters
+  /// shown through TextLink.label
+  /// beside: "Your name", "Email", "Password", "Create account"
+  /// also in ShopSignUp
+  link "I already have an account" => "Jag har redan ett konto";
+
+  // ── SignUpPage (/sign-up) ──
+  /// SignUpPage · /sign-up · a title
+  /// shown through [Title]
+  /// also in ShopSignUp
+  title "Create an account" => "Skapa ett konto";
+
+  // ── SignUpScreen ──
+  /// SignUpScreen · a heading
+  /// shown through AccountsFrame.heading
+  /// also in ShopSignUp
+  heading "Create an account" => "Skapa ett konto";
+
   // ── StartAgeCheck ──
   /// StartAgeCheck · an error message
   /// shown through Exception
@@ -6011,6 +6136,12 @@ translations sv {
   /// placeholders: {order.Reference} = order.Reference (string), {order.Status.Label} = order.Status.Label (string)
   /// shown through Exception
   error "{order.Reference} is {order.Status.Label}, not waiting to be picked." => "{order.Reference} är {order.Status.Label} och väntar inte på att plockas.";
+
+  // ── StartStepUp ──
+  /// StartStepUp · an error message
+  /// shown through ValidationException
+  /// also in SaveMyDetails
+  error "Sign in first." => "Logga in först.";
 
   // ── StatusDetail ──
   /// StatusDetail · text on the page
@@ -6070,9 +6201,9 @@ translations sv {
 
   // ── TellErased ──
   /// TellErased · an error message
-  /// placeholders: {a.Key} = a.Key (string), {ex.Message} = ex.Message (string)
+  /// placeholders: {Key} = a.Key(…) (string), {ex.Message} = ex.Message (string)
   /// shown through Exception
-  error "The erasure did not run: the shop add-on '{a.Key}' could not erase what it keeps of the customer ({ex.Message}). Nothing was erased — try again once it can." => "Raderingen kördes inte: butikstillägget '{a.Key}' kunde inte radera det som det sparar om kunden ({ex.Message}). Inget raderades. Försök igen när det går.";
+  error "The erasure did not run: the shop add-on '{Key}' could not erase what it keeps of the customer ({ex.Message}). Nothing was erased — try again once it can." => "Raderingen kördes inte: butikstillägget '{Key}' kunde inte radera det som det sparar om kunden ({ex.Message}). Inget raderades. Försök igen när det går.";
 
   // ── UndoReturnLine ──
   /// UndoReturnLine · an error message
@@ -6094,6 +6225,12 @@ translations sv {
   /// placeholders: {v.Percent} = v.Percent (decimal), {OrderMoney} = OrderMoney(…) (string)
   /// shown through VatLines()
   text "Of which VAT ({v.Percent} %): {OrderMoney}" => "Varav moms ({v.Percent} %): {OrderMoney}";
+
+  // ── VerifyEmailPage (/verify-email/{token}) ──
+  /// VerifyEmailPage · /verify-email/{token} · a title
+  /// shown through [Title]
+  /// also in ShopConfirmAddress
+  title "Confirm your address" => "Bekräfta din adress";
 
   // ── VoidGiftCard ──
   /// VoidGiftCard · an error message

@@ -6,7 +6,7 @@
 //   refunded or voided.
 //
 // ⚑ IT IS READ FROM A TALLY, NOT FROM THE ORDERS. A visitor may not read other people's orders (an order is read
-//   through its link, D-ORDERLINK1), and a product page is read by everybody. So the order's workflow, as the shop,
+//   through its link), and a product page is read by everybody. So the order's workflow, as the shop,
 //   keeps `BoughtTogether` — for each pair of products, how many paid orders held both — and the page reads that:
 //   what goes with what, and never whose basket it was.
 //
@@ -61,7 +61,7 @@ void CountBoughtTogether(Order order, int by) {
 public enum TallyRecountStatus { Asked, Done }
 
 /// A recount of the "bought together" tally from every order there is — the one-off that counts the orders paid before
-/// the tally existed (D-ORDERLINK1), and safe to ask for again whenever: a recount starts from nothing and ends where
+/// the tally existed, and safe to ask for again whenever: a recount starts from nothing and ends where
 /// the orders are, so a second one changes nothing. A store asks for it once by listing a row in its data
 /// (`{ "Key": "bought-together" }`), or staff do (`RecountBoughtTogether`); its workflow counts, as the shop.
 public entity BoughtTogetherRecount {

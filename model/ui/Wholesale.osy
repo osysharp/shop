@@ -222,7 +222,7 @@ public component DeskWholesale() {
           }
           Stack(gap: 1) {
             foreach (var c in customers) {
-              Button(c.Account.Name == null ? c.Account.Email : $"{c.Account.Name}, {c.Account.Email}", onPress: () => ChooseCustomer(c.Account), size: Size.Sm,
+              Button(c.Account.DisplayName.Trim() == "" ? c.Account.Email : $"{c.Account.DisplayName}, {c.Account.Email}", onPress: () => ChooseCustomer(c.Account), size: Size.Sm,
                      tone: account != null && account!.Id == c.Account.Id ? Tone.Primary : Tone.Default);
             }
           }

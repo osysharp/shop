@@ -1,5 +1,6 @@
 // A customer's data: a copy of it, and erasure that removes the person and keeps the books.
 
+using Osysharp.Identity;
 using Osysharp.Shop;
 using Osysharp.Workflow;
 
@@ -9,14 +10,14 @@ void a_customer_downloads_everything_the_shop_holds_about_them() {
   runas (Maja) {
     SaveMyDetails("Maja Berg", "070", "Storgatan 1", "11122", "Stockholm", "Sweden");
     reference = Buy("v-data", "Loafer", "38", 1);
-    var json = PersonalData(Me());
+    var json = PersonalData(MyShopAccount());
     Assert.Contains("\"Email\":\"maja@example.test\"", json);
     Assert.Contains(reference, json);
     Assert.Contains("Loafer (38)", json);
     Assert.Contains($"Your order {reference}", json);             // what the shop mailed her
     Assert.NotEqual("", MyDataLink());
   }
-  runas (Olle) { Assert.DoesNotContain("maja@example.test", PersonalData(Me())); }
+  runas (Olle) { Assert.DoesNotContain("maja@example.test", PersonalData(MyShopAccount())); }
 }
 
 [Test(Floor)]
@@ -63,7 +64,7 @@ void erasure_keeps_what_the_books_must_and_nothing_that_reaches_the_person() {
 
       // She cannot sign in, and is not mailed — not even when the shop refunds the kept order.
       Assert.False(ShopAccount.Any(a => a.Email == "maja@example.test"));
-      Assert.False(ShopRoleGrant.Any(g => g.Member == erasure.Account));
+      Assert.False(RoleGrant.Any(g => g.Member == erasure.Account));
       var mailsBefore = ShopMail.Count();
       var order = Order.Single(o => o.Reference == paid);
       RefundOrder(order, "Goodwill", false);
@@ -139,7 +140,7 @@ void an_add_on_that_cannot_erase_the_customer_fails_the_erasure_and_says_which()
     var erasure = ShopErasure.Single();
     Assert.Equal(ErasureStatus.Failed, erasure.Status);
     Assert.Contains("'promo'", erasure.Problem);
-    Assert.True(ShopAccount.Any(a => a.Email == "maja@example.test" && a.Name == "Maja Berg"));
+    Assert.True(ShopAccount.Any(a => a.Email == "maja@example.test" && a.DisplayName == "Maja Berg"));
   }
   // Once the add-on can, asking again runs the SAME erasure to its end.
   runas (Maja) {

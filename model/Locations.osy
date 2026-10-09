@@ -14,11 +14,12 @@
 // ⚑ AN ORDER IS PICKED FROM ONE LOCATION (`Order.Location`, chosen by its workflow as the shop). A collection: the
 //   counter it is collected at. A delivery: the first location in the desk's order that ships and holds EVERY line. When
 //   no one location holds it all the delivery says so at the checkout (`DeliveryChoice.Problem`) and is not placed —
-//   the shop does not split an order into several parcels (ledger D-LOCATIONS1: one order is one pick, one parcel, one
-//   tracking number and one delivery charge; splitting is the owner's call).
+//   the shop does not split an order into several parcels: one order is one pick, one parcel, one tracking number and
+//   one delivery charge.
 
 namespace Osysharp.Shop;
 
+using Osysharp.Identity;
 using Osysharp.Delivery;
 
 /// A place the shop keeps goods. The DEFAULT one holds everything the others do not (see the top of this file) and is
@@ -84,8 +85,8 @@ public entity StockTransfer {
   TransferStatus Status = TransferStatus.InTransit;
   DateTime SentAt;
   DateTime? ReceivedAt;
-  ShopAccount? SentBy;
-  ShopAccount? ReceivedBy;
+  Principal? SentBy;
+  Principal? ReceivedBy;
   [MaxLength(200)] string? Note;
   security { allow read, create, update when IsShopStaff; }
 }
@@ -444,10 +445,11 @@ public void CancelTransfer(StockTransfer transfer) {
 /// Limits a packer to the orders picked at one location — or, with none, lets them pack every location's (Accounts.osy
 /// `PacksAt`). Staff are never limited.
 [Authorize(IsShopStaff)]
-public void LimitPacker(ShopAccount packer, StockLocation? location) {
-  var grant = ShopRoleGrant.FirstOrDefault(g => g.Member == packer && g.Role == ShopRole.Packer);
-  if (grant == null) { throw new Exception($"{packer.Name ?? packer.Email} is not a packer."); }
-  grant.Location = location;
+public void LimitPacker(Principal packer, StockLocation? location) {
+  if (!RoleGrant.Any(g => g.Member == packer && g.Role == ShopRole.Packer)) {
+    throw new Exception($"{(packer.DisplayName != "" ? packer.DisplayName : packer.Email)} is not a packer.");
+  }
+  LimitRole(packer, ShopRole.Packer, location);
   UnitOfWork.Commit();
 }
 

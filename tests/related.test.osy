@@ -94,7 +94,7 @@ void an_add_on_hears_that_a_customer_was_erased() {
   }
 }
 
-// ── the orders paid before the tally existed (D-ORDERLINK1's owed backfill) ─────────────────────────────────────────
+// ── the orders paid before the tally existed ─────────────────────────────────────────
 
 /// The floor, with two orders paid for before the tally existed — as a shop upgraded to the tally has them: paid, and
 /// never counted. They are paid the shop's own way (which counts them), and then the tally is put back to what it was

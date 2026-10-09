@@ -45,13 +45,12 @@ public entity ShopMail {
   Order? Order;
   security {
     // Staff read the outbox; a customer reads what was sent to them — their copy of their own data asks for it. The
-    // sign-in flow reads it to mail a taken address at most once a minute (`TellShopAddressIsTaken`) — the flow that
-    // already reads every hash and mints every reset link.
-    allow read when IsAuthenticated || IsShopAuthenticator where To == user.Email;
-    allow read when (IsAuthenticated || IsShopAuthenticator) && IsShopStaff;
-    allow read when IsShopAuthenticator;
+    // sign-in flow (Osysharp.Accounts) writes the account's mail here, in the shop's design (`ShopAccountMails`).
+    allow read when IsAuthenticated || IsAuthenticator where To == user.Email;
+    allow read when (IsAuthenticated || IsAuthenticator) && IsShopStaff;
+    allow read when IsAuthenticator;
     allow update, delete when IsShopStaff;
-    allow create when IsShopStaff || IsShopAuthenticator;
+    allow create when IsShopStaff || IsAuthenticator;
   }
 }
 
@@ -71,7 +70,7 @@ public entity ShopMailImage {
   security {
     allow read when IsAuthenticated where Mail.To == user.Email;
     allow read when IsShopStaff;
-    allow create when IsShopStaff || IsShopAuthenticator;
+    allow create when IsShopStaff || IsAuthenticator;
     allow delete when IsShopStaff;
   }
 }
@@ -182,7 +181,7 @@ public List<EmailAttachment> InlineAttachments(ShopMail mail) {
   return files;
 }
 
-/// The shop's mail, one method per kind (D-EMAILTEMPLATES1). Each answers the kit's own template; a store that wants
+/// The shop's mail, one method per kind. Each answers the kit's own template; a store that wants
 /// its own derives from this, overrides the ones it writes, and lists it in `app.Shop`:
 ///
 ///     public class GroundsMails : ShopMails {
@@ -229,20 +228,21 @@ public class ShopMails {
   public virtual RenderedEmail GiftCard(GiftCard card, string code) { return ShopGiftCardMail(card, code); }
   /// The files a paid order bought, each with its link (Downloads.osy).
   public virtual RenderedEmail Downloads(Order order, List<DownloadMailLine> links) { return ShopDownloadsMail(order, links); }
-  /// A link to choose a new password (`ShopRequestPasswordReset`) — in the account's language.
-  public virtual RenderedEmail PasswordReset(ShopAccount account, string token, string link) {
-    return ShopPasswordResetMail(account, token, link);
+  /// A link to choose a new password (Osysharp.Accounts' `RequestPasswordReset`) — in the account's language.
+  public virtual RenderedEmail PasswordReset(ShopAccount account, string link) {
+    return ShopPasswordResetMail(account, link);
   }
-  /// A sign-up for an address that already has an account (`ShopSignup`) — to that address, in the account's language:
-  /// the page said only that a message is on its way, so this is where its owner learns which.
-  public virtual RenderedEmail AccountExists(ShopAccount account, string signIn, string reset) {
-    return ShopAccountExistsMail(account, signIn, reset);
+  /// A sign-up for an address that already has an account — to that address, in its account's language: the page said
+  /// only that a message is on its way, so this is where its owner learns which.
+  public virtual RenderedEmail AccountExists(string address, string signIn, string reset) {
+    return ShopAccountExistsMail(address, signIn, reset);
   }
-  /// What proves the account's address — a six-digit code and a link (`ShopSetup.RequireConfirmedEmail`).
-  public virtual RenderedEmail ConfirmAddress(ShopAccount account, string code, string link) {
-    return ShopConfirmAddressMail(account, code, link);
+  /// What proves an address — a six-digit code and a link: the account's own (`isChange` false), or the new one it asked
+  /// to move to, which it moves to once this is used.
+  public virtual RenderedEmail ConfirmAddress(ShopAccount account, string address, string code, string link, bool isChange) {
+    return ShopConfirmAddressMail(account, address, code, link, isChange);
   }
-  /// The account's address changed — to the old address and to the new one (`ShopChangeEmail`).
+  /// The account asked to move to `address` — to the OLD address, which is how the owner finds out if it was not them.
   public virtual RenderedEmail AddressChanged(ShopAccount account, string address, bool toTheOldAddress) {
     return ShopAddressChangedMail(account, address, toTheOldAddress);
   }

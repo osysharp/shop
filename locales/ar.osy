@@ -10,6 +10,69 @@ translations ar {
   /// also in SettleReturn
   error "That return has nothing in it." => "هذا الإرجاع فارغ.";
 
+  // ── AccountExistsMail ──
+  /// AccountExistsMail · a button's label · at most ~13 characters
+  /// shown through EmailButton.label
+  /// beside: "You already have an account", "If this was not you, ignore this mail — your account has not changed."
+  /// also in SignInForm
+  /// also in ShopAccountExistsMail
+  /// also in ShopSignIn
+  button "Sign in" => "تسجيل الدخول";
+  /// AccountExistsMail · text on the page
+  /// shown through EmailHeading.text
+  /// beside: "Sign in", "If this was not you, ignore this mail — your account has not changed."
+  /// also in ShopAccountExistsMail
+  text "You already have an account" => "لديك حساب بالفعل";
+
+  // ── AccountPage (/account) ──
+  /// AccountPage · /account · a title
+  /// shown through [Title]
+  /// also in ShopAccountPanel
+  title "Your account" => "حسابك";
+
+  // ── AccountResetMail ──
+  /// AccountResetMail · a button's label · at most ~30 characters
+  /// shown through EmailButton.label
+  /// beside: "The link works once, for an hour. If you did not ask, ignore this mail: your password has not changed."
+  /// also in ShopPasswordResetMail
+  button "Choose a new password" => "اختر كلمة مرور جديدة";
+
+  // ── AccountSettings ──
+  /// AccountSettings · a label (a field, a list item, a menu entry) · at most ~15 characters
+  /// shown through Badge.label
+  /// also in Osysharp.MailingLists.SubscriberState
+  /// also in Osysharp.MailingLists.ConsentKind
+  label "Confirmed" => "مؤكَّد";
+
+  // ── AccountVerifyMail ──
+  /// AccountVerifyMail · a button's label · at most ~26 characters
+  /// shown through EmailButton.label
+  /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask, ignore this mail — nothing changes."
+  /// also in ShopConfirmAddressMail
+  button "Confirm my address" => "تأكيد عنواني";
+  /// AccountVerifyMail · a button's label · at most ~31 characters
+  /// shown through EmailButton.label
+  /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask, ignore this mail — nothing changes."
+  /// also in ShopConfirmAddressMail
+  button "Confirm my new address" => "تأكيد عنواني الجديد";
+  /// AccountVerifyMail · text on the page
+  /// shown through EmailHeading.text
+  /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask, ignore this mail — nothing changes."
+  /// also in ShopConfirmAddressMail
+  text "Confirm your address" => "أكّد عنوانك";
+  /// AccountVerifyMail · text on the page
+  /// shown through EmailHeading.text
+  /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask, ignore this mail — nothing changes."
+  /// also in ShopConfirmAddressMail
+  text "Confirm your new address" => "أكّد عنوانك الجديد";
+  /// AccountVerifyMail · text on the page
+  /// placeholders: {code} = code (string)
+  /// shown through EmailText.text
+  /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask, ignore this mail — nothing changes."
+  /// also in AccountStepUpMail
+  /// also in ShopConfirmAddressMail
+  text "Type this code where you were asked for it: {code}" => "اكتب هذا الرمز حيث طُلب منك: {code}";
+
   // ── AddLocation ──
   /// AddLocation · an error message
   /// shown through Exception
@@ -67,6 +130,13 @@ translations ar {
   /// AddVariant · an error message
   /// shown through Exception
   error "Stock cannot be negative." => "لا يمكن أن يكون المخزون سالبًا.";
+
+  // ── AddressCodeStep ──
+  /// AddressCodeStep · a button's label · at most ~13 characters
+  /// shown through Button.label
+  /// beside: "Code from the mail"
+  /// also in ShopAddressCodeStep
+  button "Confirm" => "تأكيد";
 
   // ── AdjustGiftCard ──
   /// AdjustGiftCard · an error message
@@ -377,6 +447,13 @@ translations ar {
   /// shown through Exception
   error "That point is not among those near the address you gave — choose one from the list." => "هذه النقطة ليست من النقاط القريبة من العنوان الذي أدخلته. اختر واحدة من القائمة.";
 
+  // ── ConfirmPasswordStep ──
+  /// ConfirmPasswordStep · a button's label · at most ~27 characters
+  /// shown through Button.label
+  /// beside: "Your password", "I did not make this account, or forgot its password"
+  /// also in ShopConfirmAddress
+  button "Confirm and sign in" => "تأكيد وتسجيل الدخول";
+
   // ── CounterCode ──
   /// CounterCode · an error message
   /// shown through Exception
@@ -438,6 +515,12 @@ translations ar {
   /// shown through CreditNote()
   note "Order {order}" => "الطلب {order}";
 
+  // ── CreditNoteCode ──
+  /// CreditNoteCode · a title
+  /// placeholders: {OrderPrefix} = ….OrderPrefix (string), {note.Number} = note.Number (int) — {note.Number} is a count: give one text per plural form
+  /// shown through CreditNoteCode()
+  title "{OrderPrefix}CN-{note.Number}" => { zero: "{OrderPrefix}CN-{note.Number}", one: "{OrderPrefix}CN-{note.Number}", two: "{OrderPrefix}CN-{note.Number}", few: "{OrderPrefix}CN-{note.Number}", many: "{OrderPrefix}CN-{note.Number}", other: "{OrderPrefix}CN-{note.Number}" };
+
   // ── CreditNoteLink ──
   /// CreditNoteLink · an error message
   /// shown through Exception
@@ -453,9 +536,9 @@ translations ar {
   title "Credit note {CreditNoteCode} — {shop.Name}" => "إشعار دائن {CreditNoteCode}، {shop.Name}";
 
   // ── CurrencyLookOf ──
-  /// CurrencyLookOf · text in an email
+  /// CurrencyLookOf · text on the page
   /// shown through CurrencyLook.Symbol
-  mailText "kr" => "kr";
+  text "kr" => "kr";
 
   // ── CustomsFor ──
   /// CustomsFor · an error message
@@ -774,6 +857,7 @@ translations ar {
   /// DeskFigures · a label (a field, a list item, a menu entry) · at most ~13 characters
   /// shown through Metric.label
   /// beside: "Orders, 30 days", "Revenue", "Average order"
+  /// also in ShopStaffSignInPage /staff
   label "Returns" => "المرتجعات";
   /// DeskFigures · a label (a field, a list item, a menu entry) · at most ~13 characters
   /// shown through Metric.label
@@ -882,8 +966,6 @@ translations ar {
   /// DeskGiftCards · a control's name for screen readers
   accessibleName "Change it" => "عدّلها";
   /// DeskGiftCards · a control's name for screen readers
-  accessibleName "Discount codes" => "رموز الخصم";
-  /// DeskGiftCards · a control's name for screen readers
   accessibleName "Ledger" => "السجل";
   /// DeskGiftCards · a control's name for screen readers
   accessibleName "Reissue it" => "أعد إصدارها";
@@ -983,8 +1065,6 @@ translations ar {
   /// DeskGiftCards · text on the page
   /// beside: "Give store credit instead"
   text "For goodwill — a sorry, a thank-you — a discount code or store credit is usually simpler. A gift card given away is still a multi-purpose voucher: what it pays for carries its VAT when it is spent." => "لحسن النية، كاعتذار أو شكر، يكون رمز الخصم أو رصيد المتجر أبسط عادةً. بطاقة الهدية الممنوحة مجانًا تبقى قسيمة متعددة الأغراض: ما تُدفع به يخضع لضريبته عند استخدامها.";
-  /// DeskGiftCards · text on the page
-  text "Make a discount code" => "أنشئ رمز خصم";
   /// DeskGiftCards · text on the page
   text "No gift cards yet." => "لا بطاقات هدية بعد.";
   /// DeskGiftCards · text on the page
@@ -2417,6 +2497,14 @@ translations ar {
   /// also in ShopOrderByLink
   accessibleName "Progress" => "التقدم";
 
+  // ── ForgotPasswordForm ──
+  /// ForgotPasswordForm · a link · at most ~21 characters
+  /// shown through TextLink.label
+  /// also in ProviderSignIn
+  /// also in ShopAddressCodeStep
+  /// also in ShopForgotPassword
+  link "Back to sign in" => "العودة لتسجيل الدخول";
+
   // ── FulfilmentFor ──
   /// FulfilmentFor · text on the page
   /// shown through FulfilFrom.Problem
@@ -2629,12 +2717,6 @@ translations ar {
   /// also in ShopNewsletter
   /// also in ShopFooterSignup
   button "Sign up" => "اشترك";
-  /// ListSignupForm · a label (a field, a list item, a menu entry) · at most ~11 characters
-  /// shown through Field.label
-  /// also in ShopSignIn
-  /// also in ShopSignUp
-  /// also in ShopForgotPassword
-  label "Email" => "البريد الإلكتروني";
 
   // ── LocationDoes ──
   /// LocationDoes · text on the page
@@ -2943,14 +3025,27 @@ translations ar {
   /// shown through TimelineEntry.Detail
   text "{OrderMoney} to store credit" => "{OrderMoney} إلى رصيد المتجر";
 
+  // ── Osysharp.ActionOutcome ──
+  /// Osysharp.ActionOutcome · a label (a field, a list item, a menu entry) · at most ~10 characters
+  /// shown through Osysharp.ActionOutcome.Done
+  /// beside: "Refused", "Not allowed", "Gone", "Failed"
+  /// also in Osysharp.Shop.GiftCardChangeStatus
+  /// also in Osysharp.Shop.TallyRecountStatus
+  label "Done" => "تم";
+  /// Osysharp.ActionOutcome · a label (a field, a list item, a menu entry) · at most ~12 characters
+  /// shown through Osysharp.ActionOutcome.Failed
+  /// beside: "Done", "Refused", "Not allowed", "Gone"
+  /// also in Osysharp.EventProblemKind
+  /// also in Osysharp.Payments.PaymentState
+  /// also in Osysharp.Payments.RefundState
+  label "Failed" => "فشل";
+  /// Osysharp.ActionOutcome · a label (a field, a list item, a menu entry) · at most ~13 characters
+  /// shown through Osysharp.ActionOutcome.Invalid
+  /// beside: "Done", "Not allowed", "Gone", "Failed"
+  /// also in Osysharp.Shop.CounterReturnStatus
+  label "Refused" => "مرفوض";
+
   // ── Osysharp.Delivery.DeliveryState ──
-  /// Osysharp.Delivery.DeliveryState · a label (a field, a list item, a menu entry) · at most ~15 characters
-  /// shown through Osysharp.Delivery.DeliveryState.Delivered
-  /// beside: "Booked", "On its way", "Ready to collect", "Problem", "Returned"
-  /// also in Osysharp.Shop.OrderStatus
-  /// also in OrderProgress
-  /// also in OrderStageTabs
-  label "Delivered" => "تم التوصيل";
   /// Osysharp.Delivery.DeliveryState · a label (a field, a list item, a menu entry) · at most ~16 characters
   /// shown through Osysharp.Delivery.DeliveryState.InTransit
   /// beside: "Booked", "Ready to collect", "Delivered", "Problem", "Returned"
@@ -2964,13 +3059,16 @@ translations ar {
   /// also in Osysharp.Shop.GiveBackCause
   label "Returned" => "مُرتجع";
 
+  // ── Osysharp.Mail.MailStatus ──
+  /// Osysharp.Mail.MailStatus · a label (a field, a list item, a menu entry) · at most ~10 characters
+  /// shown through Osysharp.Mail.MailStatus.Sent
+  /// beside: "Waiting", "Not sent — no mail sender"
+  /// also in Osysharp.Sms.SmsStatus
+  /// also in Osysharp.Shop.MailStatus
+  /// also in Osysharp.Shop.OrderStatus
+  label "Sent" => "أُرسلت";
+
   // ── Osysharp.MailingLists.SubscriberState ──
-  /// Osysharp.MailingLists.SubscriberState · a label (a field, a list item, a menu entry) · at most ~15 characters
-  /// shown through Osysharp.MailingLists.SubscriberState.Confirmed
-  /// beside: "Waiting to confirm", "Stopped", "Erased"
-  /// also in Osysharp.MailingLists.ConsentKind
-  /// also in Osysharp.Shop.CounterCustomerStatus
-  label "Confirmed" => "مؤكَّد";
   /// Osysharp.MailingLists.SubscriberState · a label (a field, a list item, a menu entry) · at most ~12 characters
   /// shown through Osysharp.MailingLists.SubscriberState.Erased
   /// beside: "Waiting to confirm", "Confirmed", "Stopped"
@@ -2994,11 +3092,39 @@ translations ar {
   /// also in Osysharp.Shop.OrderStatus
   label "Refunded" => "مُسترد";
 
+  // ── Osysharp.RaisedEventState ──
+  /// Osysharp.RaisedEventState · a label (a field, a list item, a menu entry) · at most ~15 characters
+  /// shown through Osysharp.RaisedEventState.Delivered
+  /// beside: "Waiting"
+  /// also in Osysharp.Delivery.DeliveryState
+  /// also in Osysharp.Shop.OrderStatus
+  /// also in OrderProgress
+  label "Delivered" => "تم التوصيل";
+  /// Osysharp.RaisedEventState · a label (a field, a list item, a menu entry) · at most ~13 characters
+  /// shown through Osysharp.RaisedEventState.Queued
+  /// beside: "Delivered"
+  /// also in Osysharp.Mail.MailStatus
+  /// also in Osysharp.Sms.SmsStatus
+  /// also in Osysharp.Shop.AgeCheckStatus
+  label "Waiting" => "قيد الانتظار";
+
+  // ── Osysharp.Shop.AgeCheckStatus ──
+  /// Osysharp.Shop.AgeCheckStatus · a label (a field, a list item, a menu entry) · at most ~14 characters
+  /// shown through Osysharp.Shop.AgeCheckStatus.Verified
+  /// beside: "Waiting", "Failed"
+  label "Verified" => "تم التحقق";
+
   // ── Osysharp.Shop.AgeVerifier.Start ──
   /// Osysharp.Shop.AgeVerifier.Start · an error message
   /// placeholders: {Label} = Label (string)
   /// shown through Exception
   error "{Label} cannot start a check." => "لا يمكن لـ {Label} بدء عملية تحقق.";
+
+  // ── Osysharp.Shop.BagReminderState ──
+  /// Osysharp.Shop.BagReminderState · a label (a field, a list item, a menu entry) · at most ~13 characters
+  /// shown through Osysharp.Shop.BagReminderState.Skipped
+  /// beside: "Waiting", "Sent"
+  label "Skipped" => "تم التخطي";
 
   // ── Osysharp.Shop.CounterCustomerStatus ──
   /// Osysharp.Shop.CounterCustomerStatus · a label (a field, a list item, a menu entry) · at most ~11 characters
@@ -3020,10 +3146,6 @@ translations ar {
   label "Code sent" => "أُرسل الرمز";
 
   // ── Osysharp.Shop.CounterReturnStatus ──
-  /// Osysharp.Shop.CounterReturnStatus · a label (a field, a list item, a menu entry) · at most ~13 characters
-  /// shown through Osysharp.Shop.CounterReturnStatus.Refused
-  /// beside: "Asked", "Settled"
-  label "Refused" => "مرفوض";
   /// Osysharp.Shop.CounterReturnStatus · a label (a field, a list item, a menu entry) · at most ~13 characters
   /// shown through Osysharp.Shop.CounterReturnStatus.Settled
   /// beside: "Asked", "Refused"
@@ -3074,12 +3196,6 @@ translations ar {
   /// shown through Osysharp.Shop.GiftCardChangeKind.SendNow
   /// beside: "Issued", "Adjusted", "Voided", "New code", "Reissued"
   label "Sent now" => "أُرسلت الآن";
-
-  // ── Osysharp.Shop.GiftCardChangeStatus ──
-  /// Osysharp.Shop.GiftCardChangeStatus · a label (a field, a list item, a menu entry) · at most ~10 characters
-  /// shown through Osysharp.Shop.GiftCardChangeStatus.Done
-  /// beside: "Asked"
-  label "Done" => "تم";
 
   // ── Osysharp.Shop.GiftCardCheckStatus ──
   /// Osysharp.Shop.GiftCardCheckStatus · a label (a field, a list item, a menu entry) · at most ~14 characters
@@ -3176,17 +3292,6 @@ translations ar {
   /// shown through Osysharp.Shop.MailStatus.Held
   /// beside: "Waiting", "Sent"
   label "Not sent — no mail provider" => "لم تُرسل: لا يوجد مزوّد بريد";
-  /// Osysharp.Shop.MailStatus · a label (a field, a list item, a menu entry) · at most ~10 characters
-  /// shown through Osysharp.Shop.MailStatus.Sent
-  /// beside: "Waiting", "Not sent — no mail provider"
-  /// also in Osysharp.Shop.OrderStatus
-  /// also in OrderProgress
-  /// also in OrderStageTabs
-  label "Sent" => "أُرسلت";
-  /// Osysharp.Shop.MailStatus · a label (a field, a list item, a menu entry) · at most ~13 characters
-  /// shown through Osysharp.Shop.MailStatus.Queued
-  /// beside: "Sent", "Not sent — no mail provider"
-  label "Waiting" => "قيد الانتظار";
 
   // ── Osysharp.Shop.OrderEventKind ──
   /// Osysharp.Shop.OrderEventKind · a label (a field, a list item, a menu entry) · at most ~21 characters
@@ -3294,11 +3399,18 @@ translations ar {
   /// Osysharp.Shop.ProductStatus · a label (a field, a list item, a menu entry) · at most ~11 characters
   /// shown through Osysharp.Shop.ProductStatus.Draft
   /// beside: "Listed", "Archived"
+  /// also in Osysharp.Shop.ShopCampaignState
   label "Draft" => "مسودة";
   /// Osysharp.Shop.ProductStatus · a label (a field, a list item, a menu entry) · at most ~12 characters
   /// shown through Osysharp.Shop.ProductStatus.Listed
   /// beside: "Draft", "Archived"
   label "Listed" => "معروض";
+
+  // ── Osysharp.Shop.RateWatchStatus ──
+  /// Osysharp.Shop.RateWatchStatus · a label (a field, a list item, a menu entry) · at most ~14 characters
+  /// shown through Osysharp.Shop.RateWatchStatus.Watching
+  /// beside: "Stopped"
+  label "Watching" => "قيد المتابعة";
 
   // ── Osysharp.Shop.ReturnStatus ──
   /// Osysharp.Shop.ReturnStatus · a label (a field, a list item, a menu entry) · at most ~14 characters
@@ -3328,6 +3440,29 @@ translations ar {
   /// shown through Osysharp.Shop.SaleState.Scheduled
   /// beside: "On sale", "Ended"
   label "Scheduled" => "مجدول";
+
+  // ── Osysharp.Shop.ShopRole ──
+  /// Osysharp.Shop.ShopRole · a label (a field, a list item, a menu entry) · at most ~19 characters
+  /// shown through Osysharp.Shop.ShopRole.Authenticator
+  /// beside: "Staff", "Customer", "Packer", "Counter"
+  label "Authenticator" => "المصادِق";
+  /// Osysharp.Shop.ShopRole · a label (a field, a list item, a menu entry) · at most ~13 characters
+  /// shown through Osysharp.Shop.ShopRole.Counter
+  /// beside: "Staff", "Authenticator", "Customer", "Packer"
+  /// also in ShopStaffSignInPage /staff
+  label "Counter" => "الكاشير";
+  /// Osysharp.Shop.ShopRole · a label (a field, a list item, a menu entry) · at most ~14 characters
+  /// shown through Osysharp.Shop.ShopRole.Customer
+  /// beside: "Staff", "Authenticator", "Packer", "Counter"
+  label "Customer" => "عميل";
+  /// Osysharp.Shop.ShopRole · a label (a field, a list item, a menu entry) · at most ~12 characters
+  /// shown through Osysharp.Shop.ShopRole.Packer
+  /// beside: "Staff", "Authenticator", "Customer", "Counter"
+  label "Packer" => "مُعِدّ الطرود";
+  /// Osysharp.Shop.ShopRole · a label (a field, a list item, a menu entry) · at most ~11 characters
+  /// shown through Osysharp.Shop.ShopRole.Staff
+  /// beside: "Authenticator", "Customer", "Packer", "Counter"
+  label "Staff" => "الموظفون";
 
   // ── Osysharp.Shop.ShopSetup ──
   /// Osysharp.Shop.ShopSetup · a description
@@ -3713,6 +3848,45 @@ translations ar {
   /// shown through Exception
   error "That card is {card.Status.Label} . Only an active card gets a new code." => "حالة هذه البطاقة: {card.Status.Label}. لا تحصل على رمز جديد إلا البطاقة النشطة.";
 
+  // ── ResetPasswordForm ──
+  /// ResetPasswordForm · a button's label · at most ~23 characters
+  /// shown through Button.label
+  /// beside: "New password", "The same again", "Ask for a new link"
+  /// also in ConfirmPasswordStep
+  /// also in ShopChooseNewPassword
+  button "Save and sign in" => "حفظ وتسجيل الدخول";
+  /// ResetPasswordForm · a label (a field, a list item, a menu entry) · at most ~18 characters
+  /// shown through Field.label
+  /// beside: "The same again", "Save and sign in", "Ask for a new link"
+  /// also in ConfirmPasswordStep
+  /// also in AccountSettings
+  /// also in ShopConfirmAddress
+  label "New password" => "كلمة مرور جديدة";
+  /// ResetPasswordForm · a label (a field, a list item, a menu entry) · at most ~20 characters
+  /// shown through Field.label
+  /// beside: "New password", "Save and sign in", "Ask for a new link"
+  /// also in ConfirmPasswordStep
+  /// also in ShopChooseNewPassword
+  label "The same again" => "أعد كتابتها";
+  /// ResetPasswordForm · a link · at most ~13 characters
+  /// shown through TextLink.label
+  /// beside: "Your password is changed. Sign in with it now — two-step sign-in comes next."
+  /// also in VerifyEmailResult
+  /// also in ShopConfirmAddress
+  /// also in ShopChooseNewPassword
+  link "Sign in" => "تسجيل الدخول";
+  /// ResetPasswordForm · text on the page
+  /// shown through problem
+  /// also in ConfirmPasswordStep
+  /// also in ShopChooseNewPassword
+  text "The two passwords are not the same." => "كلمتا المرور غير متطابقتين.";
+
+  // ── ResetPasswordPage (/reset-password/{token}) ──
+  /// ResetPasswordPage · /reset-password/{token} · a title
+  /// shown through [Title]
+  /// also in ShopChooseNewPassword
+  title "Choose a new password" => "اختر كلمة مرور جديدة";
+
   // ── ReturnItem ──
   /// ReturnItem · an error message
   /// placeholders: {order.Reference} = order.Reference (string), {OrderCurrency} = OrderCurrency(…) (string), {Currency} = ….Currency (string)
@@ -3721,6 +3895,20 @@ translations ar {
   /// ReturnItem · an error message
   /// shown through Exception
   error "Sign in with the account that placed the order to return from it." => "سجّل الدخول بالحساب الذي قدّم الطلب لإرجاع شيء منه.";
+
+  // ── ReturnKindText ──
+  /// ReturnKindText · a subtitle
+  /// shown through ReturnKindText()
+  subtitle "Exchange" => "استبدال";
+  /// ReturnKindText · a subtitle
+  /// shown through ReturnKindText()
+  subtitle "For store credit" => "مقابل رصيد في المتجر";
+  /// ReturnKindText · a subtitle
+  /// shown through ReturnKindText()
+  subtitle "For the money" => "مقابل استرداد المال";
+  /// ReturnKindText · a subtitle
+  /// shown through ReturnKindText()
+  subtitle "Not sent" => "لم يُرسل";
 
   // ── ReturnLabelLine ──
   /// ReturnLabelLine · text on the page
@@ -3782,6 +3970,14 @@ translations ar {
   /// shown through ReturnOutcome()
   text "{MoneyIn} to your store credit" => "{MoneyIn} إلى رصيدك في المتجر";
 
+  // ── ReturnStatusText ──
+  /// ReturnStatusText · a title
+  /// shown through ReturnStatusText()
+  title "Exchanged" => "تم الاستبدال";
+  /// ReturnStatusText · a title
+  /// shown through ReturnStatusText()
+  title "Given as store credit" => "مُنح كرصيد في المتجر";
+
   // ── ReturnWhatNext ──
   /// ReturnWhatNext · text on the page
   /// shown through ReturnWhatNext()
@@ -3807,11 +4003,6 @@ translations ar {
   /// also in DeskLocations
   /// also in DeskCampaignEditor
   button "Save" => "حفظ";
-
-  // ── SaveMyDetails ──
-  /// SaveMyDetails · an error message
-  /// shown through Exception
-  error "Sign in first." => "سجّل الدخول أولًا.";
 
   // ── SavePriceList ──
   /// SavePriceList · an error message
@@ -4050,12 +4241,6 @@ translations ar {
   button "Your account" => "حسابك";
 
   // ── ShopAccountExistsMail ──
-  /// ShopAccountExistsMail · a button's label · at most ~13 characters
-  /// shown through EmailButton.label
-  /// beside: "You already have an account", "If it was not you, ignore this mail — nothing changed on your account."
-  /// also in ShopSignIn
-  /// also in ShopAccountButton
-  button "Sign in" => "تسجيل الدخول";
   /// ShopAccountExistsMail · the preview line an inbox shows beside an email's subject
   /// shown through ShopMailLayout.preview
   mailPreview "You already have an account" => "لديك حساب بالفعل";
@@ -4081,10 +4266,6 @@ translations ar {
   /// shown through EmailText.text
   /// beside: "You already have an account", "Sign in", "If it was not you, ignore this mail — nothing changed on your account."
   text "Somebody — hopefully you — tried to open a {shop.Name} account with this address. It already has one, so nothing new was made." => "حاول شخص ما، ونأمل أن تكون أنت، فتح حساب في {shop.Name} بهذا العنوان. وللعنوان حساب بالفعل، فلم يُنشأ حساب جديد.";
-  /// ShopAccountExistsMail · text on the page
-  /// shown through EmailHeading.text
-  /// beside: "Sign in", "If it was not you, ignore this mail — nothing changed on your account."
-  text "You already have an account" => "لديك حساب بالفعل";
 
   // ── ShopAccountPanel ──
   /// ShopAccountPanel · a button's label · at most ~13 characters
@@ -4124,10 +4305,6 @@ translations ar {
   /// shown through Tab.label
   /// beside: "Orders", "Store credit", "Downloads", "Gift cards"
   button "Your data" => "بياناتك";
-  /// ShopAccountPanel · a title
-  /// shown through PageHead.title
-  /// beside: "Sign out"
-  title "Your account" => "حسابك";
 
   // ── ShopAddress ──
   /// ShopAddress · a control's name for screen readers
@@ -4149,13 +4326,13 @@ translations ar {
   mailPreview "Welcome to this address" => "مرحبًا بك على هذا العنوان";
   /// ShopAddressChangedMail · the preview line an inbox shows beside an email's subject
   /// shown through ShopMailLayout.preview
-  mailPreview "Your account's address changed" => "تغيّر عنوان حسابك";
+  mailPreview "Your account's address is changing" => "عنوان حسابك قيد التغيير";
   /// ShopAddressChangedMail · an email's subject line
   /// placeholders: {Name} = ….Name (string)
   mailSubject "Welcome to your {Name} account at this address" => "مرحبًا بك في حسابك لدى {Name} على هذا العنوان";
   /// ShopAddressChangedMail · an email's subject line
   /// placeholders: {Name} = ….Name (string)
-  mailSubject "Your {Name} account's address changed" => "تغيّر عنوان حسابك في {Name}";
+  mailSubject "Your {Name} account's address is changing" => "عنوان حسابك في {Name} قيد التغيير";
   /// ShopAddressChangedMail · text on the page
   /// shown through EmailText.text
   text "If you did not do this, reply to this mail straight away." => "إن لم تكن أنت من فعل ذلك، فرد على هذه الرسالة فورًا.";
@@ -4165,24 +4342,24 @@ translations ar {
   /// ShopAddressChangedMail · text on the page
   /// placeholders: {address} = address (string)
   /// shown through EmailText.text
+  /// beside: "If you did not do this, reply to this mail straight away."
+  text "Your account asked to sign in as {address} from now on. It moves once that address confirms it." => "طلب حسابك تسجيل الدخول باسم {address} من الآن فصاعدًا. سينتقل بمجرد أن يؤكّد ذلك العنوان.";
+  /// ShopAddressChangedMail · text on the page
+  /// placeholders: {address} = address (string)
+  /// shown through EmailText.text
   text "Your account now signs in as {address}." => "يُسجَّل الدخول إلى حسابك الآن باسم {address}.";
   /// ShopAddressChangedMail · text on the page
   /// shown through EmailHeading.text
-  text "Your account's address changed" => "تغيّر عنوان حسابك";
+  text "Your account's address is changing" => "عنوان حسابك قيد التغيير";
 
   // ── ShopAddressCodeStep ──
-  /// ShopAddressCodeStep · a button's label · at most ~13 characters
-  /// shown through Button.label
-  /// beside: "Code", "Back to sign in"
-  button "Confirm" => "تأكيد";
   /// ShopAddressCodeStep · a hint under a field
   /// shown through Field.hint
   /// beside: "Confirm", "Back to sign in"
   hint "Six digits. It works for fifteen minutes." => "ستة أرقام. يعمل لمدة خمس عشرة دقيقة.";
-  /// ShopAddressCodeStep · a label (a field, a list item, a menu entry) · at most ~10 characters
-  /// shown through Field.label
-  /// beside: "Confirm", "Back to sign in"
-  label "Code" => "الرمز";
+  /// ShopAddressCodeStep · text on the page
+  /// shown through problem
+  text "Type the password you chose for this account." => "اكتب كلمة المرور التي اخترتها لهذا الحساب.";
 
   // ── ShopBackInStock ──
   /// ShopBackInStock · a button's label · at most ~18 characters
@@ -4256,11 +4433,6 @@ translations ar {
   /// placeholders: {title} = title (string)
   accessibleName "Shelves: {title}" => "الأقسام: {title}";
 
-  // ── ShopChangeEmail ──
-  /// ShopChangeEmail · an error message
-  /// shown through Exception
-  error "Another account already uses that address." => "هذا العنوان مستخدم بالفعل في حساب آخر.";
-
   // ── ShopChangeOrderAddress ──
   /// ShopChangeOrderAddress · a button's label · at most ~23 characters
   /// shown through Button.label
@@ -4278,69 +4450,30 @@ translations ar {
   /// shown through Dialog.title
   title "Send order {order.Reference} somewhere else" => "أرسل الطلب {order.Reference} إلى عنوان آخر";
 
-  // ── ShopChangePassword ──
-  /// ShopChangePassword · an error message
-  /// shown through Exception
-  /// also in ShopChangeEmail
-  error "That is not your current password." => "هذه ليست كلمة مرورك الحالية.";
-
   // ── ShopChooseNewPassword ──
-  /// ShopChooseNewPassword · a button's label · at most ~23 characters
-  /// shown through Button.label
-  /// beside: "Choose a new password", "New password", "The same again"
-  button "Save and sign in" => "حفظ وتسجيل الدخول";
-  /// ShopChooseNewPassword · a label (a field, a list item, a menu entry) · at most ~20 characters
-  /// shown through Field.label
-  /// beside: "Choose a new password", "New password", "Save and sign in"
-  label "The same again" => "أعد كتابتها";
-  /// ShopChooseNewPassword · text on the page
-  /// shown through problem
-  text "The two passwords are not the same." => "كلمتا المرور غير متطابقتين.";
-  /// ShopChooseNewPassword · a title
-  /// shown through PageHead.title
-  /// beside: "New password", "The same again", "Save and sign in"
-  title "Choose a new password" => "اختر كلمة مرور جديدة";
-
-  // ── ShopClaimAddress ──
-  /// ShopClaimAddress · an error message
-  /// shown through Exception
-  error "That is not the password this account was made with. Type it again — or, if you did not make this account or do not know its password, choose a new one." => "ليست هذه كلمة المرور التي أُنشئ بها هذا الحساب. اكتبها مرة أخرى، أو اختر كلمة مرور جديدة إن لم تكن أنت من أنشأ هذا الحساب أو كنت لا تعرف كلمة مروره.";
-  /// ShopClaimAddress · an error message
-  /// shown through Exception
-  error "That link is for an address this account no longer uses." => "هذا الرابط لعنوان لم يعد هذا الحساب يستخدمه.";
+  /// ShopChooseNewPassword · message
+  /// shown through Alert.message
+  /// beside: "Sign in"
+  message "Your password is changed. Sign in with it now." => "تم تغيير كلمة المرور. سجّل الدخول بها الآن.";
 
   // ── ShopConfirmAddress ──
   /// ShopConfirmAddress · a button's label · at most ~30 characters
   /// shown through Button.label
-  /// beside: "Confirm your address", "Password", "Confirm and sign in", "Did you not make this account, or do you not know its password? Choose a new one — any other way into it stops working."
+  /// beside: "Password", "Confirm and sign in", "Did you not make this account, or do you not know its password? Choose a new one — any other way into it stops working.", "New password"
   button "Choose it and sign in" => "اخترها وسجّل الدخول";
-  /// ShopConfirmAddress · a button's label · at most ~27 characters
-  /// shown through Button.label
-  /// beside: "Confirm your address", "Password", "Did you not make this account, or do you not know its password? Choose a new one — any other way into it stops working.", "New password"
-  button "Confirm and sign in" => "تأكيد وتسجيل الدخول";
-  /// ShopConfirmAddress · a label (a field, a list item, a menu entry) · at most ~18 characters
-  /// shown through Field.label
-  /// beside: "Confirm your address", "Password", "Confirm and sign in", "Did you not make this account, or do you not know its password? Choose a new one — any other way into it stops working."
-  /// also in ShopChooseNewPassword
-  /// also in ShopMySignIn
-  label "New password" => "كلمة مرور جديدة";
+  /// ShopConfirmAddress · message
+  /// placeholders: {proven} = proven (string)
+  /// shown through Alert.message
+  /// beside: "Sign in"
+  message "{proven} is confirmed — sign in with it from now on." => "تم تأكيد {proven} — سجّل الدخول به من الآن فصاعدًا.";
   /// ShopConfirmAddress · a subtitle
   /// shown through PageHead.subtitle
-  /// beside: "Password", "Confirm and sign in", "Did you not make this account, or do you not know its password? Choose a new one — any other way into it stops working.", "New password"
   subtitle "Type the password you chose for this account." => "اكتب كلمة المرور التي اخترتها لهذا الحساب.";
   /// ShopConfirmAddress · text on the page
-  /// beside: "Confirm your address", "Password", "Confirm and sign in", "New password"
+  /// beside: "Password", "Confirm and sign in", "New password", "Choose it and sign in"
   text "Did you not make this account, or do you not know its password? Choose a new one — any other way into it stops working." => "لم تنشئ هذا الحساب، أو لا تعرف كلمة مروره؟ اختر كلمة مرور جديدة، وستتوقف أي طريقة أخرى للدخول إليه.";
-  /// ShopConfirmAddress · a title
-  /// shown through PageHead.title
-  /// beside: "Password", "Confirm and sign in", "Did you not make this account, or do you not know its password? Choose a new one — any other way into it stops working.", "New password"
-  title "Confirm your address" => "أكّد عنوانك";
 
   // ── ShopConfirmAddressMail ──
-  /// ShopConfirmAddressMail · a button's label · at most ~26 characters
-  /// shown through EmailButton.label
-  /// beside: "Confirm your address", "The code works for fifteen minutes, the link for three days. If you did not open an account, ignore this mail — nothing happens."
-  button "Confirm my address" => "تأكيد عنواني";
   /// ShopConfirmAddressMail · the preview line an inbox shows beside an email's subject
   /// placeholders: {code} = code (string)
   /// shown through ShopMailLayout.preview
@@ -4348,39 +4481,25 @@ translations ar {
   /// ShopConfirmAddressMail · an email's subject line
   /// placeholders: {Name} = ….Name (string)
   mailSubject "Confirm your address at {Name}" => "أكّد عنوانك في {Name}";
+  /// ShopConfirmAddressMail · an email's subject line
+  /// placeholders: {Name} = ….Name (string)
+  mailSubject "Confirm your new address at {Name}" => "أكّد عنوانك الجديد في {Name}";
   /// ShopConfirmAddressMail · text on the page
-  /// placeholders: {account.Email} = account.Email (string), {shop.Name} = shop.Name (string)
+  /// placeholders: {address} = address (string), {shop.Name} = shop.Name (string)
   /// shown through EmailText.text
-  /// beside: "Confirm your address", "Confirm my address", "The code works for fifteen minutes, the link for three days. If you did not open an account, ignore this mail — nothing happens."
-  text "Confirm that {account.Email} is yours, and your {shop.Name} account is ready." => "أكّد أن {account.Email} عنوانك، ويصبح حسابك في {shop.Name} جاهزًا.";
+  text "Confirm that {address} is yours, and your {shop.Name} account is ready." => "أكّد أن {address} عنوانك، ويصبح حسابك في {shop.Name} جاهزًا.";
   /// ShopConfirmAddressMail · text on the page
-  /// shown through EmailHeading.text
-  /// beside: "Confirm my address", "The code works for fifteen minutes, the link for three days. If you did not open an account, ignore this mail — nothing happens."
-  text "Confirm your address" => "أكّد عنوانك";
+  /// placeholders: {address} = address (string), {shop.Name} = shop.Name (string)
+  /// shown through EmailText.text
+  text "Confirm that {address} is yours, and your {shop.Name} account moves to it." => "أكّد أن {address} عنوانك، وسينتقل إليه حسابك في {shop.Name}.";
   /// ShopConfirmAddressMail · text on the page
   /// placeholders: {link} = link (string)
   /// shown through EmailText.text
-  /// beside: "Confirm your address", "Confirm my address", "The code works for fifteen minutes, the link for three days. If you did not open an account, ignore this mail — nothing happens."
+  /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask for this, ignore this mail — nothing happens."
   text "Or open this link: {link}" => "أو افتح هذا الرابط: {link}";
   /// ShopConfirmAddressMail · text on the page
   /// shown through EmailNote.text
-  /// beside: "Confirm your address", "Confirm my address"
-  text "The code works for fifteen minutes, the link for three days. If you did not open an account, ignore this mail — nothing happens." => "يعمل الرمز لمدة خمس عشرة دقيقة، والرابط لمدة ثلاثة أيام. إن لم تفتح حسابًا فتجاهل هذه الرسالة، ولن يحدث شيء.";
-  /// ShopConfirmAddressMail · text on the page
-  /// placeholders: {code} = code (string)
-  /// shown through EmailText.text
-  /// beside: "Confirm your address", "Confirm my address", "The code works for fifteen minutes, the link for three days. If you did not open an account, ignore this mail — nothing happens."
-  text "Type this code where you were asked for it: {code}" => "اكتب هذا الرمز حيث طُلب منك: {code}";
-
-  // ── ShopConfirmEmail ──
-  /// ShopConfirmEmail · an error message
-  /// shown through Exception
-  error "That link has expired or was already used — sign in to have a new one sent." => "انتهت صلاحية هذا الرابط أو سبق استخدامه. سجّل الدخول ليُرسل إليك رابط جديد.";
-
-  // ── ShopConfirmEmailCode ──
-  /// ShopConfirmEmailCode · an error message
-  /// shown through Exception
-  error "Type the password you chose for this account." => "اكتب كلمة المرور التي اخترتها لهذا الحساب.";
+  text "The code works for fifteen minutes, the link for three days. If you did not ask for this, ignore this mail — nothing happens." => "يعمل الرمز لمدة خمس عشرة دقيقة، والرابط لمدة ثلاثة أيام. إن لم تطلب ذلك فتجاهل هذه الرسالة، ولن يحدث شيء.";
 
   // ── ShopCounter ──
   /// ShopCounter · a control's name for screen readers
@@ -4686,6 +4805,14 @@ translations ar {
   /// shown through EmptyState.title
   title "Nothing rung up yet" => "لم يُسجَّل شيء بعد";
 
+  // ── ShopCounterPage (/staff/counter) ──
+  /// ShopCounterPage · /staff/counter · text on the page
+  /// shown through PageTitle.text
+  text "Counter" => "الكاشير";
+  /// ShopCounterPage · /staff/counter · a title
+  /// shown through [Title]
+  title "Counter" => "الكاشير";
+
   // ── ShopDesk ──
   /// ShopDesk · a button's label · at most ~15 characters
   /// shown through Tab.label
@@ -4723,6 +4850,14 @@ translations ar {
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Products", "Stock"
   button "Wholesale" => "البيع بالجملة";
+
+  // ── ShopDeskPage (/staff/desk) ──
+  /// ShopDeskPage · /staff/desk · text on the page
+  /// shown through PageTitle.text
+  text "Desk" => "المكتب";
+  /// ShopDeskPage · /staff/desk · a title
+  /// shown through [Title]
+  title "Desk" => "المكتب";
 
   // ── ShopDownload ──
   /// ShopDownload · a control's name for screen readers
@@ -5119,39 +5254,6 @@ translations ar {
   /// placeholders: {c.State} = c.State (string), {c.ValidUntil} = c.ValidUntil (string), {value} = … (string)
   text "{c.State} · valid until {c.ValidUntil}{value}" => "{c.State} · صالحة حتى {c.ValidUntil}{value}";
 
-  // ── ShopMySignIn ──
-  /// ShopMySignIn · a button's label · at most ~18 characters
-  /// shown through Button.label
-  /// beside: "Email address", "New email address", "Current password"
-  button "Change email" => "تغيير البريد";
-  /// ShopMySignIn · a button's label · at most ~21 characters
-  /// shown through Button.label
-  /// beside: "Password", "Current password", "New password"
-  button "Change password" => "تغيير كلمة المرور";
-  /// ShopMySignIn · a label (a field, a list item, a menu entry) · at most ~23 characters
-  /// shown through Field.label
-  /// beside: "Password", "New password", "Change password"
-  label "Current password" => "كلمة المرور الحالية";
-  /// ShopMySignIn · a label (a field, a list item, a menu entry) · at most ~24 characters
-  /// shown through Field.label
-  /// beside: "Email address", "Current password", "Change email"
-  label "New email address" => "البريد الإلكتروني الجديد";
-  /// ShopMySignIn · text on the page
-  /// shown through SectionLabel.text
-  /// beside: "New email address", "Current password", "Change email"
-  text "Email address" => "البريد الإلكتروني";
-  /// ShopMySignIn · text on the page
-  /// shown through SectionLabel.text
-  /// beside: "Current password", "New password", "Change password"
-  text "Password" => "كلمة المرور";
-  /// ShopMySignIn · text on the page
-  /// placeholders: {newEmail} = newEmail (string)
-  /// shown through emailNote
-  text "You now sign in as {newEmail}. We have told your old address too." => "أصبحت تسجّل الدخول الآن باسم {newEmail}. وقد أبلغنا عنوانك القديم أيضًا.";
-  /// ShopMySignIn · text on the page
-  /// shown through passwordNote
-  text "Your password is changed." => "تم تغيير كلمة المرور.";
-
   // ── ShopMyStoreCredit ──
   /// ShopMyStoreCredit · a control's name for screen readers
   /// also in DeskCustomers
@@ -5182,10 +5284,6 @@ translations ar {
   /// shown through Field.label
   /// also in ShopNotifyWhenBack
   label "Tell me when it is back" => "أعلمني عندما يتوفر من جديد";
-  /// ShopNotifyMe · placeholder text inside an empty field · at most ~21 characters
-  /// shown through Field.placeholder
-  /// also in ShopNotifyWhenBack
-  placeholder "you@example.com" => "you@example.com";
 
   // ── ShopOpeningHours ──
   /// ShopOpeningHours · a control's name for screen readers
@@ -5443,6 +5541,7 @@ translations ar {
   /// ShopOrderHistory · text on the page
   /// shown through SectionLabel.text
   /// also in ShopPolicy
+  /// also in ShopReturnsPage /staff/returns
   /// also in ShopOrderByLink
   text "Returns" => "المرتجعات";
   /// ShopOrderHistory · text on the page
@@ -5507,9 +5606,6 @@ translations ar {
   text "Order {order.Reference}, placed {ToString} · {StatusText}" => "الطلب {order.Reference}، بتاريخ {ToString} · {StatusText}";
 
   // ── ShopPasswordResetMail ──
-  /// ShopPasswordResetMail · a button's label · at most ~30 characters
-  /// shown through EmailButton.label
-  button "Choose a new password" => "اختر كلمة مرور جديدة";
   /// ShopPasswordResetMail · the preview line an inbox shows beside an email's subject
   /// shown through ShopMailLayout.preview
   mailPreview "Reset your password" => "أعد تعيين كلمة المرور";
@@ -5519,25 +5615,21 @@ translations ar {
   /// ShopPasswordResetMail · text on the page
   /// placeholders: {link} = link (string)
   /// shown through EmailText.text
-  /// beside: "Choose a new password"
+  /// beside: "Reset your password", "Choose a new password", "The link works once, for an hour. If you did not ask, ignore this mail and nothing changes."
   text "Choose a new password here: {link}" => "اختر كلمة مرور جديدة من هنا: {link}";
   /// ShopPasswordResetMail · text on the page
   /// shown through EmailHeading.text
-  /// beside: "The link works once, for an hour. If you did not ask, ignore this mail and nothing changes."
+  /// beside: "Choose a new password", "The link works once, for an hour. If you did not ask, ignore this mail and nothing changes."
   text "Reset your password" => "أعد تعيين كلمة المرور";
   /// ShopPasswordResetMail · text on the page
   /// placeholders: {shop.Name} = shop.Name (string)
   /// shown through EmailText.text
-  /// beside: "Reset your password", "The link works once, for an hour. If you did not ask, ignore this mail and nothing changes."
+  /// beside: "Reset your password", "Choose a new password", "The link works once, for an hour. If you did not ask, ignore this mail and nothing changes."
   text "Somebody — hopefully you — asked to reset the password for your {shop.Name} account." => "طلب شخص ما، ونأمل أن تكون أنت، إعادة تعيين كلمة مرور حسابك في {shop.Name}.";
   /// ShopPasswordResetMail · text on the page
   /// shown through EmailNote.text
-  /// beside: "Reset your password"
+  /// beside: "Reset your password", "Choose a new password"
   text "The link works once, for an hour. If you did not ask, ignore this mail and nothing changes." => "يعمل الرابط مرة واحدة، لمدة ساعة. إن لم تطلب ذلك فتجاهل هذه الرسالة ولن يتغير شيء.";
-  /// ShopPasswordResetMail · text on the page
-  /// placeholders: {token} = token (string)
-  /// shown through EmailText.text
-  text "Your reset code: {token}" => "رمز إعادة التعيين: {token}";
 
   // ── ShopPayByLink ──
   /// ShopPayByLink · a button's label · at most ~49 characters
@@ -5710,11 +5802,6 @@ translations ar {
   /// beside: "See your order"
   text "Your refund is on its way" => "المبلغ المسترد في الطريق إليك";
 
-  // ── ShopResetPassword ──
-  /// ShopResetPassword · an error message
-  /// shown through Exception
-  error "That reset link has expired or was already used — ask for a new one." => "انتهت صلاحية رابط إعادة التعيين هذا أو سبق استخدامه. اطلب رابطًا جديدًا.";
-
   // ── ShopResumeBag ──
   /// ShopResumeBag · a control's name for screen readers
   /// beside: "Your bag, as you left it"
@@ -5794,6 +5881,11 @@ translations ar {
   /// beside: "Sending your return back", "See your order"
   text "We have accepted your return. Please post the parcel to:" => "قبلنا طلب الإرجاع. يرجى إرسال الطرد بالبريد إلى:";
 
+  // ── ShopReturnsPage (/staff/returns) ──
+  /// ShopReturnsPage · /staff/returns · a title
+  /// shown through [Title]
+  title "Returns" => "المرتجعات";
+
   // ── ShopSearchPage ──
   /// ShopSearchPage · a control's name for screen readers
   accessibleName "Size" => "المقاس";
@@ -5852,19 +5944,6 @@ translations ar {
   text "Your order is on its way" => "طلبك في الطريق إليك";
 
   // ── ShopSignIn ──
-  /// ShopSignIn · a heading
-  /// shown through ShopAddressCodeStep.heading
-  heading "Sign in" => "تسجيل الدخول";
-  /// ShopSignIn · a label (a field, a list item, a menu entry) · at most ~14 characters
-  /// shown through Field.label
-  /// beside: "Sign in", "Email", "Sign in", "Create an account"
-  /// also in ShopSignUp
-  /// also in ShopConfirmAddress
-  label "Password" => "كلمة المرور";
-  /// ShopSignIn · a link · at most ~24 characters
-  /// shown through TextLink.label
-  /// beside: "Forgotten your password?"
-  link "Create an account" => "إنشاء حساب";
   /// ShopSignIn · a link · at most ~34 characters
   /// shown through TextLink.label
   /// beside: "Create an account"
@@ -5880,66 +5959,42 @@ translations ar {
   /// ShopSignIn · text on the page
   /// shown through problem
   text "That email and password do not match an account." => "البريد الإلكتروني وكلمة المرور لا يطابقان أي حساب.";
-  /// ShopSignIn · a title
-  /// shown through PageHead.title
-  /// beside: "Email", "Password", "Create an account"
-  title "Sign in" => "تسجيل الدخول";
 
   // ── ShopSignUp ──
-  /// ShopSignUp · a button's label · at most ~20 characters
-  /// shown through Button.label
-  /// beside: "Your name", "Email", "Password", "I already have an account"
-  button "Create account" => "إنشاء الحساب";
-  /// ShopSignUp · a heading
-  /// shown through ShopAddressCodeStep.heading
-  heading "Create an account" => "إنشاء حساب";
   /// ShopSignUp · a hint under a field
   /// shown through Field.hint
-  /// beside: "Your name", "Email", "Create account", "I already have an account"
+  /// beside: "Create an account", "Your name", "Email", "Create account"
   /// also in ShopConfirmAddress
   /// also in ShopChooseNewPassword
-  /// also in ShopMySignIn
   hint "At least 8 characters." => "8 أحرف على الأقل.";
-  /// ShopSignUp · a label (a field, a list item, a menu entry) · at most ~15 characters
-  /// shown through Field.label
-  /// beside: "Email", "Password", "Create account", "I already have an account"
-  label "Your name" => "اسمك";
-  /// ShopSignUp · a link · at most ~21 characters
-  /// shown through TextLink.label
-  /// also in ShopAddressCodeStep
-  /// also in ShopForgotPassword
-  link "Back to sign in" => "العودة لتسجيل الدخول";
-  /// ShopSignUp · a link · at most ~35 characters
-  /// shown through TextLink.label
-  /// beside: "Your name", "Email", "Password", "Create account"
-  link "I already have an account" => "لدي حساب بالفعل";
-  /// ShopSignUp · message
-  /// placeholders: {mailed} = mailed (string)
-  /// shown through Alert.message
-  /// beside: "Back to sign in"
-  message "We have sent a message to {mailed} — it says what to do next." => "أرسلنا رسالة إلى {mailed} توضح لك الخطوة التالية.";
   /// ShopSignUp · message
   /// placeholders: {mailed} = mailed (string)
   /// shown through ShopAddressCodeStep.intro
   message "We have sent a message to {mailed}. Type the code it gives you — or open its link." => "أرسلنا رسالة إلى {mailed}. اكتب الرمز الوارد فيها، أو افتح رابطها.";
   /// ShopSignUp · a subtitle
   /// shown through PageHead.subtitle
+  /// beside: "Your name", "Email", "Password", "Create account"
   subtitle "Keep your bag between visits, follow your orders and send things back." => "احتفظ بسلتك بين الزيارات، وتابع طلباتك، وأرجع ما تريد.";
-  /// ShopSignUp · a title
-  /// shown through PageHead.title
-  title "Create an account" => "إنشاء حساب";
 
-  // ── ShopSignup ──
-  /// ShopSignup · an error message
-  /// shown through Exception
-  /// also in ShopResetPassword
-  /// also in ShopChangePassword
-  /// also in ShopClaimAddress
-  error "Choose a password of at least 8 characters." => "اختر كلمة مرور من 8 أحرف على الأقل.";
-  /// ShopSignup · an error message
-  /// shown through Exception
-  /// also in ShopChangeEmail
-  error "That does not look like an email address." => "لا يبدو هذا عنوان بريد إلكتروني.";
+  // ── ShopStaffSignInPage (/staff) ──
+  /// ShopStaffSignInPage · /staff · a control's name for screen readers
+  /// beside: "Signed in"
+  accessibleName "Staff pages" => "صفحات الموظفين";
+  /// ShopStaffSignInPage · /staff · a control's name for screen readers
+  accessibleName "Staff sign-in" => "دخول الموظفين";
+  /// ShopStaffSignInPage · /staff · a label (a field, a list item, a menu entry) · at most ~10 characters
+  /// shown through NavLink.Label
+  label "Desk" => "المكتب";
+  /// ShopStaffSignInPage · /staff · text on the page
+  /// shown through PageTitle.text
+  text "Sign in" => "تسجيل الدخول";
+  /// ShopStaffSignInPage · /staff · text on the page
+  /// shown through PageTitle.text
+  /// beside: "Staff pages"
+  text "Signed in" => "تم تسجيل الدخول";
+  /// ShopStaffSignInPage · /staff · a title
+  /// shown through [Title]
+  title "Staff sign-in" => "دخول الموظفين";
 
   // ── ShopStoreCreditMail ──
   /// ShopStoreCreditMail · a button's label · at most ~24 characters
@@ -5984,6 +6039,79 @@ translations ar {
   /// shown through Exception
   error "This shop does not show prices in {code}." => "لا يعرض هذا المتجر الأسعار بعملة {code}.";
 
+  // ── SignInForm ──
+  /// SignInForm · a label (a field, a list item, a menu entry) · at most ~10 characters
+  /// shown through Field.label
+  /// also in SecondFactorCodeStep
+  /// also in ShopAddressCodeStep
+  label "Code" => "الرمز";
+  /// SignInForm · a label (a field, a list item, a menu entry) · at most ~11 characters
+  /// shown through Field.label
+  /// beside: "Password", "Sign in", "Forgot your password?"
+  /// also in SignUpForm
+  /// also in ForgotPasswordForm
+  /// also in ListSignupForm
+  label "Email" => "البريد الإلكتروني";
+  /// SignInForm · a label (a field, a list item, a menu entry) · at most ~14 characters
+  /// shown through Field.label
+  /// beside: "Email", "Sign in", "Forgot your password?"
+  /// also in SignUpForm
+  /// also in ShopSignIn
+  /// also in ShopSignUp
+  label "Password" => "كلمة المرور";
+  /// SignInForm · a link · at most ~24 characters
+  /// shown through TextLink.label
+  /// also in ShopSignIn
+  link "Create an account" => "إنشاء حساب";
+  /// SignInForm · placeholder text inside an empty field · at most ~21 characters
+  /// shown through Field.placeholder
+  /// beside: "Password", "Sign in", "Forgot your password?"
+  /// also in SignUpForm
+  /// also in ForgotPasswordForm
+  /// also in ShopNotifyMe
+  placeholder "you@example.com" => "you@example.com";
+
+  // ── SignInPage (/login) ──
+  /// SignInPage · /login · a title
+  /// shown through [Title]
+  /// also in ShopSignIn
+  title "Sign in" => "تسجيل الدخول";
+
+  // ── SignInScreen ──
+  /// SignInScreen · a heading
+  /// shown through AccountsFrame.heading
+  /// also in ShopSignIn
+  heading "Sign in" => "تسجيل الدخول";
+
+  // ── SignUpForm ──
+  /// SignUpForm · a button's label · at most ~20 characters
+  /// shown through Button.label
+  /// beside: "Your name", "Email", "Password", "I already have an account"
+  /// also in ShopSignUp
+  button "Create account" => "إنشاء الحساب";
+  /// SignUpForm · a label (a field, a list item, a menu entry) · at most ~15 characters
+  /// shown through Field.label
+  /// beside: "Email", "Password", "Create account", "I already have an account"
+  /// also in ShopSignUp
+  label "Your name" => "اسمك";
+  /// SignUpForm · a link · at most ~35 characters
+  /// shown through TextLink.label
+  /// beside: "Your name", "Email", "Password", "Create account"
+  /// also in ShopSignUp
+  link "I already have an account" => "لدي حساب بالفعل";
+
+  // ── SignUpPage (/sign-up) ──
+  /// SignUpPage · /sign-up · a title
+  /// shown through [Title]
+  /// also in ShopSignUp
+  title "Create an account" => "إنشاء حساب";
+
+  // ── SignUpScreen ──
+  /// SignUpScreen · a heading
+  /// shown through AccountsFrame.heading
+  /// also in ShopSignUp
+  heading "Create an account" => "إنشاء حساب";
+
   // ── StartAgeCheck ──
   /// StartAgeCheck · an error message
   /// shown through Exception
@@ -6022,6 +6150,12 @@ translations ar {
   /// placeholders: {order.Reference} = order.Reference (string), {order.Status.Label} = order.Status.Label (string)
   /// shown through Exception
   error "{order.Reference} is {order.Status.Label}, not waiting to be picked." => "حالة الطلب {order.Reference} هي {order.Status.Label}، وهو لا ينتظر التجهيز.";
+
+  // ── StartStepUp ──
+  /// StartStepUp · an error message
+  /// shown through ValidationException
+  /// also in SaveMyDetails
+  error "Sign in first." => "سجّل الدخول أولًا.";
 
   // ── StatusDetail ──
   /// StatusDetail · text on the page
@@ -6081,9 +6215,9 @@ translations ar {
 
   // ── TellErased ──
   /// TellErased · an error message
-  /// placeholders: {a.Key} = a.Key (string), {ex.Message} = ex.Message (string)
+  /// placeholders: {Key} = a.Key(…) (string), {ex.Message} = ex.Message (string)
   /// shown through Exception
-  error "The erasure did not run: the shop add-on '{a.Key}' could not erase what it keeps of the customer ({ex.Message}). Nothing was erased — try again once it can." => "لم يتم الحذف: تعذّر على إضافة المتجر '{a.Key}' حذف ما تحتفظ به من بيانات العميل ({ex.Message}). لم يُحذف شيء، فحاول مجددًا عندما يصبح ذلك ممكنًا.";
+  error "The erasure did not run: the shop add-on '{Key}' could not erase what it keeps of the customer ({ex.Message}). Nothing was erased — try again once it can." => "لم يتم الحذف: تعذّر على إضافة المتجر '{Key}' حذف ما تحتفظ به من بيانات العميل ({ex.Message}). لم يُحذف شيء، فحاول مجددًا عندما يصبح ذلك ممكنًا.";
 
   // ── UndoReturnLine ──
   /// UndoReturnLine · an error message
@@ -6105,6 +6239,12 @@ translations ar {
   /// placeholders: {v.Percent} = v.Percent (decimal), {OrderMoney} = OrderMoney(…) (string)
   /// shown through VatLines()
   text "Of which VAT ({v.Percent} %): {OrderMoney}" => "منها ضريبة القيمة المضافة ({v.Percent} %): {OrderMoney}";
+
+  // ── VerifyEmailPage (/verify-email/{token}) ──
+  /// VerifyEmailPage · /verify-email/{token} · a title
+  /// shown through [Title]
+  /// also in ShopConfirmAddress
+  title "Confirm your address" => "أكّد عنوانك";
 
   // ── VoidGiftCard ──
   /// VoidGiftCard · an error message

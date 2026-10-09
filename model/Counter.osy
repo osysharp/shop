@@ -23,11 +23,12 @@
 //    sale — to use a manufacturer-declared cash register with a certified control unit, unless its cash sales are at
 //    most four price base amounts a year (236 800 kr in 2026) or they are invoiced. This counter keeps every sale as an
 //    order with an invoice number, which satisfies the bookkeeping law; it has no control unit and is not declared,
-//    and must not be sold as a cash register in Sweden above that threshold. Cash itself is not offered: see ledger
-//    D-COUNTERCASH1. The README says the same.
+//    and must not be sold as a cash register in Sweden above that threshold. Notes and coins are not taken at this counter;
+//    the README says the same.
 
 namespace Osysharp.Shop;
 
+using Osysharp.Identity;
 using Osysharp.Payments;
 using Osysharp.Workflow;
 using Osysharp.Delivery;
@@ -36,14 +37,15 @@ using Osysharp.Storage;
 // ── where a clerk sells ──────────────────────────────────────────────────────────────────────────────────────────
 
 /// The counters the caller sells at — every active location for staff and an unlimited clerk, one for a clerk whose
-/// grant names it. Empty for a shop without locations (it has one counter, which needs no name).
+/// limit names it (`ShopRoleLimit`). Empty for a shop without locations (it has one counter, which needs no name).
 [Authorize(IsShopCounter)]
 public List<StockLocation> MyCounters() {
   var me = Session.CurrentUser;
-  var grants = ShopRoleGrant.Include(g => g.Location).Where(g => g.Member == me && (g.Role == ShopRole.Counter || g.Role == ShopRole.Staff)).ToList();
   var all = ShopLocations().Where(l => l.Active).ToList();
-  if (grants.Any(g => g.Role == ShopRole.Staff || g.Location == null)) { return all; }
-  return all.Where(l => grants.Any(g => g.Location != null && g.Location.Id == l.Id)).ToList();
+  if (RoleGrant.Any(g => g.Member == me && g.Role == ShopRole.Staff)) { return all; }
+  var limit = ShopRoleLimit.Include(l => l.Location).FirstOrDefault(l => l.Member == me && l.Role == ShopRole.Counter);
+  if (limit == null) { return all; }
+  return all.Where(l => l.Id == limit.Location.Id).ToList();
 }
 
 /// Whether the caller may sell at `at` (null: a shop without locations) — what `SellsAt` says in a rule.
@@ -54,11 +56,24 @@ bool CanSellAt(StockLocation? at) {
 
 /// Limits a counter clerk to one location's counter — or, with none, lets them sell at every one. Staff are never limited.
 [Authorize(IsShopStaff)]
-public void LimitCounter(ShopAccount clerk, StockLocation? location) {
-  var grant = ShopRoleGrant.FirstOrDefault(g => g.Member == clerk && g.Role == ShopRole.Counter);
-  if (grant == null) { throw new Exception($"{clerk.Name ?? clerk.Email} does not sell at the counter."); }
-  grant.Location = location;
+public void LimitCounter(Principal clerk, StockLocation? location) {
+  if (!RoleGrant.Any(g => g.Member == clerk && g.Role == ShopRole.Counter)) {
+    throw new Exception($"{(clerk.DisplayName != "" ? clerk.DisplayName : clerk.Email)} does not sell at the counter.");
+  }
+  LimitRole(clerk, ShopRole.Counter, location);
   UnitOfWork.Commit();
+}
+
+/// Limits `member`'s `role` to `location` — or, with none, lifts the limit.
+void LimitRole(Principal member, ShopRole role, StockLocation? location) {
+  var limit = ShopRoleLimit.FirstOrDefault(l => l.Member == member && l.Role == role);
+  if (location == null) {
+    if (limit != null) { limit.Delete(); }
+  } else if (limit == null) {
+    new ShopRoleLimit { Member = member, Role = role, Location = location! };
+  } else {
+    limit.Location = location!;
+  }
 }
 
 // ── the sale being rung up ───────────────────────────────────────────────────────────────────────────────────────
@@ -279,7 +294,7 @@ public entity CounterCustomer {
   [Required] Bag Bag;
   [Required, MaxLength(255)] string Email;
   /// The clerk who asked — the only clerk who reads the answer.
-  [Required] ShopAccount ServedBy;
+  [Required] Principal ServedBy;
   CounterCustomerStatus Status;                      // no default — CounterCustomerLife owns it
   // Written by the shop:
   ShopAccount? Account;
@@ -390,7 +405,7 @@ void ConfirmCounterCustomer(CounterCustomer c) {
   var account = ShopAccount.First(a => a.Email == email);
   c.Account = account;
   c.ConfirmedAt = DateTime.UtcNow;
-  c.Name = account.Name ?? account.Email;
+  c.Name = ShopNameOf(account);
   c.Problem = null;
   c.CreditBalance = CreditBalanceOf(account);
   var trade = WholesaleOf(account);
@@ -400,16 +415,6 @@ void ConfirmCounterCustomer(CounterCustomer c) {
 /// The customer confirmed on `bag` for the sale being rung up — null for none.
 public CounterCustomer? ConfirmedCounterCustomer(Bag bag) {
   return CounterCustomer.Where(c => c.Bag == bag && c.Status == CounterCustomerStatus.Confirmed).OrderByDescending(c => c.ConfirmedAt).FirstOrDefault();
-}
-
-/// Whose prices a bag is priced at — its owner's, or, for a counter's sale, the customer who proved themselves with
-/// their code (`CounterCustomer`). Null for a guest and for a walk-in. ⚠ For a counter sale this is the CUSTOMER's
-/// account, which the clerk cannot read: hand it to no function as the clerk (it is refused). For their prices use
-/// `WholesaleOfBag(bag)`. Kept for apps written against 0.7 (removing it would make this a major release).
-public ShopAccount? BagCustomer(Bag bag) {
-  if (bag.Owner != null || !bag.AtCounter) { return bag.Owner; }
-  var c = ConfirmedCounterCustomer(bag);
-  return c == null ? null : c.Account;
 }
 
 /// What the clerk sees of a customer being brought in.
@@ -560,7 +565,7 @@ public entity CounterPayment {
   [MaxLength(200)] string? QrPath;
   [MaxLength(300)] string? Instructions;
   DateTime StartedAt;
-  [Required] ShopAccount StartedBy;
+  [Required] Principal StartedBy;
   security {
     allow create, read when IsShopCounter where StartedBy == user && Order.AtCounter && SellsAt(Order.SoldAt);
     allow create, read when IsShopStaff;
@@ -762,7 +767,7 @@ public enum CounterReturnStatus {
 /// by the provider or on the terminal, Swish by Swish, store credit to the account) — and writes what came of it.
 public entity CounterReturn {
   [Required] Order Order;
-  [Required] ShopAccount ServedBy;
+  [Required] Principal ServedBy;
   [MaxLength(300)] string? Reason;
   /// The customer would rather have store credit — only for a sale with an account.
   bool AsCredit = false;

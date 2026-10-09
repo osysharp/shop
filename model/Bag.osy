@@ -3,7 +3,7 @@
 // first time a signed-in customer's visit is seen, what that visit had in its bag moves into the account's — so signing
 // in half-way through shopping loses nothing.
 //
-// ⚑ A GUEST'S BAG IS ITS OWN VISIT'S, and nobody else's (D-GUESTROWS1). The functions below never take "which visit" —
+// ⚑ A GUEST'S BAG IS ITS OWN VISIT'S, and nobody else's. The functions below never take "which visit" —
 //   they read the caller's own `Visitor.Id`, which the caller cannot choose — and the rules below say the same thing
 //   again, so a guest reads and writes only the bag of the browser it is. What may be bought, and how many, is decided
 //   by these functions and by the order's workflow, on the server.
@@ -93,7 +93,7 @@ public entity Bag {
     //   orders' contact and their lists name no grant, so the link reaches none of them. Guarded by lists.test.osy
     //   a_bag_link_reads_the_bag_and_nothing_of_whose_it_is.
     //   ONE rule covers the link's holder too: with nobody signed in `Owner != user` is unknown, and a deny whose
-    //   condition is unknown applies (SECURITY-INVARIANT(an-unknown-deny-denies), ledger D-DENYNULL1).
+    //   condition is unknown applies (SECURITY-INVARIANT(an-unknown-deny-denies)).
     deny read VisitId, BuyerVatNumber, BuyerCompany, BuyerBornOn, PickupPointFor, PickupPointId, PickupPointName,
               PickupPointStreet, PickupPointPostCode, PickupPointCity, PickupPointCountry
       when !IsShopStaff where Owner != null && Owner != user;
@@ -137,7 +137,7 @@ public entity AgreedLinePrice {
   [Required] BagLine Line;
   decimal Price;
   /// The currency `Price` is in (ISO 4217) — null: the shop's own. A subscription chosen in a currency the shop SELLS in
-  /// is agreed in it (D-SELLCURRENCY1), and is placed only in a bag bought in it (`SoldCurrencyProblem`).
+  /// is agreed in it, and is placed only in a bag bought in it (`SoldCurrencyProblem`).
   [MaxLength(3)] string? Currency;
   /// What the line is, as the order and invoice say it — "Pro, rest of the period" — instead of the variant's label.
   [MaxLength(160)] string? Label;
@@ -222,7 +222,7 @@ decimal GiftAmountNow(Bag bag, decimal amount, ExchangeRate? rate) {
 /// false.
 [AllowAnonymous]
 public Bag? BagFor(bool create) {
-  var me = Session.CurrentUser;
+  var me = MyShopAccount();
   var visitId = Visitor.Id;
   // ⚑ ONE BAG, HOWEVER MANY REQUESTS ASK AT ONCE. A page mounts several checkout parts together and each asks for the
   //   bag; two that both found none each made one. So the oldest is THE bag, and any other the same asking finds joins

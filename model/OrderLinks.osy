@@ -1,4 +1,4 @@
-// The customer's link to an order (D-ORDERLINK1). An order is read by the account it was placed from, by the visit
+// The customer's link to an order. An order is read by the account it was placed from, by the visit
 // that placed it, by staff and packers — and by whoever holds a signed `OrderLink` to it. The reference alone opens
 // nothing: it is printed on the parcel, read out on the phone and counts up by one, so it proves nothing about who
 // is asking.
@@ -54,7 +54,7 @@ public class OrderPageView {
   public Fulfilment Fulfilment;
   public string DeliveryLabel = "";
   public List<PayLinkLine> Lines = [];
-  /// The currency the order was placed and charged in — the shop's own unless it was sold in another (D-SELLCURRENCY1).
+  /// The currency the order was placed and charged in — the shop's own unless it was sold in another.
   public string? Currency = null;
   public decimal Discount = 0;
   public decimal Delivery = 0;

@@ -1,8 +1,7 @@
 // A customer's rights over their data (GDPR): to have a copy of it, and to have it erased.
 //
-// ⚑ ERASURE REMOVES THE PERSON — EXCEPT WHAT THE BOOKS MUST KEEP (owner, 2026-09-27: *"if you are a customer, ie have
-//   paid i think the business can keep the information around, but it can be made so you can't log in and you don't
-//   get email"*). GDPR's erasure right does not reach data kept to meet a legal obligation (art. 17(3)(b)), and an
+// ⚑ ERASURE REMOVES THE PERSON — EXCEPT WHAT THE BOOKS MUST KEEP. A customer who paid can no longer sign in and is no
+//   longer mailed, while the business keeps what its books require. GDPR's erasure right does not reach data kept to meet a legal obligation (art. 17(3)(b)), and an
 //   issued invoice must be kept AS ISSUED — the buyer's name and address on it — for the bookkeeping period. So:
 //   · an order that was INVOICED keeps its contact's name and address until that period ends (`RetainedUntil`: seven
 //     years after the end of the invoice's year); its email and phone go at once — nobody can reach them;
@@ -16,6 +15,7 @@
 
 namespace Osysharp.Shop;
 
+using Osysharp.Accounts;
 using Osysharp.MailingLists;
 
 using Osysharp.Storage;
@@ -58,7 +58,7 @@ public workflow ErasureRun {
   //   the customer's own "Erase my account" (or the desk's), and an autostarted run's `enter` is part of that commit —
   //   so everything local happens there, and the caller's next read finds the account unable to sign in. Forgetting a
   //   saved card is a call to the provider (Stripe, over the network): in `enter` the commit would wait on it, and past
-  //   five seconds stop waiting (`workflow-first-step-waits-on-a-slow-call`, D-AUTOSTART1). It runs after the commit,
+  //   five seconds stop waiting (`workflow-first-step-waits-on-a-slow-call`). It runs after the commit,
   //   and the erasure is recorded as done once it has.
   event Retry();
 
@@ -98,7 +98,7 @@ public string ErasureBlockedBy(ShopAccount account) {
 /// The signed-in customer asks to be erased. Throws the sentence to show when it cannot be done yet. The page signs
 /// them out once it has answered.
 public void EraseMyAccount() {
-  var me = Session.CurrentUser;
+  var me = MyShopAccount();
   if (me == null) { throw new Exception("Sign in to erase your account."); }
   var blocked = ErasureBlockedBy(me);
   if (blocked != "") { throw new Exception(blocked); }
@@ -169,19 +169,20 @@ void Erase(ShopAccount account) {
     m.Html = null;
     foreach (var image in m.Images.ToList()) { image.Delete(); }
   }
-  foreach (var r in ShopPasswordReset.Where(r => r.Account == account).ToList()) { r.Delete(); }
-  foreach (var g in ShopRoleGrant.Where(g => g.Member == account).ToList()) { g.Delete(); }
+  foreach (var l in ShopRoleLimit.Where(l => l.Member == account).ToList()) { l.Delete(); }
   foreach (var b in Bag.Where(b => b.Owner == account).ToList()) {
     foreach (var l in b.Lines.ToList()) { l.Delete(); }
   }
-  account.Email = $"erased-{account.Id}@erased.invalid";
-  account.PasswordHash = Security.RandomHex(32);                 // no password hashes to it: it cannot sign in
-  account.Name = null;
-  account.Phone = null;
+  account.ContactPhone = null;
   account.Street = null;
   account.PostCode = null;
   account.City = null;
   account.Country = null;
+  account.Language = null;
+  // …and the account itself, as Osysharp.Accounts erases one: it can no longer sign in (no password, no second factor,
+  // no linked provider, no role, every session ended, every link and code it was mailed spent), and its address and name
+  // are gone — the row stays, because the books' orders still name it.
+  EraseAccount(account);
 }
 
 /// The customer's saved ways to pay, forgotten — at the provider too, which is a call over the network, and so made on
@@ -267,7 +268,8 @@ public class DataExportMail {
 /// Everything the shop holds about an account, as JSON.
 public string PersonalData(ShopAccount account) {
   var shop = TheShop();
-  var export = new DataExport { Email = account.Email, Name = account.Name, Phone = account.Phone, Street = account.Street,
+  var export = new DataExport { Email = account.Email, Name = account.DisplayName == "" ? null : account.DisplayName,
+                                Phone = account.ContactPhone, Street = account.Street,
                                 PostCode = account.PostCode, City = account.City, Country = account.Country };
   foreach (var o in Order.Where(o => o.Account == account).Include(o => o.Lines).Include(o => o.Contact).OrderBy(o => o.PlacedAt).ToList()) {
     var c = o.Contact.FirstOrDefault();
@@ -289,7 +291,7 @@ public string PersonalData(ShopAccount account) {
 
 /// The signed-in customer's copy of their data — a link that expires.
 public string MyDataLink() {
-  var me = Session.CurrentUser;
+  var me = MyShopAccount();
   if (me == null) { throw new Exception("Sign in to download your data."); }
   return DataLink(me);
 }

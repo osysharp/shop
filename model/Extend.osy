@@ -1,5 +1,4 @@
-// ADD-ONS — how another kit extends the shop without forking it (owner, 2026-09-27: *"if we can provide loyalty and
-// everything else as addon kits thats much cooler"*). Discount codes, loyalty points, gift cards, a referral scheme:
+// ADD-ONS — how another kit extends the shop without forking it. Discount codes, loyalty points, gift cards, a referral scheme:
 // each is its own kit that `use`s this one and implements `IShopAddOn`. ⭐ THE APP LISTS NOTHING: the shop finds every
 // add-on in the app (`App.Implementations<IShopAddOn>()`), so `use Osysharp.Shop.Discounts@0;` is the whole of
 // installing one, and `use Osysharp.Shop.Discounts@0 { without DiscountCodes; }` leaves its pricing out. They come in

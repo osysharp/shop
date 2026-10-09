@@ -4,7 +4,7 @@ using Osysharp.Shop;
 using Osysharp.Workflow;
 
 void SignInAtTheCounter() {
-  Ui.Visit("/account/sign-in");
+  Ui.Visit("/login");
   Ui.Fill("Email", "cia@shop.test");
   Ui.Fill("Password", "till-pass-1");
   Ui.Click("Sign in");

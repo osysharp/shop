@@ -45,7 +45,7 @@ public entity Download {
   /// The file's name as the customer sees it, and where it is — copied when the download is opened.
   [Required, MaxLength(160)] string Name;
   /// What was bought and the order it was bought on, copied when the download is opened: the download's own link
-  /// opens this row and nothing of the order (an order is read through its own link, D-ORDERLINK1).
+  /// opens this row and nothing of the order (an order is read through its own link).
   [MaxLength(120)] string Product = "";
   [MaxLength(24)] string OrderReference = "";
   [Required, MaxLength(300)] string Path;

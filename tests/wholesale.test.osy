@@ -170,7 +170,7 @@ void a_customer_cannot_write_their_own_invoice_terms() {
   runas (Maja) {
     Bag("v-forge-terms", "Loafer", "38", 1);
     new Order { Fulfilment = Fulfilment.Collect, DeliveryMethod = "collect", PaymentMethod = "invoice", Subtotal = 120m, Total = 120m,
-                Account = Me(), PlacedAt = DateTime.UtcNow, Reference = "KT-TERMS", InvoiceDueAt = DateTime.UtcNow.AddDays(90), PaymentTermsDays = 90 };
+                Account = MyShopAccount(), PlacedAt = DateTime.UtcNow, Reference = "KT-TERMS", InvoiceDueAt = DateTime.UtcNow.AddDays(90), PaymentTermsDays = 90 };
     Assert.Throws<Exception>(() => UnitOfWork.Commit());
   }
   runas (Desk) { Assert.Equal(0, Order.Count()); }

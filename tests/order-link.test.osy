@@ -1,4 +1,4 @@
-// An order is read through its link, never by its reference (D-ORDERLINK1): by the account it was placed from, the
+// An order is read through its link, never by its reference: by the account it was placed from, the
 // visit that placed it, staff and packers, and whoever holds a signed `OrderLink` to it — and by nobody else.
 // SECURITY-INVARIANT(an-order-reads-through-its-link).
 
@@ -129,7 +129,7 @@ void every_mail_about_an_order_links_to_it_and_the_link_outlives_the_orders_paym
   Assert.NotEqual("", view.PaidOn);
 }
 
-// ── returns and the receipt through the link (D-ORDERLINK1's owed items) ─────────────────────────────────────────
+// ── returns and the receipt through the link ─────────────────────────────────────────
 // SECURITY-INVARIANT(a-link-opens-only-its-own-orders-return-and-receipt).
 
 [AllowAnonymous] int ReturnsSeenWith(OrderLink link) { return ReturnRequest.Count() + ReturnLine.Count(); }

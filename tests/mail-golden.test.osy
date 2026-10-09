@@ -1,18 +1,9 @@
-// ⭐ WHAT A CUSTOMER RECEIVES BY DEFAULT DOES NOT MOVE (D-BLOCKS1 slice 3). The shop's editable mails — the order
+// ⭐ WHAT A CUSTOMER RECEIVES BY DEFAULT DOES NOT MOVE. The shop's editable mails — the order
 // confirmation, on its way / collected, refunded — were rewritten from `Editable` parts onto REGIONS of blocks. That
 // is a change to how the words are kept, and it must not be a change to what the customer is sent: each mail's HTML
-// and its text twin, rendered with nothing arranged, are held here as fingerprints taken BEFORE the rewrite.
-// ⚑ Re-taken 2026-09-29 after merging with the guest-returns work (D-ORDERLINK1), which changed the withdrawal line
-//   and the shipped mail's return line on purpose ("return it from your order's page" for "sign in and return it from
-//   your orders", in English and Swedish) — the plain text was compared line by line and differed only there.
-// ⚑ Re-taken 2026-10-01 for the HTML alone: Osysharp.Ui 2.7.0 (the Switchboard floor — Mona Sans, new neutrals and ink,
-//   weights 720) and the var() resolution of D-BLOCKS1's paired ink restyled every mail. Every TEXT twin is unchanged,
-//   and the order confirmation's HTML with style/bgcolor/color attributes stripped was compared against a render by the
-//   binary at a0b1ed855 (where these were last taken): identical — only the styling moved.
-//
-// ⚑ Re-taken 2026-10-02 for the SWEDISH HTML alone (D-RTL1): a mail's document now says the language it is written in —
-//   `<html lang="sv">`, where every mail said `lang="en"` whatever its language. The English HTML and every text twin
-//   are unchanged (their fingerprints did not move), so nothing else in what a customer receives moved.
+// and its text twin, rendered with nothing arranged, are held here as fingerprints. A fingerprint is re-taken only for
+// a change made on purpose — new wording, a restyled theme, the document's `lang` — after comparing the text twin line
+// by line.
 //
 // Every address is replaced before the fingerprint is taken: a link to an order carries a fresh signature each time
 // it is minted (OrderLink), and the app's own address is the local platform's port — neither is the mail's content.

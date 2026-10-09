@@ -1,7 +1,9 @@
-// A customer's language, on their account (D-I18N1): set when they sign up in the language they are reading, and when
+// A customer's language, on their account: set when they sign up in the language they are reading, and when
 // they switch while signed in; what the shop's mail to them that is not about an order is written in — the words, the
 // money and the dates alike. An order's mail stays in the language the order was placed in.
 
+using Osysharp.Accounts;
+using Osysharp.Mail;
 using Osysharp.Shop;
 using Osysharp.Workflow;
 
@@ -10,21 +12,21 @@ using Osysharp.Workflow;
 [Test(Floor)]
 void signing_up_in_swedish_keeps_swedish_on_the_account_and_a_reset_mail_is_swedish() {
   Session.SetLanguage("sv");
-  Assert.NotEqual("", ShopSignup("sara@example.test", "long-enough-1", "Sara"));
+  Assert.NotEqual("", SignUp("sara@example.test", "long-enough-1", "Sara").Ticket);
   Session.SetLanguage("en");
-  Assert.Equal("", ShopRequestPasswordReset("sara@example.test"));
-  runas (Desk) {
-    Assert.Equal("sv-SE", ShopAccount.Single(a => a.Email == "sara@example.test").Language);
-    var mail = ShopMail.Single(m => m.To == "sara@example.test");
+  Assert.Equal("", RequestPasswordReset("sara@example.test"));
+  runas (Desk) { Assert.Equal("sv-SE", ShopAccount.Single(a => a.Email == "sara@example.test").Language); }
+  runas (AuthBootstrap) {
+    var mail = OutgoingMail.Single(m => m.To == "sara@example.test" && !m.Subject.StartsWith("Bekräfta"));
     Assert.Equal("Återställ ditt lösenord hos Kit Test Shop", mail.Subject);
-    Assert.Contains("Välj ett nytt lösenord här: http", mail.Text);
-    Assert.DoesNotContain("Choose a new password", mail.Text);
+    Assert.Contains("Välj ett nytt lösenord här: http", mail.Text!);
+    Assert.DoesNotContain("Choose a new password", mail.Text!);
   }
   // …and one who signed up in English keeps English.
-  Assert.NotEqual("", ShopSignup("sam@example.test", "long-enough-1", "Sam"));
-  ShopRequestPasswordReset("sam@example.test");
-  runas (Desk) {
-    Assert.Equal("Reset your password at Kit Test Shop", ShopMail.Single(m => m.To == "sam@example.test").Subject);
+  Assert.NotEqual("", SignUp("sam@example.test", "long-enough-1", "Sam").Ticket);
+  RequestPasswordReset("sam@example.test");
+  runas (AuthBootstrap) {
+    Assert.Equal("Reset your password at Kit Test Shop", OutgoingMail.Single(m => m.To == "sam@example.test" && m.Subject.StartsWith("Reset")).Subject);
   }
 }
 
@@ -33,14 +35,14 @@ void signing_up_in_swedish_keeps_swedish_on_the_account_and_a_reset_mail_is_swed
 [Test(Floor)]
 void a_signed_in_customer_who_switches_language_keeps_it_on_their_account() {
   runas (Maja) {
-    Assert.Null(Me().Language);
+    Assert.Null(MyShopAccount().Language);
     RememberMyLanguage("sv");
-    Assert.Equal("sv-SE", Me().Language);
-    Assert.Equal("sv", ShopSpokenLanguage(Me().Language!));
+    Assert.Equal("sv-SE", MyShopAccount().Language);
+    Assert.Equal("sv", ShopSpokenLanguage(MyShopAccount().Language!));
     RememberMyLanguage("tlh");
-    Assert.Equal("sv-SE", Me().Language);
+    Assert.Equal("sv-SE", MyShopAccount().Language);
     RememberMyLanguage("en");
-    Assert.Equal("en", ShopSpokenLanguage(Me().Language!));
+    Assert.Equal("en", ShopSpokenLanguage(MyShopAccount().Language!));
   }
   RememberMyLanguage("sv");                            // a visitor: nothing to keep it on
   runas (Desk) { Assert.Null(ShopAccount.Single(a => a.Email == "olle@example.test").Language); }

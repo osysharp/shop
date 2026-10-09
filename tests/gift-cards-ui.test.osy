@@ -6,7 +6,7 @@ using Osysharp.Storage;
 using Osysharp.Workflow;
 
 void StaffOnTheDesk() {
-  Ui.Visit("/account/sign-in");
+  Ui.Visit("/login");
   Ui.Fill("Email", "anna@shop.test");
   Ui.Fill("Password", "desk-pass-1");
   Ui.Click("Sign in");
@@ -14,7 +14,7 @@ void StaffOnTheDesk() {
 }
 
 void MajaSignsIn() {
-  Ui.Visit("/account/sign-in");
+  Ui.Visit("/login");
   Ui.Fill("Email", "maja@example.test");
   Ui.Fill("Password", "maja-pass-1");
   Ui.Click("Sign in");
@@ -31,7 +31,7 @@ void the_desk_offers_what_the_app_adds_before_a_free_gift_card() {
   Assert.Visible("Make a discount code", within: "Usually simpler");
 }
 
-// D-GIFTCARD-FREECARDS1: a card given away still has its goods taxed when it is spent, so before one is issued the desk
+// A card given away still has its goods taxed when it is spent, so before one is issued the desk
 // says a discount code or store credit is usually the simpler gift — and takes staff to either.
 [Test(Floor)]
 void before_a_free_card_the_desk_points_to_a_discount_code_or_store_credit() {
@@ -47,7 +47,7 @@ void before_a_free_card_the_desk_points_to_a_discount_code_or_store_credit() {
   Assert.Hidden("Issue and mail it");
 }
 
-// D-GIFTCARD-SPV1: the setting on the desk, and the warning when the shop is not the kind a single-purpose card suits —
+// Single-purpose cards: the setting on the desk, and the warning when the shop is not the kind a single-purpose card suits —
 // this one sells VAT-free to businesses abroad (its VAT-number check).
 [Test(Floor)]
 void staff_turn_on_single_purpose_cards_and_the_desk_says_why_they_are_wrong_here() {

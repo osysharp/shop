@@ -9,7 +9,7 @@
 //       Delivery = [ new FlatRateDelivery { Label = "Delivery" }, new CollectInStore() ],
 //     };
 //
-// ⚑ THE SETUP IS CONFIGURATION — worked out once per app version and kept (D-SETTINGCACHE1) — so it does NOT read the
+// ⚑ THE SETUP IS CONFIGURATION — worked out once per app version and kept — so it does NOT read the
 //   shop's own settings. The SHOP reads them, where it uses them, so a change on the desk applies to the next order
 //   without a recompile:
 //   - a `ManualPayment` given no `Instructions` (and not offered only when collecting) is paid into the shop's account,
@@ -79,7 +79,7 @@ public class ShopSetup {
   /// Where the store's page for ONE order is — what every mail about an order opens ("See your order"), and where a
   /// payment provider sends the customer back to, then `/` and the `OrderLink` grant. The page takes it as
   /// `[Route("/order/{link}")] component P(OrderLink link)` and shows `ShopOrderByLink(link)`. A link, never the
-  /// reference: a reference opens nothing (D-ORDERLINK1).
+  /// reference: a reference opens nothing.
   public string OrderPath = "/order";
   /// Where the bag is on the store — what a bag reminder's button opens, after `SiteUrl`.
   public string BagPath = "/bag";
@@ -102,18 +102,9 @@ public class ShopSetup {
   public string DownloadPath = "/download";
   /// Where the store lets anybody check what is left on a gift card — what a gift card's mail links to.
   public string GiftCardBalancePath = "/gift-card";
-  /// Ask every account to prove its address before it is signed in (Accounts.osy): a new account's sign-up mails a link
-  /// AND a six-digit code, and neither the sign-up nor a sign-in answers a ticket until one of them is used. Sign-up then
-  /// answers a new address and a taken one alike — the MAIL says which. Off: a new account is signed in at once.
-  /// ⚠ It asks EVERY account that has not proven its address, the ones made before it was turned on too — each is sent
-  ///   a code the next time it signs in. The store's page for the link is `/account/confirm/{token}`, around
-  ///   `ShopConfirmAddress(token)`.
-  public bool RequireConfirmedEmail = false;
   /// The month (1–12) and day the shop's FISCAL year ends — 12/31 when it is the calendar year. An invoiced buyer kept
   /// for the books counts from it (`BooksKeepUntil`): Bokföringslagen keeps an accounting record for seven years from the
-  /// end of the calendar year in which its fiscal year ended. An organisation's policy may set it (owner, Q8).
-  /// ⚑ Interim home: once the Shop is a Privacy holder (D-PRIVACY1 slice 4) the app's ONE fiscal calendar is
-  ///   `PrivacySetup`'s, and this goes.
+  /// end of the calendar year in which its fiscal year ended. An organisation's policy may set it.
   [OrgPolicy(OrgPolicyMode.Default)] public int FiscalYearEndMonth = 12;
   [OrgPolicy(OrgPolicyMode.Default)] public int FiscalYearEndDay = 31;
 }
@@ -270,7 +261,7 @@ public void FillFromTheDesk(IDeliveryProvider d, ShopSettings shop) {
 [AllowAnonymous]
 public List<PaymentChoice> PaymentChoices(bool collecting) {
   var bag = BagFor(false);
-  return PaymentChoicesIn(collecting, bag == null ? TheShop().Currency : BagCurrency(bag), "", bag == null ? Session.CurrentUser : bag.Owner);
+  return PaymentChoicesIn(collecting, bag == null ? TheShop().Currency : BagCurrency(bag), "", bag == null ? MyShopAccount() : bag.Owner);
 }
 
 /// The ways to pay an order in `currency` (ISO 4217), for a buyer in `country` ("" while unknown), as `PaymentChoices` —

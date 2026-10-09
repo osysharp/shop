@@ -1,4 +1,4 @@
-// Single-purpose gift cards (D-GIFTCARD-SPV1): the desk setting `GiftCardsAreSinglePurpose` makes a card sold from then
+// Single-purpose gift cards: the desk setting `GiftCardsAreSinglePurpose` makes a card sold from then
 // on a single-purpose voucher — VAT at the standard rate on the SALE, none on what it pays for (EU VAT Directive
 // 2006/112/EC art. 30a(2), 30b(1)). The checkout, the order, the receipt and the desk say which it is; the desk warns
 // when the shop is not the kind of shop such a card is right for. The books are the bookkeeping kit's tests.

@@ -319,7 +319,7 @@ void a_customer_cannot_mint_or_top_up_a_gift_card() {
     });
     // A question she writes herself, answered "found, 1000" in advance, is answered by the shop instead.
     var forged = new GiftCardCheck { CodeHash = "0000000000000000000000000000000000000000000000000000000000000000", Found = true, Balance = 1000m,
-                                     Owner = Me() };
+                                     Owner = MyShopAccount() };
     UnitOfWork.Commit();
     Assert.False(forged.Found);
     Assert.Equal(0m, forged.Balance);
@@ -327,7 +327,7 @@ void a_customer_cannot_mint_or_top_up_a_gift_card() {
     Bag("v-forge", "Loafer", "38", 1);
     Assert.Throws<Exception>(() => {
       new Order { Fulfilment = Fulfilment.Collect, DeliveryMethod = "collect", PaymentMethod = "banktransfer",
-                  Subtotal = 120m, Total = 120m, Account = Me(), PlacedAt = DateTime.UtcNow, Reference = "KT-CARD",
+                  Subtotal = 120m, Total = 120m, Account = MyShopAccount(), PlacedAt = DateTime.UtcNow, Reference = "KT-CARD",
                   GiftCardUsed = 50m, GiftCardTaken = true, GiftCardReturned = -1000m };
       UnitOfWork.Commit();
     });
@@ -351,12 +351,12 @@ void a_buyer_cannot_spend_a_card_they_gave_away_by_its_id() {
       var way = DeliveryChoices("").Single(w => w.Id == "collect");
       var pay = PaymentChoices(true).Single(p => p.Key == "banktransfer");
       var priced = PriceBag(bag, new Placement { Name = "Maja Berg", Email = "maja@example.test", Way = way, Pay = pay,
-                                                 Fulfilment = Fulfilment.Collect }, Me());
+                                                 Fulfilment = Fulfilment.Collect }, MyShopAccount());
       var order = new Order { Fulfilment = Fulfilment.Collect, DeliveryMethod = way.Id, DeliveryLabel = way.Label,
                               PaymentMethod = pay.Key, PaymentLabel = pay.Label, PayInstructions = TheShop().BankDetails,
                               Subtotal = priced.Subtotal, Discount = priced.Discount, Delivery = priced.Delivery, Total = priced.Total,
                               Vat = priced.Vat, GiftCardsSold = priced.GiftCardsSold, HoldDays = priced.HoldDays,
-                              Account = Me(), PlacedAt = DateTime.UtcNow, Reference = "KT-STEAL", GiftCardUsed = 50m, PlacedFrom = bag };
+                              Account = MyShopAccount(), PlacedAt = DateTime.UtcNow, Reference = "KT-STEAL", GiftCardUsed = 50m, PlacedFrom = bag };
       new OrderContact { Order = order, Name = "Maja Berg", Email = "maja@example.test" };
       foreach (var l in priced.Lines) {
         new OrderLine { Order = order, Variant = l.Variant!, Quantity = l.Quantity, Price = l.Price, VatPercent = l.VatPercent,

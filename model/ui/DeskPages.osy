@@ -8,12 +8,13 @@
 //     }
 //
 // The add-on kits put their own desks beside these the same way (`/staff/codes`, `/staff/reviews`, `/staff/books`).
-// To tailor a page, take it over by name; to leave one out, `use Osysharp.Shop@0 { without ShopCounterPage; }`. Its
+// To tailor a page, take it over by name; to leave one out, `use Osysharp.Shop@1 { without ShopCounterPage; }`. Its
 // heading is `PageTitle`, which a store's own `PageTitle` dresses everywhere.
 
 namespace Osysharp.Shop;
 
 using Osysharp.Ui;
+using Osysharp.Accounts;
 
 /// The desk: orders for whoever packs them, and for staff the figures, the products, the stock, the customers, the gift
 /// cards, the mail and the settings.
@@ -41,24 +42,11 @@ public component ShopReturnsPage() {
 /// they may open (`Nav.Pages()`), so a counter clerk is not sent to a desk they cannot open. A desk page opened signed
 /// out goes to the app's login page and back; this one is for coming in the front door. To use a page of your own,
 /// take this one over by name (`component ShopStaffSignInPage()` in the app), or leave it out:
-/// `use Osysharp.Shop@0 { without ShopStaffSignInPage; }`.
+/// `use Osysharp.Shop@1 { without ShopStaffSignInPage; }`.
 [Route("/staff")] [Layout(WorkspaceFrame)] [AllowAnonymous] [Render(CSR)] [Title("Staff sign-in")]
 public component ShopStaffSignInPage() {
-  string email = "";
-  string password = "";
-  string problem = "";
-  string proving = "";
   // Who is here, read once as the page opens — signing in opens it again.
   var me = Session.CurrentUser;
-
-  action Submit() {
-    problem = "";
-    var answer = ShopLogin(email, password);
-    if (answer.MustConfirm) { proving = answer.Email; }
-    else if (answer.Ticket == "") { problem = "That email and password do not match a staff account."; }
-    // On to where they were headed — the desk they were sent here from — else back here, to the list of their pages.
-    else { Session.SignIn(answer.Ticket, "/staff"); }
-  }
 
   render {
     Stack(gap: 5, w: "100%", maxW: "420px", py: 16, label: "Staff sign-in") {
@@ -67,15 +55,11 @@ public component ShopStaffSignInPage() {
         Stack(gap: 3, role: UiRole.Navigation, label: "Staff pages") {
           foreach (var n in Nav.Pages()) { Link(href: n.To, label: n.Label) { Text(n.Label, color: Colors.Primary); } }
         }
-      } else if (proving != "") {
-        ShopAddressCodeStep(proving, password, "Sign in", then: "/staff",
-                            intro: $"Confirm your address first — we have mailed a code to {proving}.");
       } else {
         PageTitle("Sign in");
-        Field("Email", value: email, type: "email", onEnter: Submit);
-        Field("Password", value: password, type: "password", onEnter: Submit);
-        if (problem != "") { Alert(problem, tone: Tone.Danger); }
-        Button("Sign in", onPress: Submit, tone: Tone.Primary, size: Size.Lg);
+        // Osysharp.Accounts' own form: the password, then an authenticator's code or setting one up when the account
+        // has (or the app asks for) two-step sign-in — what a desk that handles money should be able to require.
+        SignInForm(then: "/staff");
       }
     }
   }

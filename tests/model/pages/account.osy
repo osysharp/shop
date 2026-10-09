@@ -4,12 +4,13 @@ using Osysharp.Shop;
 using Osysharp.Ui;
 
 [Route("/")] [AllowAnonymous] component KitHome() { render { Text("Kit test shop"); } }
-[Route("/account/sign-in")] [AllowAnonymous] component KitSignIn() { render { ShopSignIn(); } }
-[Route("/account/new")] [AllowAnonymous] component KitSignUp() { render { ShopSignUp(); } }
-[Route("/account/forgot")] [AllowAnonymous] component KitForgot() { render { ShopForgotPassword(); } }
-[Route("/account/reset/{token}")] [AllowAnonymous] component KitReset(string token) { render { ShopChooseNewPassword(token); } }
-[Route("/account/confirm/{token}")] [AllowAnonymous] component KitConfirm(string token) { render { ShopConfirmAddress(token); } }
-[Route("/account")] component KitAccount() { render { ShopAccountPanel(); } }
+// The Accounts kit's addresses, taken over by name — what its mail links to, and where a visitor is sent to sign in.
+[Route("/login")] [AllowAnonymous] component SignInPage() { render { ShopSignIn(); } }
+[Route("/sign-up")] [AllowAnonymous] component SignUpPage() { render { ShopSignUp(); } }
+[Route("/forgot-password")] [AllowAnonymous] component ForgotPasswordPage() { render { ShopForgotPassword(); } }
+[Route("/reset-password/{token}")] [AllowAnonymous] component ResetPasswordPage(string token) { render { ShopChooseNewPassword(token); } }
+[Route("/verify-email/{token}")] [AllowAnonymous] component VerifyEmailPage(string token) { render { ShopConfirmAddress(token); } }
+[Route("/account")] component AccountPage() { render { ShopAccountPanel(); } }
 [Route("/desk")] component KitDesk() { render { ShopDesk(); } }
 /// What this store offers before a free gift card — added to the shop's slot, as an add-on kit adds its own.
 component CodesInstead() : GiftCardGoodwill {

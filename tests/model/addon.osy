@@ -24,7 +24,7 @@ public class Promo : IShopAddOn {
   }
   public void CustomerErased(ShopAccount account) {
     // A customer whose saved phone is this stands for one whose reviews a locked service cannot delete.
-    if (account.Phone == "000-cannot-erase") { throw new Exception("the reviews service is down"); }
+    if (account.ContactPhone == "000-cannot-erase") { throw new Exception("the reviews service is down"); }
     new AddOnHeard { What = "erased " + account.Id.ToString() };
   }
   /// The shop stopped selling a currency — heard while its rate still stands, so the rate is there to convert at.

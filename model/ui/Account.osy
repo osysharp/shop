@@ -1,34 +1,60 @@
 // The customer's side of an account, as components a store puts on its own pages. Every colour, face and size comes
 // from the UI kit's theme tokens, so each store's theme dresses them — the store writes the page, the route and the
 // words around them, and none of the logic.
+//
+// ⚑ THE FLOWS ARE OSYSHARP.ACCOUNTS'. These are the shop's screens — in its words and its languages — over that kit's
+//   sign-in flow (`SignIn`, `SignUp`, `VerifyEmailCode`, `RequestPasswordReset`, …). A step the shop does not draw
+//   itself (an authenticator's code, setting two-step sign-in up) is the Accounts kit's own screen, in place.
+// ⚑ AT THE ACCOUNTS KIT'S ADDRESSES — `/login`, `/sign-up`, `/forgot-password`, `/reset-password/{token}`,
+//   `/verify-email/{token}`, `/account` — which its mail links to. A store takes each page over by name (Accounts.osy).
 
 namespace Osysharp.Shop;
 
 using Osysharp.Ui;
+using Osysharp.Accounts;
 using Osysharp.MailingLists;
 
 /// Sign in. `then` is where to go afterwards when the visitor was not sent here from somewhere else. When the shop asks
-/// for a proven address (`ShopSetup.RequireConfirmedEmail`) and this one is not, the right password is followed by the
-/// code the mail just carried (`ShopAddressCodeStep`).
+/// for a proven address and this one is not, the right password is followed by the code the mail just carried
+/// (`ShopAddressCodeStep`); an account with two-step sign-in is asked for its code.
 [Composable]
 public component ShopSignIn(string then = "/account") {
   string email = "";
   string password = "";
   string problem = "";
   string proving = "";
+  string challenge = "";
+  string enrolment = "";
 
   action Submit() {
     problem = "";
-    var answer = ShopLogin(email, password);
-    if (answer.MustConfirm) { proving = answer.Email; }
-    else if (answer.Ticket == "") { problem = "That email and password do not match an account."; }
-    else { Session.SignIn(answer.Ticket, then); }
+    try { Take(SignIn(email, password)); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+
+  /// Whatever the sign-in answered: in, the address's code next, an authenticator's code, or setting one up.
+  action Take(SignInStep step) {
+    if (step.Ticket != "") { Session.SignIn(step.Ticket, then); return; }
+    if (step.MustVerify) { proving = step.Account; return; }
+    if (step.Challenge != "") { challenge = step.Challenge; return; }
+    if (step.MustEnrol) { enrolment = step.Enrolment; return; }
+    problem = "That email and password do not match an account.";
   }
 
   render {
     if (proving != "") {
       ShopAddressCodeStep(proving, password, "Sign in", then: then,
                           intro: $"Confirm your address first — we have mailed a code to {proving}.");
+    } else if (challenge != "") {
+      Stack(gap: 5, w: "100%", maxW: "420px") {
+        PageHead("Sign in");
+        SecondFactorCodeStep(challenge, then);
+      }
+    } else if (enrolment != "") {
+      Stack(gap: 5, w: "100%", maxW: "420px") {
+        PageHead("Sign in");
+        SecondFactorEnrolment(email, "", then, enrolment: enrolment);
+      }
     } else {
       Stack(gap: 5, w: "100%", maxW: "420px") {
         PageHead("Sign in", subtitle: "Your bag, your orders and your returns, on any device.");
@@ -37,8 +63,8 @@ public component ShopSignIn(string then = "/account") {
         if (problem != "") { Alert(problem, tone: Tone.Danger); }
         Button("Sign in", onPress: Submit, tone: Tone.Primary, size: Size.Lg);
         Row(gap: 5, wrap: Wrapping.Wrap) {
-          TextLink("Create an account", to: "/account/new");
-          TextLink("Forgotten your password?", to: "/account/forgot");
+          TextLink("Create an account", to: "/sign-up");
+          TextLink("Forgotten your password?", to: "/forgot-password");
         }
       }
     }
@@ -46,8 +72,8 @@ public component ShopSignIn(string then = "/account") {
 }
 
 /// Open an account — and be signed in to it. For an address that already has one the page says only that a message is on
-/// its way; the mail tells the address's owner (`ShopSignup`). When the shop asks for a proven address, a new account and
-/// a taken address are answered alike: the page asks for the code the mail carries (a new address's mail has one).
+/// its way; the mail tells the address's owner. When the shop asks for a proven address, a new account and a taken
+/// address are answered alike: the page asks for the code the mail carries (a new address's mail has one).
 [Composable]
 public component ShopSignUp(string then = "/account") {
   string name = "";
@@ -55,36 +81,37 @@ public component ShopSignUp(string then = "/account") {
   string password = "";
   string problem = "";
   string mailed = "";
-  bool proving = false;
+  string enrolment = "";
 
   action Submit() {
     problem = "";
     try {
-      var ticket = ShopSignup(email, password, name);
-      if (ticket == "") { mailed = email.Trim().ToLower(); proving = ShopProvesAddresses(); return; }
-      Session.SignIn(ticket, then);
+      var step = SignUp(email, password, name);
+      if (step.Ticket != "") { Session.SignIn(step.Ticket, then); return; }
+      if (step.MustEnrol) { enrolment = step.Enrolment; return; }
+      mailed = step.Account != "" ? step.Account : email.Trim().ToLower();
     }
     catch (Exception ex) { problem = ex.Message; }
   }
 
   render {
-    if (proving) {
+    if (mailed != "") {
       ShopAddressCodeStep(mailed, password, "Create an account", then: then,
                           intro: $"We have sent a message to {mailed}. Type the code it gives you — or open its link.");
+    } else if (enrolment != "") {
+      Stack(gap: 5, w: "100%", maxW: "420px") {
+        PageHead("Create an account");
+        SecondFactorEnrolment(email, "", then, enrolment: enrolment);
+      }
     } else {
       Stack(gap: 5, w: "100%", maxW: "420px") {
         PageHead("Create an account", subtitle: "Keep your bag between visits, follow your orders and send things back.");
-        if (mailed != "") {
-          Alert($"We have sent a message to {mailed} — it says what to do next.", tone: Tone.Success);
-          TextLink("Back to sign in", to: "/account/sign-in");
-        } else {
-          Field("Your name", value: name);
-          Field("Email", value: email, type: "email");
-          Field("Password", value: password, type: "password", hint: "At least 8 characters.", onEnter: Submit);
-          if (problem != "") { Alert(problem, tone: Tone.Danger); }
-          Button("Create account", onPress: Submit, tone: Tone.Primary, size: Size.Lg);
-          TextLink("I already have an account", to: "/account/sign-in");
-        }
+        Field("Your name", value: name);
+        Field("Email", value: email, type: "email");
+        Field("Password", value: password, type: "password", hint: "At least 8 characters.", onEnter: Submit);
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+        Button("Create account", onPress: Submit, tone: Tone.Primary, size: Size.Lg);
+        TextLink("I already have an account", to: "/login");
       }
     }
   }
@@ -96,54 +123,90 @@ public component ShopSignUp(string then = "/account") {
 public component ShopAddressCodeStep(string email, string password, string heading, string intro, string then = "/account") {
   string code = "";
   string problem = "";
+  string challenge = "";
 
   action Confirm() {
     problem = "";
-    try { Session.SignIn(ShopConfirmEmailCode(email, code, password), then); }
+    try {
+      var step = VerifyEmailCode(email, code, password);
+      if (step.Ticket != "") { Session.SignIn(step.Ticket, then); return; }
+      if (step.Challenge != "") { challenge = step.Challenge; return; }
+      if (step.MustConfirmPassword) { problem = "Type the password you chose for this account."; return; }
+    }
     catch (Exception ex) { problem = ex.Message; }
   }
 
   render {
     Stack(gap: 5, w: "100%", maxW: "420px") {
       PageHead(heading);
-      Alert(intro);
-      Field("Code", value: code, hint: "Six digits. It works for fifteen minutes.", onEnter: Confirm);
-      if (problem != "") { Alert(problem, tone: Tone.Danger); }
-      Button("Confirm", onPress: Confirm, tone: Tone.Primary, size: Size.Lg);
-      TextLink("Back to sign in", to: "/account/sign-in");
+      if (challenge != "") {
+        SecondFactorCodeStep(challenge, then);
+      } else {
+        Alert(intro);
+        Field("Code", value: code, hint: "Six digits. It works for fifteen minutes.", onEnter: Confirm);
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+        Button("Confirm", onPress: Confirm, tone: Tone.Primary, size: Size.Lg);
+        TextLink("Back to sign in", to: "/login");
+      }
     }
   }
 }
 
-/// Confirm an address from the link its mail carried — the store's page at `/account/confirm/{token}`. The FIRST proof
-/// of an account asks for the password it was made with, or a new one: the mail says who holds the address, and only the
-/// password says whether that is who made the account (a stranger may have signed up first with it).
+/// Confirm an address from the link its mail carried — the store's page at `/verify-email/{token}`. A new address the
+/// account is moving to is confirmed at once. The FIRST proof of an account asks for the password it was made with, or a
+/// new one: the mail says who holds the address, and only the password says whether that is who made the account (a
+/// stranger may have signed up first with it).
 [Composable]
 public component ShopConfirmAddress(string token, string then = "/account") {
   string password = "";
   string newPassword = "";
   string problem = "";
+  bool asking = false;
+  string proven = "";
+  string challenge = "";
+
+  on mount { Open(); }
+
+  action Open() {
+    problem = "";
+    try { Take(VerifyEmail(token)); }
+    catch (Exception ex) { problem = ex.Message; }
+  }
+
+  action Take(SignInStep step) {
+    if (step.Ticket != "") { Session.SignIn(step.Ticket, then); return; }
+    if (step.Proven) { proven = step.Account; asking = false; return; }
+    if (step.Challenge != "") { challenge = step.Challenge; asking = false; return; }
+    if (step.MustConfirmPassword) { asking = true; }
+  }
 
   action WithPassword() {
     problem = "";
-    try { Session.SignIn(ShopConfirmEmail(token, password: password).Ticket, then); }
+    try { Take(VerifyEmail(token, password: password)); }
     catch (Exception ex) { problem = ex.Message; }
   }
 
   action WithNewPassword() {
     problem = "";
-    try { Session.SignIn(ShopConfirmEmail(token, newPassword: newPassword).Ticket, then); }
+    try { Take(VerifyEmail(token, newPassword: newPassword)); }
     catch (Exception ex) { problem = ex.Message; }
   }
 
   render {
     Stack(gap: 5, w: "100%", maxW: "420px") {
-      PageHead("Confirm your address", subtitle: "Type the password you chose for this account.");
-      Field("Password", value: password, type: "password", onEnter: WithPassword);
-      Button("Confirm and sign in", onPress: WithPassword, tone: Tone.Primary, size: Size.Lg);
-      Text("Did you not make this account, or do you not know its password? Choose a new one — any other way into it stops working.", color: Colors.TextMuted);
-      Field("New password", value: newPassword, type: "password", hint: "At least 8 characters.", onEnter: WithNewPassword);
-      Button("Choose it and sign in", onPress: WithNewPassword);
+      PageHead("Confirm your address", subtitle: asking ? "Type the password you chose for this account." : "");
+      if (proven != "") {
+        Alert($"{proven} is confirmed — sign in with it from now on.", tone: Tone.Success);
+        TextLink("Sign in", to: "/login");
+      } else if (challenge != "") {
+        SecondFactorCodeStep(challenge, then);
+      } else if (asking) {
+        Field("Password", value: password, type: "password", onEnter: WithPassword);
+        Button("Confirm and sign in", onPress: WithPassword, tone: Tone.Primary, size: Size.Lg);
+        Text("Did you not make this account, or do you not know its password? Choose a new one — any other way into it stops working.", color: Colors.TextMuted);
+        Field("New password", value: newPassword, type: "password", hint: "At least 8 characters.", onEnter: WithNewPassword);
+        Button("Choose it and sign in", onPress: WithNewPassword);
+      }
       if (problem != "") { Alert(problem, tone: Tone.Danger); }
     }
   }
@@ -155,7 +218,7 @@ public component ShopForgotPassword() {
   string email = "";
   bool sent = false;
 
-  action Submit() { ShopRequestPasswordReset(email); sent = true; }
+  action Submit() { RequestPasswordReset(email); sent = true; }
 
   render {
     Stack(gap: 5, w: "100%", maxW: "420px") {
@@ -166,33 +229,44 @@ public component ShopForgotPassword() {
       }
       if (sent) {
         Alert($"If there is an account for {email}, a link is on its way. It works once, for an hour.", tone: Tone.Success);
-        TextLink("Back to sign in", to: "/account/sign-in");
+        TextLink("Back to sign in", to: "/login");
       }
     }
   }
 }
 
-/// Choose a new password from a mailed link — and be signed in.
+/// Choose a new password from a mailed link — and be signed in. An account with two-step sign-in gets its new password
+/// and then signs in as usual: the mailbox is not its second factor.
 [Composable]
 public component ShopChooseNewPassword(string token) {
   string password = "";
   string again = "";
   string problem = "";
+  bool changed = false;
 
   action Submit() {
     problem = "";
     if (password != again) { problem = "The two passwords are not the same."; return; }
-    try { Session.SignIn(ShopResetPassword(token, password), "/account"); }
+    try {
+      var ticket = ResetPassword(token, password);
+      if (ticket == "") { changed = true; return; }
+      Session.SignIn(ticket, "/account");
+    }
     catch (Exception ex) { problem = ex.Message; }
   }
 
   render {
     Stack(gap: 5, w: "100%", maxW: "420px") {
       PageHead("Choose a new password");
-      Field("New password", value: password, type: "password", hint: "At least 8 characters.");
-      Field("The same again", value: again, type: "password", onEnter: Submit);
-      if (problem != "") { Alert(problem, tone: Tone.Danger); }
-      Button("Save and sign in", onPress: Submit, tone: Tone.Primary, size: Size.Lg);
+      if (changed) {
+        Alert("Your password is changed. Sign in with it now.", tone: Tone.Success);
+        TextLink("Sign in", to: "/login");
+      } else {
+        Field("New password", value: password, type: "password", hint: "At least 8 characters.");
+        Field("The same again", value: again, type: "password", onEnter: Submit);
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+        Button("Save and sign in", onPress: Submit, tone: Tone.Primary, size: Size.Lg);
+      }
     }
   }
 }
@@ -235,18 +309,25 @@ public component ShopAccountPanel() {
 /// Name, phone and the address the checkout fills in.
 [Composable]
 public component ShopMyDetails() {
-  var me = Session.CurrentUser;
-  string name = me == null ? "" : me.Name ?? "";
-  string phone = me == null ? "" : me.Phone ?? "";
-  string street = me == null ? "" : me.Street ?? "";
-  string postCode = me == null ? "" : me.PostCode ?? "";
-  string city = me == null ? "" : me.City ?? "";
-  string country = me == null ? "" : me.Country ?? "";
+  string name = "";
+  string phone = "";
+  string street = "";
+  string postCode = "";
+  string city = "";
+  string country = "";
   string note = "";
   // The language on the account — what another phone or computer, and the shop's mail, use. Starts as the one they
   // are reading in when the account names none.
-  string language = me == null || me.Language == null ? Session.Language : ShopSpokenLanguage(me.Language!);
+  string language = Session.Language;
   string languageNote = "";
+
+  on mount {
+    var me = MyShopAccount();
+    if (me == null) { return; }
+    name = me.DisplayName; phone = me.ContactPhone ?? ""; street = me.Street ?? ""; postCode = me.PostCode ?? "";
+    city = me.City ?? ""; country = me.Country ?? "";
+    if (me.Language != null) { language = ShopSpokenLanguage(me.Language!); }
+  }
 
   action Save() {
     SaveMyDetails(name, phone, street, postCode, city, country);
@@ -352,52 +433,12 @@ public component ShopMyData() {
   }
 }
 
-/// Change the password or the address the account signs in with — each needs the current password.
+/// How the account signs in — its password, its address (moved once the new address confirms it), two-step sign-in, a
+/// phone and the providers it signs in with: Osysharp.Accounts' own settings, in the account panel.
 [Composable]
 public component ShopMySignIn() {
-  var me = Session.CurrentUser;
-  string current = "";
-  string password = "";
-  string newEmail = "";
-  string emailPassword = "";
-  string passwordNote = "";
-  string emailNote = "";
-  bool passwordFailed = false;
-  bool emailFailed = false;
-
-  action ChangePassword() {
-    try {
-      Session.SignIn(ShopChangePassword(me!.Email, current, password), "/account");
-      current = ""; password = ""; passwordFailed = false; passwordNote = "Your password is changed.";
-    }
-    catch (Exception ex) { passwordFailed = true; passwordNote = ex.Message; }
-  }
-
-  action ChangeEmail() {
-    try {
-      Session.SignIn(ShopChangeEmail(me!.Email, emailPassword, newEmail), "/account");
-      emailPassword = ""; emailFailed = false; emailNote = $"You now sign in as {newEmail}. We have told your old address too.";
-    }
-    catch (Exception ex) { emailFailed = true; emailNote = ex.Message; }
-  }
-
   render {
-    Stack(gap: 8, maxW: "560px") {
-      Stack(gap: 4) {
-        SectionLabel("Password");
-        Field("Current password", value: current, type: "password");
-        Field("New password", value: password, type: "password", hint: "At least 8 characters.");
-        if (passwordNote != "") { Alert(passwordNote, tone: passwordFailed ? Tone.Danger : Tone.Success); }
-        Button("Change password", onPress: ChangePassword);
-      }
-      Stack(gap: 4) {
-        SectionLabel("Email address");
-        Field("New email address", value: newEmail, type: "email");
-        Field("Current password", value: emailPassword, type: "password");
-        if (emailNote != "") { Alert(emailNote, tone: emailFailed ? Tone.Danger : Tone.Success); }
-        Button("Change email", onPress: ChangeEmail);
-      }
-    }
+    Stack(gap: 8, maxW: "560px") { AccountSettings(); }
   }
 }
 

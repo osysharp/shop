@@ -80,7 +80,8 @@ public class ShopCampaignToList : ListCampaign {
   public override string Key() { return $"shopcampaign-{Campaign.Id}"; }
   public override RenderedEmail For(ListSubscriber reader, string unsubscribe) {
     // The name they signed up with, else their account's, else what is before the @.
-    var name = reader.Name ?? ShopAccount.FirstOrDefault(a => a.Email == reader.Email)?.Name
+    var account = ShopAccount.FirstOrDefault(a => a.Email == reader.Email);
+    var name = reader.Name ?? (account != null && account!.DisplayName.Trim() != "" ? account!.DisplayName : null)
       ?? reader.Email.Substring(0, reader.Email.IndexOf("@"));
     // …in the language on their account, else the one they signed up in.
     return CampaignFor(Campaign, name, unsubscribe, ShopLanguageOf(reader.Email) ?? reader.Language);

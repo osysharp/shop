@@ -102,7 +102,7 @@ void nothing_is_returned_before_it_is_sent_or_after_the_window_or_by_someone_els
   }
   runas (Desk) { PayAndSend(reference); }
   runas (Olle) {
-    Assert.Equal(0, OrderLine.Count(l => l.Order.Reference == reference && l.Order.Account == Me()));
+    Assert.Equal(0, OrderLine.Count(l => l.Order.Reference == reference && l.Order.Account == MyShopAccount()));
   }
   runas (Desk) {
     var order = Order.Single(o => o.Reference == reference);

@@ -3,6 +3,7 @@
 
 namespace Osysharp.Shop;
 
+using Osysharp.Identity;
 using Osysharp.Ui;
 using Osysharp.Storage;
 using Osysharp.MarkdownEditor;
@@ -312,9 +313,7 @@ public bool InOrderStage(Order o, string stage) {
 /// What staff can do to one order, for the stage of the list it is shown in. A store puts it in its own order row, so
 /// the row's look is the store's and the steps are the kit's.
 ///
-/// ⚑ THE ROW CARRIES ONE STAGE'S WORK, THE DIALOG CARRIES EVERYTHING (owner, 2026-09-27: *"on "all" you only see
-///   details. and then on the other states you see the relevant buttons in fixed positions grayed out if they are not
-///   valid on a specific row"* · *"details can have a list of all valid states"*). So `stage` "all" (the default) shows
+/// ⚑ THE ROW CARRIES ONE STAGE'S WORK, THE DIALOG CARRIES EVERYTHING. `stage` "all" (the default) shows
 ///   only Details; a stage shows its own buttons, always all of them and always in the same order, greyed out on a
 ///   row they do not apply to — the same button sits in the same column down the list. Details lists every move the
 ///   order can make now, whatever the stage, with its tracking and label.
@@ -800,8 +799,9 @@ public component DeskTransfers(Action onChange) {
 [Authorize(IsShopStaff)]
 public component DeskLocations(Action onChange) {
   live var locations = StockLocation.OrderBy(l => l.Rank).ToList();
-  live var packers = ShopRoleGrant.Include(g => g.Member).Include(g => g.Location).Where(g => g.Role == ShopRole.Packer).ToList();
-  live var clerks = ShopRoleGrant.Include(g => g.Member).Include(g => g.Location).Where(g => g.Role == ShopRole.Counter).ToList();
+  live var packers = RoleGrant.Include(g => g.Member).Where(g => g.Role == ShopRole.Packer).ToList();
+  live var clerks = RoleGrant.Include(g => g.Member).Where(g => g.Role == ShopRole.Counter).ToList();
+  live var limits = ShopRoleLimit.Include(l => l.Location).ToList();
   StockLocation? editing = null;
   bool adding = false;
   string name = "";
@@ -833,11 +833,11 @@ public component DeskLocations(Action onChange) {
   }
   action Up(StockLocation l) { MoveLocation(l, -1); onChange(); }
   action Down(StockLocation l) { MoveLocation(l, 1); onChange(); }
-  action Limit(ShopRoleGrant g, StockLocation? l) {
+  action Limit(RoleGrant g, StockLocation? l) {
     problem = "";
     try { LimitPacker(g.Member, l); } catch (Exception ex) { problem = ex.Message; }
   }
-  action LimitClerk(ShopRoleGrant g, StockLocation? l) {
+  action LimitClerk(RoleGrant g, StockLocation? l) {
     problem = "";
     try { LimitCounter(g.Member, l); } catch (Exception ex) { problem = ex.Message; }
   }
@@ -877,12 +877,13 @@ public component DeskLocations(Action onChange) {
         Stack(gap: 2, pt: 3, label: "Counter staff") {
           SectionLabel("Counter staff");
           foreach (var g in clerks) {
+            var at = limits.FirstOrDefault(x => x.Member.Id == g.Member.Id && x.Role == ShopRole.Counter);
             Row(justify: Justify.Between, align: Align.Center, gap: 3, wrap: Wrapping.Wrap) {
-              Text(g.Member.Name ?? g.Member.Email);
+              Text(g.Member.DisplayName != "" ? g.Member.DisplayName : g.Member.Email);
               Row(gap: 2, wrap: Wrapping.Wrap) {
-                Button("Every counter", onPress: () => LimitClerk(g, null), size: Size.Sm, tone: g.Location == null ? Tone.Primary : Tone.Default);
+                Button("Every counter", onPress: () => LimitClerk(g, null), size: Size.Sm, tone: at == null ? Tone.Primary : Tone.Default);
                 foreach (var l in locations) {
-                  Button(l.Name, onPress: () => LimitClerk(g, l), size: Size.Sm, tone: g.Location != null && g.Location!.Id == l.Id ? Tone.Primary : Tone.Default);
+                  Button(l.Name, onPress: () => LimitClerk(g, l), size: Size.Sm, tone: at != null && at!.Location.Id == l.Id ? Tone.Primary : Tone.Default);
                 }
               }
             }
@@ -893,12 +894,13 @@ public component DeskLocations(Action onChange) {
         Stack(gap: 2, pt: 3) {
           SectionLabel("Packers");
           foreach (var g in packers) {
+            var at = limits.FirstOrDefault(x => x.Member.Id == g.Member.Id && x.Role == ShopRole.Packer);
             Row(justify: Justify.Between, align: Align.Center, gap: 3, wrap: Wrapping.Wrap) {
-              Text(g.Member.Name ?? g.Member.Email);
+              Text(g.Member.DisplayName != "" ? g.Member.DisplayName : g.Member.Email);
               Row(gap: 2, wrap: Wrapping.Wrap) {
-                Button("Every location", onPress: () => Limit(g, null), size: Size.Sm, tone: g.Location == null ? Tone.Primary : Tone.Default);
+                Button("Every location", onPress: () => Limit(g, null), size: Size.Sm, tone: at == null ? Tone.Primary : Tone.Default);
                 foreach (var l in locations) {
-                  Button(l.Name, onPress: () => Limit(g, l), size: Size.Sm, tone: g.Location != null && g.Location!.Id == l.Id ? Tone.Primary : Tone.Default);
+                  Button(l.Name, onPress: () => Limit(g, l), size: Size.Sm, tone: at != null && at!.Location.Id == l.Id ? Tone.Primary : Tone.Default);
                 }
               }
             }
@@ -1130,7 +1132,7 @@ public component DeskCustomers() {
       foreach (var c in rows) {
         Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 2, borderTW: 1, border: Colors.Border, label: c.Account.Email) {
           Stack(gap: 0, minW: "0") {
-            Text(c.Account.Name ?? c.Account.Email);
+            Text(ShopNameOf(c.Account));
             Text($"{c.Account.Email} · {c.Orders} orders · {Money(c.Spent, shop)}", color: Colors.TextMuted, fontSize: FontSize.Label);
           }
           Button("Orders", onPress: () => Show(c.Account), size: Size.Sm);
@@ -1138,7 +1140,7 @@ public component DeskCustomers() {
       }
     }
     if (showing != null) {
-      Dialog(showing.Name ?? showing.Email, onDismiss: Close,
+      Dialog(ShopNameOf(showing), onDismiss: Close,
              subtitle: $"{showing.Email}{(showing.City == null ? "" : " · " + showing.City)}") {
         Stack(gap: 2) {
           if (orders.Count == 0) { Text("No orders.", color: Colors.TextMuted); }
@@ -1225,7 +1227,7 @@ public component DeskOutbox() {
 /// What the shop's mail looks like, rendered for a real recent order — the words and the design a customer gets, in
 /// the store's own theme and in any template the store overrides — in any language the shop speaks.
 ///
-/// ⚑ WHAT THE MAILS SAY AROUND THE ORDER IS ARRANGED WHERE THE PAGES ARE (D-BLOCKS1 slice 3): the confirmation's,
+/// ⚑ WHAT THE MAILS SAY AROUND THE ORDER IS ARRANGED WHERE THE PAGES ARE: the confirmation's,
 ///   on its way's, collected's and refunded's words — and a picture, a quote or a button staff place beside them — are
 ///   the region of each mail, arranged at the page desk (`Osysharp.Pages`) with a draft, a publish and a preview of the
 ///   mail itself. This tab shows what goes out.

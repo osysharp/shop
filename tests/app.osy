@@ -8,7 +8,12 @@ app ShopKitTests {
   tests "**/*.test.osy";
 
   // The kit reads its mail key; the providers the app lists bring their own hosts, which the app grants.
-  use Osysharp.Shop@0 { egress "api.resend.com"; secret "ResendApiKey"; }
+  use Osysharp.Shop@1 { egress "api.resend.com"; secret "ResendApiKey"; }
+  // Who signs in — the shop's customers and staff — through Osysharp.Accounts (model/shop.osy states its setup), whose
+  // mail waits in Osysharp.Mail's outbox, where the tests read the links and codes it carried.
+  use Osysharp.Identity@0;
+  use Osysharp.Accounts@1;
+  use Osysharp.Mail@0;
   use Osysharp.Payments@0;
   use Osysharp.Delivery@0;
   use Osysharp.Seo@0;

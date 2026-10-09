@@ -1,4 +1,4 @@
-// Selling in another currency (D-SELLCURRENCY1). A shop in kronor that SELLS in euros — real prices from its price
+// Selling in another currency. A shop in kronor that SELLS in euros — real prices from its price
 // list or its own converted and rounded, an order placed, invoiced and charged in euros with the day's rate on it —
 // while US dollars stay SHOWN (an estimate, charged in kronor). The rates come from `FakeRates` (model/rates.osy): one
 // euro is 11.3205 kronor, so a krona is 0.08833532 euro.
@@ -90,9 +90,10 @@ void an_order_in_a_sold_currency_is_placed_invoiced_and_charged_in_it_with_the_d
   Assert.Equal("EUR", receipt.Currency);
   Assert.Equal(10.95m, receipt.Total);
   // Stripe is asked for euros — €10.95 in cents — never kronor.
-  Assert.Contains("eur", posted[0]);
+  // (Asked of the currency field itself: the signed return link in the same body is random text.)
+  Assert.Contains("%5Bcurrency%5D=eur", posted[0]);
   Assert.Contains("1095", posted[0]);
-  Assert.DoesNotContain("sek", posted[0]);
+  Assert.DoesNotContain("%5Bcurrency%5D=sek", posted[0]);
   runas (Desk) {
     var order = Order.Single(o => o.Reference == receipt.Reference);
     Assert.Equal(OrderStatus.Reserved, order.Status);
@@ -336,14 +337,14 @@ OrderStatus ForgedEuroOrder(string visitId, string reference, string? currency, 
   var status = OrderStatus.Placed;
   runas (new Visitor { Id = visitId }) {
     var collect = DeliveryChoices("").Single(d => d.Id == "collect");
-    // …placed from her own visit, as the checkout records it (D-ORDERLINK1) — which is also what lets her read it back.
+    // …placed from her own visit, as the checkout records it — which is also what lets her read it back.
     var order = new Order { VisitId = visitId, Fulfilment = Fulfilment.Collect, DeliveryMethod = "collect", DeliveryLabel = collect.Label,
                             PaymentMethod = "stripe", PaymentLabel = "Card", Currency = currency, Rate = rate,
                             RateDate = sale.RateDate, RateSource = sale.Source,
                             Subtotal = 10.95m, Total = 10.95m, Vat = 2.19m, HoldDays = 3,
                             PlacedAt = DateTime.UtcNow, Reference = reference, PlacedFrom = BagFor(false),
                             // The visit that writes it, as the checkout records it — an order is read by its own visit
-                            // (D-GUESTROWS1, D-ORDERLINK1), so without it the status below reads as nothing at all.
+                            //, so without it the status below reads as nothing at all.
                             VisitId = Visitor.Id };
     new OrderLine { Order = order, Variant = Pick("Loafer", "38"), ProductName = "Loafer", VariantLabel = "38", Quantity = 1,
                     Price = 10.95m, VatPercent = 25m };
@@ -369,7 +370,7 @@ void a_customer_cannot_state_their_own_currency_or_rate() {
   Assert.Equal(OrderStatus.Reserved, ForgedEuroOrder("v-sell-forge-3", "KT-FX3", "EUR", 0.08833532m));
 }
 
-// Only an EXPLICIT stop is the shop no longer selling in a currency (owner, 2026-09-29): "Only show it", or the rates
+// Only an EXPLICIT stop is the shop no longer selling in a currency: "Only show it", or the rates
 // stopped altogether. A rate gone stale sells nothing while it is stale, and is not the shop deciding anything — an
 // add-on holding something agreed in the currency (a subscription) hears nothing of it. Heard while the rate still
 // stands, so there is a rate to convert at.
@@ -394,7 +395,7 @@ void an_add_on_hears_when_the_shop_stops_selling_a_currency_and_not_when_its_rat
   Assert.Equal(0, AddOnHeard.Count(h => h.What.StartsWith("not sold USD")));    // only shown, never sold
 }
 
-// ── a gift card in a currency the shop no longer sells (owner, 2026-09-29: "yes to all the open questions") ────────
+// ── a gift card in a currency the shop no longer sells ────────
 
 /// A €40 card from Maja for Anna, bought in euros by card and paid — answers the code mailed to Anna. The caller stubs
 /// the card provider (`CardSession`).

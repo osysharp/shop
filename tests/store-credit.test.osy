@@ -41,7 +41,7 @@ void a_customer_reads_only_their_own_credit_and_nobody_can_write_it() {
     Assert.Equal(0, StoreCreditEntry.Count());
     Assert.Equal(0m, MyStoreCredit().Balance);
     // …nor give himself some.
-    Assert.Throws<Exception>(() => GrantCredit(Me()!, 1000m, "Because"));
+    Assert.Throws<Exception>(() => GrantCredit(MyShopAccount()!, 1000m, "Because"));
   }
   runas (Maja) {
     Assert.Equal(40m, StoreCredit.Single().Balance);
@@ -89,7 +89,7 @@ void the_checkout_pays_part_with_credit_and_a_refund_puts_it_back() {
     runas (Maja) {
       Assert.Equal(50m, MyCreditBalance());
       Assert.Equal("Given back", MyStoreCredit().Lines[0].What);
-      // D-RTL2 Q2 — each line keeps its facts (why, which order) and is said when it is read, in the reader's language.
+      // each line keeps its facts (why, which order) and is said when it is read, in the reader's language.
       Assert.Equal($"Refunded — order {reference}", MyStoreCredit().Lines[0].Note);
       Assert.Equal($"Order {reference}", MyStoreCredit().Lines[1].Note);
       Session.SetLanguage("sv");
@@ -187,7 +187,7 @@ void nobody_spends_another_customers_credit() {
     runas (Olle) {
       // …while the same order on his own account is written — so the refusal above is about whose account it names.
       new Order { Fulfilment = Fulfilment.Collect, DeliveryMethod = "collect", PaymentMethod = "banktransfer",
-                  Subtotal = 100m, Total = 100m, Account = Me(), PlacedAt = DateTime.UtcNow, Reference = "KT-NOCREDIT" };
+                  Subtotal = 100m, Total = 100m, Account = MyShopAccount(), PlacedAt = DateTime.UtcNow, Reference = "KT-NOCREDIT" };
       UnitOfWork.Commit();
       Assert.Equal(1, Order.Count(o => o.Reference == "KT-NOCREDIT"));
       // Using credit at the checkout spends one's own — Olle has none.

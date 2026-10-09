@@ -162,7 +162,7 @@ void an_order_taken_on_the_desk_is_placed_like_a_web_order_and_mails_a_link_to_p
     var order = Order.Single(o => o.Reference == reference);
     Assert.Equal(OrderStatus.Reserved, order.Status);    // the same workflow: the goods are held…
     Assert.Equal(190m, order.Total);
-    Assert.Equal("Maja Berg", order.Account!.Name);      // …and it is in her account's history
+    Assert.Equal("Maja Berg", order.Account!.DisplayName);      // …and it is in her account's history
     Assert.Equal("Placed on the desk", OrderTimeline(order)[0].What);
     // Confirmed like any order, and the link mailed in the shop's frame.
     Assert.True(ShopMail.Any(m => m.Order == order && m.Subject.StartsWith("Your order " + reference + " —")));
@@ -288,7 +288,7 @@ void erasing_a_customer_takes_the_desks_notes_and_the_addresses_their_order_move
     Workflow.Settle(order);
   }
   runas (Maja) {
-    Assert.Contains("Your loafers go out on Monday.", PersonalData(Me()));   // her copy carries what the shop wrote her
+    Assert.Contains("Your loafers go out on Monday.", PersonalData(MyShopAccount()));   // her copy carries what the shop wrote her
     EraseMyAccount();
   }
   runas (Desk) {

@@ -11,7 +11,7 @@ void staff_sign_in_through_the_package_login() {
   // a role the PACKAGE declares — for the call. Without that principal the row read is denied and every correct
   // password is refused, so a token here is the proof that the package's role was the one armed.
   Assert.NotEqual("", ShopLogin("anna@shop.test", "desk-pass-1").Ticket);
-  Assert.Equal("", ShopLogin("anna@shop.test", "not-the-password").Ticket);
+  Assert.Equal("", ShopLogin("anna@shop.test", "wrong-guess").Ticket);
   Assert.Equal("", ShopLogin("nobody@shop.test", "desk-pass-1").Ticket);
 }
 

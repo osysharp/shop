@@ -229,7 +229,7 @@ public CounterSaleView CounterSale(Bag bag, bool useCredit) {
                                      Amount = unit * l.Quantity, MinimumAge = l.Variant.Product.MinimumAge });
   }
   var totals = new CheckoutTotals { Currency = view.Currency, Goods = BagSubtotal(bag), Problem = WholesaleProblem(bag) };
-  var trade = WholesaleOf(BagCustomer(bag));
+  var trade = WholesaleOfBag(bag);
   totals.PriceList = trade == null ? "" : trade.PriceList.Name;
   totals.Adjustments = AdjustmentsFor(BasketOf(bag, ""));
   totals.Discount = totals.Adjustments.Sum(a => a.Amount);
@@ -403,7 +403,9 @@ public CounterCustomer? ConfirmedCounterCustomer(Bag bag) {
 }
 
 /// Whose prices a bag is priced at — its owner's, or, for a counter's sale, the customer who proved themselves with
-/// their code (`CounterCustomer`). Null for a guest and for a walk-in.
+/// their code (`CounterCustomer`). Null for a guest and for a walk-in. ⚠ For a counter sale this is the CUSTOMER's
+/// account, which the clerk cannot read: hand it to no function as the clerk (it is refused). For their prices use
+/// `WholesaleOfBag(bag)`. Kept for apps written against 0.7 (removing it would make this a major release).
 public ShopAccount? BagCustomer(Bag bag) {
   if (bag.Owner != null || !bag.AtCounter) { return bag.Owner; }
   var c = ConfirmedCounterCustomer(bag);

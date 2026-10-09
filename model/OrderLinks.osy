@@ -7,7 +7,7 @@
 //   order"), the address a payment provider sends the customer back to (`/paid/{link}/…`), and the receipt placing
 //   answers (`Receipt.Link`). A store serves the order's page at `ShopSetup.OrderPath` + `/{link}`:
 //
-//       [Page("/order/{link}")] [AllowAnonymous]
+//       [Route("/order/{link}")] [AllowAnonymous]
 //       component OrderPage(OrderLink link) { render { ShopOrderByLink(link); } }
 //
 //   A link that does not check out — altered, expired, from another shop — never reaches the page: the platform

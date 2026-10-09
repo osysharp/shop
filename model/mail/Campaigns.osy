@@ -17,6 +17,7 @@ public enum ShopCampaignState { Draft, Sent }
 
 /// A newsletter: its subject, the line an inbox shows beside it, and its body — Markdown staff write on the desk.
 public entity ShopCampaign {
+  [CreatedAt] DateTime? CreatedAt;
   [Required, MaxLength(200)] string Subject;
   /// The line an inbox shows beside the subject. Empty: the subject is used.
   [MaxLength(200)] string? Preview;

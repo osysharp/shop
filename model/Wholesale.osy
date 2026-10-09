@@ -3,7 +3,7 @@
 // else a percentage off the retail price; a minimum order if the list says so; and, when the shop lists an invoice way
 // to pay (`ShopSetup.OnlyForWholesale`), payment by invoice with the list's terms — offered to nobody else.
 //
-// ⚑ THE PRICE IS THE BAG OWNER'S, NEVER THE CALLER'S. `LinePrice` asks whose bag it is (`WholesaleOf(bag.Owner)`), so
+// ⚑ THE PRICE IS THE BAG OWNER'S, NEVER THE CALLER'S. `LinePrice` asks whose bag it is (`WholesaleOfBag`), so
 //   the checkout (as the customer) and the order's workflow pricing it again (as the shop) reach the same number. A
 //   guest's bag has no owner and is retail; a retail customer's owner has no wholesale row.
 //
@@ -102,6 +102,21 @@ public WholesaleAccount? WholesaleOf(ShopAccount? account) {
   return WholesaleAccount.Include(w => w.PriceList).FirstOrDefault(w => w.Account == account && w.Active && w.PriceList.Active);
 }
 
+/// The wholesale terms `bag` is priced on — its owner's, or, for a counter's sale, those of the customer who proved
+/// themselves with their code (`ConfirmedCounterCustomer`). Null for a guest, a walk-in and a retail customer.
+///
+/// ⚑ THE SPECIFIC READ A CLERK NEEDS (arg-rule-kits, owner 2026-10-09). The terms are the shop's to read, the customer's
+///   account is not the clerk's: so the account is matched by the id the confirmed `CounterCustomer` holds, and never
+///   handed to `WholesaleOf` as a row the caller cannot read — which the platform refuses, rightly: before that rule a
+///   row the caller could not read priced the sale at retail, silently.
+public WholesaleAccount? WholesaleOfBag(Bag bag) {
+  if (bag.Owner != null || !bag.AtCounter) { return WholesaleOf(bag.Owner); }
+  var c = ConfirmedCounterCustomer(bag);
+  if (c == null || c.Account == null) { return null; }
+  var account = c.Account.Id;
+  return WholesaleAccount.Include(w => w.PriceList).FirstOrDefault(w => w.Account.Id == account && w.Active && w.PriceList.Active);
+}
+
 /// What one of `variant` costs on `list`, in the currency of `rate` (null: the shop's own): the list's own price
 /// there, else the retail price there less the list's percentage.
 public decimal WholesalePrice(PriceList list, Variant variant, ExchangeRate? rate) {
@@ -116,7 +131,7 @@ public decimal WholesalePrice(PriceList list, Variant variant, ExchangeRate? rat
 /// Why `bag` cannot be ordered on its owner's price list as it is — a line under its minimum, the goods under the
 /// list's minimum order — or "" when it can, and always "" for a bag that is not wholesale.
 public string WholesaleProblem(Bag bag) {
-  var w = WholesaleOf(BagCustomer(bag));
+  var w = WholesaleOfBag(bag);
   if (w == null) { return ""; }
   var list = w.PriceList;
   var shop = TheShop();

@@ -36,7 +36,7 @@ void a_new_account_is_not_signed_in_until_its_address_is_proven_and_the_code_sig
   Assert.True(step.MustConfirm);
   Assert.Equal("", step.Ticket);
   // A wrong password learns nothing.
-  Assert.False(ShopLogin("nils@example.test", "not-the-password").MustConfirm);
+  Assert.False(ShopLogin("nils@example.test", "wrong-guess").MustConfirm);
   var code = CodeTo("nils@example.test");
   Assert.Equal(6, code.Length);
   Assert.NotEqual("", ShopConfirmEmailCode("Nils@Example.test ", code, "long-enough-1"));
@@ -96,7 +96,7 @@ void the_link_proves_the_address_with_the_accounts_password_and_spends_the_code(
   var asked = ShopConfirmEmail(token);
   Assert.True(asked.MustConfirmPassword);
   Assert.Equal("", asked.Ticket);
-  Assert.Throws<Exception>(() => ShopConfirmEmail(token, password: "not-the-password"));
+  Assert.Throws<Exception>(() => ShopConfirmEmail(token, password: "wrong-guess"));
   Assert.NotEqual("", ShopConfirmEmail(token, password: "long-enough-1").Ticket);
   // Either half spends both.
   Assert.Throws<Exception>(() => ShopConfirmEmailCode("nils@example.test", code, "long-enough-1"));

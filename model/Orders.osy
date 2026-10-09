@@ -1207,7 +1207,7 @@ public PricedOrder PriceBag(Bag bag, Placement p, ShopAccount? account) {
   if (SoldCurrencyProblem(bag) != "") { throw new Exception(SoldCurrencyProblem(bag)); }
   var subtotal = BagSubtotal(bag);
   // Bought on a price list (Wholesale.osy): its minimums hold, and the invoice is made out to the company.
-  var trade = WholesaleOf(BagCustomer(bag));
+  var trade = WholesaleOfBag(bag);
   var tradeProblem = WholesaleProblem(bag);
   if (tradeProblem != "") { throw new Exception(tradeProblem); }
   // A gift card whose buyer chose its amount: within the shop's bounds (in a sold currency, those bounds converted),

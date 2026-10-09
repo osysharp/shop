@@ -66,6 +66,32 @@ void a_wholesale_account_buys_at_its_price_list() {
   }
 }
 
+/// A business customer brought into a counter sale by their own code is priced on THEIR list — the clerk reads the
+/// terms, never the customer's account (arg-rule-kits): the sale used to be refused here, and before that rule priced
+/// at retail, silently.
+[Test(Floor)]
+void a_wholesale_customer_brought_in_at_the_counter_buys_at_their_price_list() {
+  Cafes();
+  Bag? bag = null;
+  runas (Clerk) {
+    bag = StartCounterSale(null);
+    AddToCounterSale(bag!, Pick("Loafer", "38"), 2);
+    Assert.Equal(240m, CounterSale(bag!, false).Totals.Goods);   // a walk-in: retail
+    Assert.Equal("code-sent", AskForCustomer(bag!, "olle@example.test").State);
+  }
+  var code = "";
+  runas (Desk) {
+    var mail = ShopMail.Single(m => m.To == "olle@example.test" && m.Subject.StartsWith("Your code at"));
+    code = mail.Subject.Substring(mail.Subject.Length - 6);
+  }
+  runas (Clerk) {
+    Assert.Equal("confirmed", ConfirmCustomer(CounterCustomer.Single(), code).State);
+    var sale = CounterSale(bag!, false);
+    Assert.Equal("Cafés", sale.Totals.PriceList);
+    Assert.Equal(180m, sale.Totals.Goods);                     // the list's own 90, twice
+  }
+}
+
 [Test(Floor)]
 void a_line_under_the_lists_minimum_is_refused() {
   Cafes();

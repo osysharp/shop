@@ -22,6 +22,7 @@ public enum MailStatus {
 }
 
 public entity ShopMail {
+  [CreatedAt] DateTime? CreatedAt;
   [Required, MaxLength(255)] string To;
   [Required, MaxLength(200)] string Subject;
   [Required] string Text;

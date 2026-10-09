@@ -7,7 +7,7 @@ using Osysharp.Ui;
 /// One order, for whoever holds its link: where it stands, what it holds and costs, how to pay it when it is still
 /// waiting, the parcel once it is sent, its receipt as a PDF, and — while the return window is open — sending things
 /// back, for a guest as for an account (`ReturnWithLink`). A store puts it on its page at `ShopSetup.OrderPath` + `/{link}`:
-/// `[Page("/order/{link}")] component P(OrderLink link) { … ShopOrderByLink(link) … }` — a link that does not check out
+/// `[Route("/order/{link}")] component P(OrderLink link) { … ShopOrderByLink(link) … }` — a link that does not check out
 /// never reaches it (the app's `InvalidLinkSurface` is shown instead).
 [Composable]
 [AllowAnonymous]

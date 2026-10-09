@@ -60,6 +60,7 @@ public enum VatClass {
 }
 
 public entity Product {
+  [CreatedAt] DateTime? CreatedAt;
   [Required, MaxLength(120), Translatable] string Name;
   [Required, Unique, MaxLength(120)] string Slug;
   /// Who made it — or, for a shop that sells by origin, where it is from; [Translatable] for that shop's sake (a brand

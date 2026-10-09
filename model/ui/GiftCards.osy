@@ -130,7 +130,7 @@ public component ShopMyDownloads() {
 }
 
 /// A download link's page: what it is, how many times it still opens, and the button. A store puts it on the route
-/// `ShopSetup.DownloadPath` names: `[Page("/download/{link}")] component P(DownloadLink link)`.
+/// `ShopSetup.DownloadPath` names: `[Route("/download/{link}")] component P(DownloadLink link)`.
 [Composable]
 [AllowAnonymous]
 public component ShopDownload(DownloadLink link) {

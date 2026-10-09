@@ -19,6 +19,7 @@
 namespace Osysharp.Shop;
 
 public entity Bag {
+  [CreatedAt] DateTime? CreatedAt;
   /// The visit it was started on. A signed-in customer's bag keeps the last one it was seen on.
   [MaxLength(64)] string? VisitId;
   /// Whose bag it is — null for a visitor who has not signed in.
@@ -100,6 +101,8 @@ public entity Bag {
 }
 
 public entity BagLine {
+  [CreatedAt] DateTime? CreatedAt;
+  [ModifiedAt] DateTime? ModifiedAt;
   [Required] Bag Bag;
   [Required] Variant Variant;
   int Quantity = 1;
@@ -200,7 +203,7 @@ public decimal LinePrice(BagLine line) {
     if (gift != null) { return GiftAmountNow(line.Bag, gift.Amount, rate); }
   }
   // A wholesale account's bag is priced on its list (Wholesale.osy) — the OWNER's, whoever asks.
-  var trade = WholesaleOf(BagCustomer(line.Bag));
+  var trade = WholesaleOfBag(line.Bag);
   if (trade != null) { return WholesalePrice(trade.PriceList, line.Variant, rate); }
   return rate == null ? PriceOf(line.Variant) : SoldPrice(line.Variant, rate);
 }

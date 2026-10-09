@@ -12,7 +12,7 @@
 // and hand the look what it draws:
 //
 //     [Layout] [AllowAnonymous] component Shop() { render { ShopFrame { Outlet(retain: 8); } } }
-//     [Page("/")] [Layout(Shop)] [AllowAnonymous] component Home() { render { FrontPage(); } }
+//     [Route("/")] [Layout(Shop)] [AllowAnonymous] component Home() { render { FrontPage(); } }
 
 namespace Osysharp.Shop.Looks;
 

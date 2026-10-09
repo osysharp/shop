@@ -60,7 +60,7 @@ public CheckoutTotals CheckoutQuote(string delivery, string country) {
   totals.Currency = BagCurrency(bag);
   totals.Goods = BagSubtotal(bag);
   totals.Problem = WholesaleProblem(bag);
-  var trade = WholesaleOf(BagCustomer(bag));
+  var trade = WholesaleOfBag(bag);
   totals.PriceList = trade == null ? "" : trade.PriceList.Name;
   var way = DeliveryChoices(country).FirstOrDefault(d => d.Id == delivery);
   var digital = way != null && way.NothingToShip;

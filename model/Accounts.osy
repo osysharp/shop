@@ -51,6 +51,7 @@ policy IsShopAuthenticator =>ShopRoleGrant.Any(g => g.Member == user && g.Role =
 
 [Principal]
 public entity ShopAccount {
+  [CreatedAt] DateTime? CreatedAt;
   [Required, Unique, MaxLength(255)] string Email;
   [MaxLength(200)] string PasswordHash;
   [MaxLength(120)] string? Name;

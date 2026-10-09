@@ -78,7 +78,7 @@ public class ShopSetup {
   public string AccountPath = "/account";
   /// Where the store's page for ONE order is — what every mail about an order opens ("See your order"), and where a
   /// payment provider sends the customer back to, then `/` and the `OrderLink` grant. The page takes it as
-  /// `[Page("/order/{link}")] component P(OrderLink link)` and shows `ShopOrderByLink(link)`. A link, never the
+  /// `[Route("/order/{link}")] component P(OrderLink link)` and shows `ShopOrderByLink(link)`. A link, never the
   /// reference: a reference opens nothing (D-ORDERLINK1).
   public string OrderPath = "/order";
   /// Where the bag is on the store — what a bag reminder's button opens, after `SiteUrl`.
@@ -92,13 +92,13 @@ public class ShopSetup {
   /// How long a bag sits untouched before its reminder.
   public int BagReminderHours = 24;
   /// Where the store's page for a bag link is — the reminder's "Back to your bag" is this, then `/` and the `ResumeBag`
-  /// grant; the page takes it as `[Page("/bag/back/{link}")] component P(ResumeBag link)` and shows `ShopResumeBag(link)`.
+  /// grant; the page takes it as `[Route("/bag/back/{link}")] component P(ResumeBag link)` and shows `ShopResumeBag(link)`.
   public string ResumeBagPath = "/bag/back";
   /// Where the store's page for a payment link is — the link a customer is mailed is this, then `/` and the `Pay` grant
-  /// (`SendPayLink`); the page takes it as `[Page("/pay/{pay}")] component P(Pay pay)` and shows `ShopPayByLink(pay)`.
+  /// (`SendPayLink`); the page takes it as `[Route("/pay/{pay}")] component P(Pay pay)` and shows `ShopPayByLink(pay)`.
   public string PayLinkPath = "/pay";
   /// Where the store's page for a download link is — what the downloads mail links to, then `/` and the `DownloadLink`
-  /// grant; the page takes it as `[Page("/download/{link}")] component P(DownloadLink link)` (`ShopDownload(link)`).
+  /// grant; the page takes it as `[Route("/download/{link}")] component P(DownloadLink link)` (`ShopDownload(link)`).
   public string DownloadPath = "/download";
   /// Where the store lets anybody check what is left on a gift card — what a gift card's mail links to.
   public string GiftCardBalancePath = "/gift-card";

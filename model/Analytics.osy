@@ -14,6 +14,7 @@ using Osysharp.Analytics;
 
 /// A sale waiting to be reported to the store's analytics, by the browser of the visit that made it.
 public entity ShopPurchaseReport {
+  [CreatedAt] DateTime? CreatedAt;
   [Required] Order Order;
   [Required, MaxLength(64)] string VisitId;
   /// Paid on a provider's page (Stripe, Klarna): reported once the order is paid, not when it is placed.

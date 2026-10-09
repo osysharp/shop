@@ -52,11 +52,11 @@ The storefront pieces ship as components that take your theme's tokens, so they 
 `ShopProductView`, `ShopNotifyWhenBack`, `ShopSignIn`, `ShopSignUp`, `ShopForgotPassword`, `ShopAccountPanel`,
 `ShopOrderHistory`, `ShopPolicy`, `ShopPolicyLinks`, `ShopAccountButton`, `ShopOrderByLink(link)`, `ShopPayByLink(pay)`, `ShopResumeBag(link)`,
 `ShopGiftCardBalance`, `CheckoutGiftCard`, `CheckoutDigitalConsent`, `ShopMyGiftCards`, `ShopMyDownloads`,
-`ShopDownload(link)` and `ShopDesk`. A download's page is `[Page("/download/{link}")] component P(DownloadLink link)`
+`ShopDownload(link)` and `ShopDesk`. A download's page is `[Route("/download/{link}")] component P(DownloadLink link)`
 at `ShopSetup.DownloadPath`; the page a gift card's mail sends its holder to is `ShopSetup.GiftCardBalancePath`. The link pages take a grant, so a store puts them on a route that carries it —
-`[Page("/order/{link}")] component O(OrderLink link)` at `ShopSetup.OrderPath`, the payment return
-`[Page("/paid/{link}/{session}")] component R(OrderLink link, string session)` (calling `CheckPayment(link, session)`),
-`[Page("/pay/{pay}")] component P(Pay pay)` at `ShopSetup.PayLinkPath`, `[Page("/bag/back/{link}")] component
+`[Route("/order/{link}")] component O(OrderLink link)` at `ShopSetup.OrderPath`, the payment return
+`[Route("/paid/{link}/{session}")] component R(OrderLink link, string session)` (calling `CheckPayment(link, session)`),
+`[Route("/pay/{pay}")] component P(Pay pay)` at `ShopSetup.PayLinkPath`, `[Route("/bag/back/{link}")] component
 B(ResumeBag link)` at `ShopSetup.ResumeBagPath` — and names its own page for a link that has run out with
 `app.Ui = new AppUi { InvalidLinkSurface = … }`.
 
@@ -116,7 +116,7 @@ osy user add you@yourshop.se --role Staff
 ```
 
 **Proving an address before the first sign-in** is one setting — `app.Shop = new ShopSetup { …, RequireConfirmedEmail = true };`
-— and a page for the link the mail carries: `[Page("/account/confirm/{token}")] [AllowAnonymous] component Confirm(string
+— and a page for the link the mail carries: `[Route("/account/confirm/{token}")] [AllowAnonymous] component Confirm(string
 token) { render { ShopConfirmAddress(token); } }`. Sign-up and sign-in then ask for the six-digit code the mail carries
 (`ShopSignUp` and `ShopSignIn` show the step themselves), a new address and a taken one are answered alike (the mail
 says which), and the FIRST proof of an address takes the account's password — or a new one, which signs every other

@@ -310,7 +310,7 @@ public component DeskNewOrder(Action onDone) {
 
 /// The page a payment link opens: the order and what it costs, and the button that pays it through the shop's
 /// provider — or, if it was paid or called off while the page was open, a sentence that says so. A store puts it on
-/// its page at `ShopSetup.PayLinkPath` + `/{pay}`: `[Page("/pay/{pay}")] component P(Pay pay) { … ShopPayByLink(pay) … }`
+/// its page at `ShopSetup.PayLinkPath` + `/{pay}`: `[Route("/pay/{pay}")] component P(Pay pay) { … ShopPayByLink(pay) … }`
 /// — a link that does not check out never reaches it (the app's `InvalidLinkSurface` is shown instead).
 [Composable]
 [AllowAnonymous]

@@ -67,8 +67,7 @@ void a_wholesale_account_buys_at_its_price_list() {
 }
 
 /// A business customer brought into a counter sale by their own code is priced on THEIR list — the clerk reads the
-/// terms, never the customer's account (arg-rule-kits): the sale used to be refused here, and before that rule priced
-/// at retail, silently.
+/// terms, never the customer's account.
 [Test(Floor)]
 void a_wholesale_customer_brought_in_at_the_counter_buys_at_their_price_list() {
   Cafes();

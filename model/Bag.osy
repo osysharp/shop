@@ -67,8 +67,8 @@ public entity Bag {
     // SECURITY-INVARIANT(a-guest-row-is-its-visits): a bag with no owner is its VISIT's — read and written only by the
     //   browser whose server-issued visitor it names (`VisitId == Visitor.Id`), by staff, or (read) by a `ResumeBag`
     //   link's holder. What a guest's bag holds — a date of birth, a business's VAT number and name, a pickup address —
-    //   is theirs: before this, `Owner == null` alone let every anonymous caller read and write every guest's bag, and
-    //   create one under another guest's visit for them to find. Guarded by bag-and-history.test.osy
+    //   is theirs: `Owner == null` alone would let every anonymous caller read and write every guest's bag, and create
+    //   one under another guest's visit for them to find. Guarded by bag-and-history.test.osy
     //   a_guest_cannot_read_or_write_another_guests_bag and GuestRowsOverTheWireTests.
     // SECURITY-INVARIANT(a-counter-sells-only-at-its-location): a counter's sale is written and read by the clerks who
     //   sell at THAT counter (`SellsAt(SoldAt)`) and by staff — and it never has an owner, so a clerk can never make a

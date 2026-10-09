@@ -102,10 +102,9 @@ public void MarkDelivered(Order order) {
 
 /// The KEY of the delivery provider an order went with — `DeliveryMethod` is "key" or "key/option".
 ///
-/// ⚠ The key, not the provider. This returned the provider object itself until BL-14 (2026-09-27), and that object is
-/// part of the app's setting: a carrier built with its API key (`new PostNordDelivery { ApiKey = Secret.X }`). Any
-/// signed-in caller could invoke a function by name and receive it — key and all — in the response. Each caller now
-/// looks the provider up where it uses it, so the object never leaves the function holding it.
+/// ⚠ The key, not the provider. The provider object is part of the app's setting — a carrier built with its API key
+/// (`new PostNordDelivery { ApiKey = Secret.X }`) — so it never leaves the function holding it: each caller looks the
+/// provider up where it uses it.
 string CarrierKeyOf(Order order) {
   var slash = order.DeliveryMethod.IndexOf("/");
   return slash < 0 ? order.DeliveryMethod : order.DeliveryMethod.Substring(0, slash);

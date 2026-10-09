@@ -108,8 +108,7 @@ void a_newsletter_closed_without_saving_is_not_saved_by_the_desks_next_save() {
 }
 
 /// A newsletter's words rewritten after a refused call still save. `Assert.Throws` discards the unit of work, and the
-/// next rewrite used to read the sections it had just replaced and fail its own commit with "Entity is deleted." —
-/// about half the time, so the sequence runs six times to make a regression unmissable.
+/// next rewrite must not read the sections it has just replaced; the sequence runs six times so a slip cannot hide.
 [Test(Floor)]
 void a_newsletter_rewritten_after_a_refused_send_still_saves() {
   runas (Desk) {

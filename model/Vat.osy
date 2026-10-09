@@ -135,9 +135,8 @@ public string SetBuyerVatNumber(string vatNumber) {
 }
 
 // SECURITY-INVARIANT(a-vat-number-is-checked-by-the-register): a sale is VAT-free (reverse charge) only for a number
-//   the REGISTER confirmed for THIS bag. The bag is the customer's to write, so `BuyerVatValid` alone proved nothing: a
-//   visitor wrote a number, a company and `true` onto their own bag and bought without VAT (found 2026-09-29 building
-//   the age check's seal). `SetBuyerVatNumber` seals the number and company it checked with the server's fingerprint
+//   the REGISTER confirmed for THIS bag. The bag is the customer's to write, so `BuyerVatValid` alone would prove nothing:
+//   a visitor could write a number, a company and `true` onto their own bag. `SetBuyerVatNumber` seals the number and company it checked with the server's fingerprint
 //   (keyed by the app — no browser holds the key); `ReverseChargeApplies` counts only a bag whose seal is the one the
 //   server computes now, and the order's workflow prices it again the same way. Guarded by vat.test.osy
 //   a_customer_cannot_mark_their_own_vat_number_as_checked.

@@ -149,7 +149,7 @@ void StartFromOrder(SubscriptionSignUp s) {
 ///   its own `security { }` (created only for the signed-in caller, into their own bag).
 [AllowAnonymous]
 public SubscriptionSignUp ChooseSubscription(string planKey, BillingInterval interval) {
-  var me = Session.CurrentUser;
+  var me = MyShopAccount();
   if (me == null) { throw new Exception("Sign in to subscribe — the subscription is kept on your account."); }
   var plan = SubscriptionPlan.FirstOrDefault(p => p.Key == planKey);
   if (plan == null) { throw new Exception($"There is no plan '{planKey}'."); }

@@ -1,5 +1,4 @@
-// A subscription in a currency the shop stops SELLING in moves to the shop's own (D-SELLCURRENCY1; owner, 2026-09-29:
-// "yes to all the open questions").
+// A subscription in a currency the shop stops SELLING in moves to the shop's own.
 //
 // ⚑ ONLY AN EXPLICIT STOP MOVES ONE. The desk's "Only show it", stopping the rates, or the app no longer offering the
 //   currency (`IShopAddOn.CurrencyNoLongerSold`). A rate that has merely gone STALE moves nothing: the renewal waits for a

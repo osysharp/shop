@@ -28,13 +28,13 @@ public entity Subscription {
   [Required] ShopAccount Customer;
   BillingInterval Interval;
   /// The currency it is agreed in and renews in (ISO 4217) — null: the shop's own. A subscription bought in a currency
-  /// the shop SELLS in (D-SELLCURRENCY1) stays in it: its prices, charges, renewal orders, their invoices and every
+  /// the shop SELLS in stays in it: its prices, charges, renewal orders, their invoices and every
   /// price notice are in it, and the books convert each renewal at its own invoice's rate, as any sale in it.
   [MaxLength(3)] string? Currency;
   /// Why the renewal that is due waits — its currency is not sold now, or its rate is out of date — or "". It is
   /// tried again every day; what it grants stays while it waits.
   [MaxLength(300)] string RenewalWaits = "";
-  /// The shop stopped selling in `Currency` (D-SELLCURRENCY1, owner 2026-09-29): from its first renewal on or after
+  /// The shop stopped selling in `Currency`: from its first renewal on or after
   /// this day it renews in the shop's own currency, at each item's `MovedPrice` — converted the day the shop stopped,
   /// and told to the subscriber then, the price notice's lead time ahead. Null: nothing is moving.
   DateTime? MovesOn;

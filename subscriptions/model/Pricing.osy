@@ -1,6 +1,6 @@
 // Changing what a plan costs, and keeping the catalogue in step with another system.
 //
-// ⚑ ONE OWNER PER FACT (owner, 2026-09-28, D-SUBPRICE1): a control plane that sells through this shop owns what a plan
+// ⚑ ONE OWNER PER FACT: a control plane that sells through this shop owns what a plan
 //   IS — its key, name, kind and what it grants — and keeps it here with `UpsertPlan`. The shop owns what it COSTS:
 //   `SchedulePrice` is the one way a price moves, whether staff call it from the desk or a system calls it through the
 //   app's API — so the notice subscribers are owed is given the same way either way.

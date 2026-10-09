@@ -82,7 +82,7 @@ public workflow NoticeLife {
     // ⚑ THE FIRST POST IS ON A CLOCK DUE AT ONCE, NOT IN `enter`: a notice row is written inside the commit that changed
     //   the subscription (a renewal, a customer's change), and an autostarted run's `enter` is part of that commit — it
     //   would wait on the other system's endpoint, and past five seconds the commit stops waiting
-    //   (`workflow-first-step-waits-on-a-slow-call`, D-AUTOSTART1). So the retry reminder starts at zero: posted as the
+    //   (`workflow-first-step-waits-on-a-slow-call`). So the retry reminder starts at zero: posted as the
     //   run parks, after the commit, then tried again every quarter of an hour; after a day it is given up — kept, and
     //   sendable again by staff.
     subscribe Taken() as Sent {

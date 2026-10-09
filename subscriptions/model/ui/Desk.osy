@@ -158,7 +158,7 @@ component SubscriptionDeskLabel(string text) {
 
 /// Who subscribes — their name, else their address.
 public string SubscriberName(Subscription sub) {
-  return sub.Customer.Name ?? sub.Customer.Email;
+  return ShopNameOf(sub.Customer);
 }
 
 /// Where a subscription stands, in a word or two — "Ending" for one set to stop when its period ends.

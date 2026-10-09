@@ -1,16 +1,11 @@
+using Osysharp.Accounts;
 using Osysharp.Delivery;
 using Osysharp.Payments;
 using Osysharp.Shop;
 using Osysharp.Shop.Subscriptions;
 
-app.Auth = new PasswordAuth { LoginField = Email, PasswordField = PasswordHash };
-app.AuthBootstrap = new AuthBootstrap {
-  Role = ShopRole.Authenticator,
-  Login = ShopLogin, Signup = ShopSignup,
-  PasswordResetRequest = ShopRequestPasswordReset, PasswordReset = ShopResetPassword,
-  PasswordChange = ShopChangePassword, EmailChange = ShopChangeEmail,
-  EmailVerify = ShopConfirmEmail, EmailVerifyCode = ShopConfirmEmailCode,
-};
+// Who signs in — customers and staff — is Osysharp.Accounts', as the shop's own kind of account (`ShopAccounts`).
+app.Accounts = ShopAccounts("Subscriptions Kit Tests");
 
 app.Shop = new ShopSetup {
   Payments = [ new ManualPayment { Key = "banktransfer", Label = "Bank transfer", Instructions = "IBAN SE00" }, new KeepingCard() ],

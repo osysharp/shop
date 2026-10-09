@@ -40,7 +40,7 @@ public entity SubscriptionPlan {
 
 /// What a plan costs per interval. A yearly price below twelve monthly ones is how a yearly discount is written.
 ///
-/// ⚑ PER CURRENCY (D-SELLCURRENCY1, owner 2026-09-29: "yes on per currency subscription"): a row with no `Currency` is
+/// ⚑ PER CURRENCY: a row with no `Currency` is
 ///   the shop's own price — every plan has one, and it is what a sold currency without its own falls back to,
 ///   converted at the day's rate and rounded by that currency's rule (`PlanAmountIn`), as a variant's price is. A row
 ///   with a `Currency` is the plan's own price in a currency the shop SELLS in.

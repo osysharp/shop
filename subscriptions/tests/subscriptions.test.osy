@@ -1,5 +1,6 @@
 // A software catalogue on subscriptions: plans and add-ons per interval, what they grant, and every change priced.
 
+using Osysharp.Identity;
 using Osysharp.Http;
 using Osysharp.Shop;
 using Osysharp.Shop.Subscriptions;
@@ -9,10 +10,10 @@ using Osysharp.Workflow;
 void Catalogue() {
   new ShopSettings { Name = "Cloudlet", Currency = "EUR", CurrencySymbol = "€", OrderPrefix = "CL-" };
   var staff = new ShopAccount { Email = "ops@cloudlet.test", PasswordHash = Security.HashPassword("ops-pass-1") };
-  new ShopRoleGrant { Member = staff, Role = ShopRole.Staff };
-  new ShopAccount { Email = "maja@example.test", PasswordHash = Security.HashPassword("maja-pass-1"), Name = "Maja Berg",
+  new RoleGrant { Member = staff, Role = ShopRole.Staff };
+  new ShopAccount { Email = "maja@example.test", PasswordHash = Security.HashPassword("maja-pass-1"), DisplayName = "Maja Berg",
                     Street = "Storgatan 1", PostCode = "11122", City = "Stockholm", Country = "SE" };
-  new ShopAccount { Email = "olle@example.test", PasswordHash = Security.HashPassword("olle-pass-1"), Name = "Olle Ek" };
+  new ShopAccount { Email = "olle@example.test", PasswordHash = Security.HashPassword("olle-pass-1"), DisplayName = "Olle Ek" };
   var coffee = new Product { Name = "House blend, 500 g", Slug = "house-blend", Price = 150m };
   var beans = new Variant { Product = coffee, Stock = 100, WeightGrams = 500 };
   var refill = new SubscriptionPlan { Key = "coffee.refill", Name = "Coffee refill", Kind = PlanKind.Shipped, Sells = beans };
@@ -535,4 +536,4 @@ void a_control_plane_does_both_over_the_api_with_a_staff_key() {
   runas (Ops) { Assert.Equal(250m, PlanAmount(SubscriptionPlan.Single(p => p.Key == "team"), BillingInterval.EveryFourWeeks)); }
 }
 
-// A plan bought in a currency the shop SELLS in besides its own: currencies.test.osy (D-SELLCURRENCY1).
+// A plan bought in a currency the shop SELLS in besides its own: currencies.test.osy.

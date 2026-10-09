@@ -2,15 +2,18 @@
 // many items they hold, and a new price for a plan reads that plan's subscribers, not every subscription the shop has.
 // Each test runs one act at two sizes; a read per item, or per subscription, turns it red with both numbers.
 
+using Osysharp.Identity;
 using Osysharp.Shop.Subscriptions;
 using Osysharp.Shop;
 
-/// A customer of the shop, made by staff — answers the account.
+/// A customer of the shop, made as a sign-up makes one (by the sign-in flow) — answers the account.
 ShopAccount NewCustomer(string email) {
-  var who = new ShopAccount { Email = email, PasswordHash = Security.HashPassword("customer-pass-1"), Name = "A Customer" };
-  new ShopRoleGrant { Member = who, Role = ShopRole.Customer };
-  UnitOfWork.Commit();
-  return who;
+  runas (AuthBootstrap) {
+    var made = new ShopAccount { Email = email, PasswordHash = Security.HashPassword("customer-pass-1"), DisplayName = "A Customer" };
+    new RoleGrant { Member = made, Role = ShopRole.Customer };
+    UnitOfWork.Commit();
+  }
+  return ShopAccount.Single(a => a.Email == email);
 }
 
 /// ⭐ WHAT A CUSTOMER MAY USE READS THE SAME FOR ONE ITEM AND FOR THREE — their plans' grants are read at once.
@@ -41,9 +44,8 @@ void what_a_customer_may_use_reads_the_same_however_many_items_they_hold() {
 [Test(Catalogue)]
 void a_new_price_reads_the_same_however_many_subscriptions_are_on_other_plans() {
   // ⚑ BOTH MEASUREMENTS ARE THE FIRST PRICE AFTER A SUBSCRIPTION WAS WRITTEN. A unit of work answers a read it already
-  //   sent from what it found while nothing it read has changed (D-SETTINGCACHE1). A price scheduled straight after the
-  //   warm-up reused the shop's settings read, which one scheduled after four subscriptions sent again — measured that
-  //   way: 4 statements beside one subscription, 5 beside five. A subscription between the two keeps them alike.
+  //   sent from what it found while nothing it read has changed, so a subscription is written before each price —
+  //   the two sizes then compare what the read costs, never what was already answered.
   runas (Ops) {
     var from = DateTime.UtcNow.AddDays(60);
     SchedulePrice("free", BillingInterval.EveryFourWeeks, 0m, from, false);   // sets up what every later one reuses

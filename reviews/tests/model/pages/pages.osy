@@ -3,12 +3,12 @@ using Osysharp.Shop.Reviews;
 using Osysharp.Shop;
 using Osysharp.Ui;
 
-[Page("/")] [AllowAnonymous] component KitHome() { render { Text("Reviews test shop"); } }
-[Page("/account/sign-in")] [AllowAnonymous] component KitSignIn() { render { ShopSignIn(); } }
-[Page("/reviews")] component KitReviews() { render { DeskReviews(); } }
+[Route("/")] [AllowAnonymous] component KitHome() { render { Text("Reviews test shop"); } }
+[Route("/account/sign-in")] [AllowAnonymous] component KitSignIn() { render { ShopSignIn(); } }
+[Route("/reviews")] component KitReviews() { render { DeskReviews(); } }
 
 /// A product page reduced to what reviews add: the name, and the reviews under it.
-[Page("/p/{slug}")]
+[Route("/p/{slug}")]
 [AllowAnonymous]
 component KitProduct(string slug) {
   live var product = Product.SingleOrDefault(p => p.Slug == slug);

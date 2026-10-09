@@ -7,7 +7,7 @@ using Osysharp.Ui;
 using Osysharp.Shop;
 
 /// Every review waiting first, each with Publish and Hide, and whether new ones go live at once.
-[Page("/staff/reviews")] [Layout(WorkspaceFrame)] [Authorize(IsShopStaff)] [Render(CSR)] [Title("Reviews")]
+[Route("/staff/reviews")] [Layout(WorkspaceFrame)] [Authorize(IsShopStaff)] [Render(CSR)] [Title("Reviews")]
 [Nav("Reviews", Order = 60)]
 public component ReviewsDeskPage() {
   render { Stack(gap: 6, w: "100%", maxW: "1200px") { PageTitle("Reviews"); DeskReviews(); } }

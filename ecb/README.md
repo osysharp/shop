@@ -15,7 +15,7 @@ information purposes only, which is how the shop uses them: nothing is charged a
 
 ```osy
 app MyShop {
-  use Osysharp.Shop@0 { egress "api.resend.com"; secret "ResendApiKey"; }
+  use Osysharp.Shop@1 { egress "api.resend.com"; secret "ResendApiKey"; }
   use Osysharp.Shop.Ecb@0 { egress "www.ecb.europa.eu"; }
   …
 }

@@ -2,7 +2,9 @@
 app EcbKitTests {
   tests "**/*.test.osy";
   use Osysharp.Shop.Ecb@0 { egress "www.ecb.europa.eu"; }
-  use Osysharp.Shop@0 { egress "api.resend.com"; secret "ResendApiKey"; }
+  use Osysharp.Shop@1 { egress "api.resend.com"; secret "ResendApiKey"; }
+  use Osysharp.Identity@0;
+  use Osysharp.Accounts@1;
   use Osysharp.Seo@0;
   use Osysharp.Http;
 }

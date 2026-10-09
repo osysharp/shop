@@ -66,7 +66,7 @@ component DropProductPage(Product? product, string note = "") : ProductPage {
             } else {
               Button("Add to bag", onPress: Add, tone: Tone.Primary, size: Size.Lg);
             }
-            if (problem != "") { Text(problem, role: UiRole.Alert, color: Colors.Primary); }
+            if (problem != "") { Text(problem, role: UiRole.Alert, color: Colors.Primary.Text); }
             if (added != "") {
               Row(gap: 3, align: Align.Baseline) {
                 Text(added, role: UiRole.Status);

@@ -1,18 +1,18 @@
-// Osysharp.Shop.Looks.Kiosk — a LOOK for a shop (D-SITEFRAME1 part 2): "the kiosk". A pale lilac-grey ground, ink type in Familjen Grotesk set light and large, the find full-bleed under a
+// Osysharp.Shop.Looks.Kiosk — a LOOK for a shop: "the kiosk". A pale lilac-grey ground, ink type in Familjen Grotesk set light and large, the find full-bleed under a
 // floating header like a magazine cover, and one accent — emerald — for what to press.
 //
 // It draws the general site contract (`Osysharp.Site.Looks`) and the shop's (`Osysharp.Shop.Looks`): the frame around
 // every page, the front page, the listings, a piece's page, and the blocks staff arrange. It carries NO data and NO logic
 // of its own — a store installs it beside others and staff pick it per version of the site.
 package Osysharp.Shop.Looks.Kiosk {
-  version     "0.1.3";
+  version     "0.2.0";
   minPlatform "0.9.0";
   summary     "a shop look — the kiosk: lilac-grey, one light grotesk, the find full-bleed like a magazine cover, an emerald accent.";
   model "model/**/*.osy";
   use Osysharp.Ui;
   use Osysharp.Blocks;
   use Osysharp.Storage;
-  use Osysharp.Shop@0;
+  use Osysharp.Shop@1;
   use Osysharp.Site.Looks@0;
   use Osysharp.Pages@0;
   // The frame sends a customer to the bag, which is the store's own page.

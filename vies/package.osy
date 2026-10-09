@@ -1,7 +1,7 @@
 // Osysharp.Shop.Vies — checks an EU VAT number against the European Commission's VIES register, for a shop that sells
 // VAT-free to businesses in other EU countries (reverse charge). A provider for `ShopSetup.VatNumbers`.
 package Osysharp.Shop.Vies {
-  version     "0.1.1";
+  version     "0.1.2";
   minPlatform "0.9.0";
   summary     "EU VAT-number checks against VIES — the shop's reverse-charge check.";
   model "model/*.osy";

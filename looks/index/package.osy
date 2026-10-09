@@ -1,17 +1,17 @@
-// Osysharp.Shop.Looks.Index — a LOOK for a shop (D-SITEFRAME1 part 2): "the index". A light grey ground, black Geist, Geist Mono for labels and prices, the whole shelf tree
+// Osysharp.Shop.Looks.Index — a LOOK for a shop: "the index". A light grey ground, black Geist, Geist Mono for labels and prices, the whole shelf tree
 // open in a column beside the page, a denser grid, and one accent — acid lime, always carrying black text.
 //
 // It draws the general site contract (`Osysharp.Site.Looks`) and the shop's (`Osysharp.Shop.Looks`). It carries NO data
 // and NO logic of its own — a store installs it beside others and staff pick it per version of the site.
 package Osysharp.Shop.Looks.Index {
-  version     "0.1.3";
+  version     "0.2.0";
   minPlatform "0.9.0";
   summary     "a shop look — the index: grey, black Geist, mono prices, the shelf tree always open, an acid-lime accent.";
   model "model/**/*.osy";
   use Osysharp.Ui;
   use Osysharp.Blocks;
   use Osysharp.Storage;
-  use Osysharp.Shop@0;
+  use Osysharp.Shop@1;
   use Osysharp.Site.Looks@0;
   use Osysharp.Pages@0;
   // The frame sends a customer to the bag, which is the store's own page.

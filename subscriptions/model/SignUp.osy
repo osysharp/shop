@@ -144,8 +144,7 @@ void StartFromOrder(SubscriptionSignUp s) {
 /// The customer chooses a plan for their bag. Answers the sign-up: in the bag, or dropped with why.
 ///
 /// ⚑ CALLABLE BY A SIGNED-OUT VISITOR, because a plan page is a public page and the refusal below is written FOR the
-///   visitor: without the grant the server refused the call before this body ran, and a guest pressing "Choose" on a
-///   store's plan page got nothing on screen instead of "Sign in to subscribe". The sign-up row itself stays gated by
+///   visitor: a guest pressing "Choose" on a store's plan page is told "Sign in to subscribe". The sign-up row itself stays gated by
 ///   its own `security { }` (created only for the signed-in caller, into their own bag).
 [AllowAnonymous]
 public SubscriptionSignUp ChooseSubscription(string planKey, BillingInterval interval) {

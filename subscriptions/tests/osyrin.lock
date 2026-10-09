@@ -6,8 +6,8 @@
     {
       "name": "Osysharp.Accounts",
       "kind": "package",
-      "version": "1.0.0",
-      "hash": "sha256:255191db83d3be6d5f11bcede79d98dea5864d4713e9cf00e4a52b9b05b47f51",
+      "version": "1.0.1",
+      "hash": "sha256:f7e4103a4235c3512a463015e750632d910fd8cb4255afcf4cd7edbcae253812",
       "minPlatform": "0.9.0",
       "shadow": "app-forkable",
       "source": "workspace:kits/accounts",
@@ -122,8 +122,8 @@
     {
       "name": "Osysharp.Shop",
       "kind": "package",
-      "version": "1.0.0",
-      "hash": "sha256:06f9b817a22ca887c55c992c4cc4dfd46fd2c3e4f219e90ade12d4e5b329cfdb",
+      "version": "1.0.1",
+      "hash": "sha256:129f7caed7846e90e47959becde0673a3bff4f691e72f466fd6743367157f2f0",
       "minPlatform": "0.9.0",
       "shadow": "app-forkable",
       "source": "workspace:kits/shop",
@@ -231,8 +231,8 @@
     {
       "name": "Osysharp.Shop.Subscriptions",
       "kind": "package",
-      "version": "0.5.0",
-      "hash": "sha256:c5262aaa29361f6ef3b688b6122b1c26e6ac96b46fb5206cb3010d4cb76ab14b",
+      "version": "0.5.1",
+      "hash": "sha256:5f21f22060109c8f8330175d7be973190b2e67be7bc22ae41a423fc58339f9ad",
       "minPlatform": "0.9.0",
       "shadow": "app-forkable",
       "source": "workspace:kits/subscriptions",

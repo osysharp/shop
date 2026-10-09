@@ -20,7 +20,7 @@ public entity SavedPaymentMethod {
     // writer is the order's own workflow, from what the provider answered, for the order's account. A customer who could
     // create a row could put a way to pay (or a broken one) on another account and turn its renewals. The compiler
     // refuses a write in any app code (a package's grants are a floor an app cannot widen); the handle itself is masked
-    // from customers. Guarded by ACapabilityRuleIsAFloorTests.AnAppPartial_CannotGrantAVerbTheCapabilityWithheld and the
+    // from customers. Guarded by the platform's own tests and the
     // subscriptions kit's test a_card_kept_at_checkout_pays_each_renewal_with_nobody_there.
     allow read when IsAuthenticated where Account == user;
     allow read when IsShopStaff;

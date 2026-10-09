@@ -67,8 +67,8 @@ void staff_write_a_newsletter_see_it_and_send_a_test() {
   Ui.Click("New newsletter");
   Assert.Visible("The newsletter — written in Markdown");
   Assert.Visible("{subscriber.firstname}");
-  // The editor itself STARTED — it loaded the newsletter's document (a package type named by its simple name used to
-  // answer 404 here, which no text on the page shows).
+  // The editor itself STARTED — it loaded the newsletter's document, a package type named by its simple name (a 404
+  // here would show in no text on the page).
   Assert.Probe("MarkdownEditor", "dirty", false);
   // What staff type in the editor lands in the campaign's body — written here as the editor writes it.
   runas (Desk) {
@@ -88,7 +88,7 @@ void staff_write_a_newsletter_see_it_and_send_a_test() {
 }
 
 /// ⭐ A NEWSLETTER IS WRITTEN IN A UNIT OF WORK OF ITS OWN. Close throws away what was typed since the
-/// last Save — it does not linger in the desk's unit of work, where the next Save anywhere on the desk used to commit a
+/// last Save — it does not linger in the desk's unit of work, where the next Save anywhere on the desk would commit a
 /// subject nobody meant to keep: the editor opens with `Dialog.Open(…, unitOfWork: Root)`, so the Settings tab's "Save
 /// settings" never renames the newsletter.
 [Test(Floor)]

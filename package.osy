@@ -1,5 +1,5 @@
 package Osysharp.Shop {
-  version     "1.0.1";
+  version "1.0.2";
   minPlatform "0.9.0";
   // A product capability: other kits meet it through a bridge that `completes` it, never by using it.
   role        vertical;

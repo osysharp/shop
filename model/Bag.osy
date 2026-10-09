@@ -69,7 +69,7 @@ public entity Bag {
     //   link's holder. What a guest's bag holds — a date of birth, a business's VAT number and name, a pickup address —
     //   is theirs: `Owner == null` alone would let every anonymous caller read and write every guest's bag, and create
     //   one under another guest's visit for them to find. Guarded by bag-and-history.test.osy
-    //   a_guest_cannot_read_or_write_another_guests_bag and GuestRowsOverTheWireTests.
+    //   a_guest_cannot_read_or_write_another_guests_bag, and over the wire by the platform's own tests.
     // SECURITY-INVARIANT(a-counter-sells-only-at-its-location): a counter's sale is written and read by the clerks who
     //   sell at THAT counter (`SellsAt(SoldAt)`) and by staff — and it never has an owner, so a clerk can never make a
     //   customer's bag theirs. Guarded by counter.test.osy a_clerk_sells_only_at_their_own_counter.

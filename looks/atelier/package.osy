@@ -1,4 +1,4 @@
-// Osysharp.Shop.Looks.Atelier — a LOOK for a shop (D-SITEFRAME1 part 2): "the gallery wall". Pure white, near-black words in
+// Osysharp.Shop.Looks.Atelier — a LOOK for a shop: "the gallery wall". Pure white, near-black words in
 // one grotesk set light and large, full-bleed photographs cropped tall, hairlines instead of boxes, and one accent —
 // oxblood — for the one thing a visitor should act on.
 //
@@ -6,14 +6,14 @@
 // every page, the front page, the listings, a piece's page, and the hero, product row and shelves staff arrange. It
 // carries NO data and NO logic of its own — a store installs it beside others and staff pick it per version of the site.
 package Osysharp.Shop.Looks.Atelier {
-  version     "0.1.3";
+  version     "0.2.0";
   minPlatform "0.9.0";
   summary     "a shop look — the gallery wall: white, one light grotesk, full-bleed photographs, hairlines, an oxblood accent.";
   model "model/**/*.osy";
   use Osysharp.Ui;
   use Osysharp.Blocks;
   use Osysharp.Storage;
-  use Osysharp.Shop@0;
+  use Osysharp.Shop@1;
   use Osysharp.Site.Looks@0;
   use Osysharp.Pages@0;
   // The frame sends a customer to the bag, which is the store's own page.

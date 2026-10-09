@@ -5,7 +5,7 @@
 // It draws the general site contract (`Osysharp.Site.Looks`) and the shop's (`Osysharp.Shop.Looks`). It carries NO data
 // and NO logic of its own — a store installs it beside others and staff pick it per version of the site.
 package Osysharp.Shop.Looks.Studio {
-  version     "0.1.1";
+  version     "0.1.2";
   minPlatform "0.9.0";
   summary     "a shop look — the showroom: aubergine on white, an italic serif, a pinned photograph that follows the page, hot pink.";
   model "model/**/*.osy";

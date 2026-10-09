@@ -67,5 +67,7 @@ void a_customer_cannot_pause_anyone_elses_subscription() {
   Subscription? sub = null;
   runas (Ops) { sub = Subscribe(ShopAccount.Single(s => s.Email == "olle@example.test"), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", ""); }
   runas (Maja) { Assert.Throws<Exception>(() => PauseSubscription(sub!)); }
-  Assert.Equal(SubscriptionStatus.Active, StatusOf(sub!));
+  // Asked as staff: a call is refused before its body runs when its caller cannot read the row it is handed, and
+  // nobody is signed in here (no page was visited).
+  runas (Ops) { Assert.Equal(SubscriptionStatus.Active, StatusOf(sub!)); }
 }

@@ -40,10 +40,14 @@ void what_a_customer_may_use_reads_the_same_however_many_items_they_hold() {
 /// subscribers, not every subscription and its items.
 [Test(Catalogue)]
 void a_new_price_reads_the_same_however_many_subscriptions_are_on_other_plans() {
+  // ⚑ BOTH MEASUREMENTS ARE THE FIRST PRICE AFTER A SUBSCRIPTION WAS WRITTEN. A unit of work answers a read it already
+  //   sent from what it found while nothing it read has changed (D-SETTINGCACHE1). A price scheduled straight after the
+  //   warm-up reused the shop's settings read, which one scheduled after four subscriptions sent again — measured that
+  //   way: 4 statements beside one subscription, 5 beside five. A subscription between the two keeps them alike.
   runas (Ops) {
-    Subscribe(NewCustomer("a1@example.test"), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", "");
     var from = DateTime.UtcNow.AddDays(60);
     SchedulePrice("free", BillingInterval.EveryFourWeeks, 0m, from, false);   // sets up what every later one reuses
+    Subscribe(NewCustomer("a1@example.test"), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", "");
     var mark = Cost.Mark();
     var few = SchedulePrice("dedicated", BillingInterval.EveryFourWeeks, 550m, from, false);
     var fewCost = Cost.StatementsSince(mark);

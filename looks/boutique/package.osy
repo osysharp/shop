@@ -6,7 +6,7 @@
 // It draws the general site contract (`Osysharp.Site.Looks`) and the shop's (`Osysharp.Shop.Looks`). It carries NO data
 // and NO logic of its own — a store installs it beside others and staff pick it per version of the site.
 package Osysharp.Shop.Looks.Boutique {
-  version     "0.2.1";
+  version     "0.2.2";
   minPlatform "0.9.0";
   summary     "a shop look — the boutique: powder blue, navy, a soft serif, round corners, a tomato accent and a sliding bag.";
   model "model/**/*.osy";
@@ -15,7 +15,7 @@ package Osysharp.Shop.Looks.Boutique {
   use Osysharp.Storage;
   use Osysharp.Shop@1;
   use Osysharp.Site.Looks@0;
-  use Osysharp.Pages@0;
+  use Osysharp.PageBuilder@0;
   // The frame sends a customer to checkout, which is the store's own page.
   appPage "/checkout";
   // The producer's test project: a store that wears the look, and the page the look asks it to serve.

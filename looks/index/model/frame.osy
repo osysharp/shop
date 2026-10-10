@@ -6,7 +6,7 @@ namespace Osysharp.Shop.Looks.Index;
 
 using Osysharp.Ui;
 using Osysharp.Blocks;
-using Osysharp.Pages;
+using Osysharp.PageBuilder;
 using Osysharp.Shop;
 using Osysharp.Shop.Looks;
 using Osysharp.Site.Looks;

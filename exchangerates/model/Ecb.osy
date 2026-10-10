@@ -1,0 +1,49 @@
+namespace Osysharp.Shop.ExchangeRates;
+
+using Osysharp.Http;
+using Osysharp.Shop;
+
+// The ECB's euro foreign exchange reference rates — one sheet per working day, at about 16:00 CET, none on weekends or
+// TARGET closing days, every rate in units of a currency per ONE euro. Its daily XML (read 2026-09-29):
+//
+//   https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html
+//   https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml
+//
+//   <gesmes:Envelope …><Cube><Cube time='2026-09-28'>
+//     <Cube currency='USD' rate='1.1378'/> <Cube currency='SEK' rate='11.3205'/> …
+//   </Cube></Cube></gesmes:Envelope>
+//
+// ⚠ The ECB publishes these rates "for information purposes only" — which is exactly how the shop uses them: an
+//   estimate beside a price that is charged in the shop's own currency.
+
+/// The ECB's daily sheet, as the shop's exchange rates:
+///
+///     app.Shop = new ShopSetup { …, ExchangeRates = new EcbRates(), DisplayCurrencies = ["EUR", "NOK", "USD"] };
+///     use Osysharp.Shop.ExchangeRates@0 { egress "www.ecb.europa.eu"; }    // in app.osy
+public class EcbRates : IExchangeRates {
+  public string Source { get; } = "European Central Bank";
+  public string Url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml";
+
+  public RateSheet Fetch() {
+    var r = Http.Get(Url);
+    if (!r.IsSuccess) { throw new ExternalServiceException($"The European Central Bank did not answer with its rates ({r.StatusCode})."); }
+    return EcbSheet(r.Body);
+  }
+}
+
+/// The daily XML as a sheet against the euro. Throws when it carries no date or no rate: a page that is not the sheet
+/// (a maintenance notice, an error page served as 200) must not become a day of rates.
+public RateSheet EcbSheet(string xml) {
+  var day = Regex.Match(xml, "time=['\"](?<y>\\d{4})-(?<m>\\d{2})-(?<d>\\d{2})['\"]");
+  if (!day.Success) { throw new ExternalServiceException("The European Central Bank's answer carried no date, so it is not the daily sheet."); }
+  var sheet = new RateSheet {
+    Base = "EUR",
+    Date = new DateTime(Convert.ToInt32(day.Groups["y"].Value), Convert.ToInt32(day.Groups["m"].Value), Convert.ToInt32(day.Groups["d"].Value)),
+  };
+  foreach (var m in Regex.Matches(xml, "currency=['\"](?<c>[A-Z]{3})['\"]\\s+rate=['\"](?<r>[0-9]+(\\.[0-9]+)?)['\"]")) {
+    var rate = Convert.ToDecimal(m.Groups["r"].Value);
+    if (rate > 0) { sheet.Quotes.Add(new RateQuote { Currency = m.Groups["c"].Value, Rate = rate }); }
+  }
+  if (sheet.Quotes.Count == 0) { throw new ExternalServiceException("The European Central Bank's answer carried no rates."); }
+  return sheet;
+}

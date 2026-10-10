@@ -7,12 +7,12 @@ app KioskLookTests {
   tests "*.test.osy";
   use Osysharp.Shop@1 { egress "api.resend.com"; secret "ResendApiKey"; }
   use Osysharp.Identity@0;
-  use Osysharp.Accounts@1;
+  use Osysharp.UserAccounts@1;
   use Osysharp.Payments@0;
-  use Osysharp.Delivery@0;
+  use Osysharp.Shipping@0;
   use Osysharp.Seo@0;
   use Osysharp.Blocks;
-  use Osysharp.Pages@0;
+  use Osysharp.PageBuilder@0;
   use Osysharp.Site.Looks@0;
   use Osysharp.Shop.Looks.Kiosk@0;
   use Osysharp.Workflow;

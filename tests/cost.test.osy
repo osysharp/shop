@@ -64,11 +64,13 @@ void one_more_order_placed_from_the_desk_stays_within_its_request_budget() {
   Ui.Click("Place the order");
   Assert.Visible("is placed and reserved");
   Said("Placed from the desk", mark);
-  // An order placed from the desk costs 5 requests, 3 server calls and about 117 statements: the setup kept, reads sent
-  // once a unit of work. One request of margin, the calls held exactly, 5% on the statements.
+  // An order placed from the desk costs 5 requests, 3 server calls and about 124 statements: the setup kept, reads sent
+  // once a unit of work. Each workflow that starts itself on a new row is one more read when a commit checks for rows
+  // still waiting for their run — sent with the others, so it adds no round trip. One request of margin, the calls held
+  // exactly, one statement of margin.
   Assert.AtMost(6, Cost.RequestsSince(mark));
   Assert.AtMost(3, Cost.ServerCallsSince(mark));
-  Assert.AtMost(123, Cost.StatementsSince(mark));
+  Assert.AtMost(125, Cost.StatementsSince(mark));
 }
 
 /// The desk's New order, filled in to the last click.

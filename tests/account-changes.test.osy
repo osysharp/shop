@@ -1,7 +1,7 @@
 // A signed-in account changes its own password and address — each on the strength of the current password, and the
-// address only once the new one has confirmed it (Osysharp.Accounts).
+// address only once the new one has confirmed it (Osysharp.UserAccounts).
 
-using Osysharp.Accounts;
+using Osysharp.UserAccounts;
 using Osysharp.Mail;
 using Osysharp.Shop;
 

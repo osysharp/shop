@@ -45,7 +45,7 @@ public entity ShopMail {
   Order? Order;
   security {
     // Staff read the outbox; a customer reads what was sent to them — their copy of their own data asks for it. The
-    // sign-in flow (Osysharp.Accounts) writes the account's mail here, in the shop's design (`ShopAccountMails`).
+    // sign-in flow (Osysharp.UserAccounts) writes the account's mail here, in the shop's design (`ShopAccountMails`).
     allow read when IsAuthenticated || IsAuthenticator where To == user.Email;
     allow read when (IsAuthenticated || IsAuthenticator) && IsShopStaff;
     allow read when IsAuthenticator;
@@ -228,7 +228,7 @@ public class ShopMails {
   public virtual RenderedEmail GiftCard(GiftCard card, string code) { return ShopGiftCardMail(card, code); }
   /// The files a paid order bought, each with its link (Downloads.osy).
   public virtual RenderedEmail Downloads(Order order, List<DownloadMailLine> links) { return ShopDownloadsMail(order, links); }
-  /// A link to choose a new password (Osysharp.Accounts' `RequestPasswordReset`) — in the account's language.
+  /// A link to choose a new password (Osysharp.UserAccounts' `RequestPasswordReset`) — in the account's language.
   public virtual RenderedEmail PasswordReset(ShopAccount account, string link) {
     return ShopPasswordResetMail(account, link);
   }

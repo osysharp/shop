@@ -1,6 +1,6 @@
 using Osysharp.Shop;
 
-/// A VAT register written in the test app, as `Osysharp.Shop.Vies` is written: every number but 000000000 belongs to
+/// A VAT register written in the test app, as `Osysharp.Shop.VatNumbers` is written: every number but 000000000 belongs to
 /// Muster GmbH.
 public class FakeVatRegister : IVatNumberCheck {
   public VatNumberResult Check(string country, string number) {

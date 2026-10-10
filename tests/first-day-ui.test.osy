@@ -1,7 +1,7 @@
 // The shop's first day: staff exist, and nothing else — no settings row. Staff must be able to sign in and set the shop
 // up from the desk, because nobody else may make that row.
 
-using Osysharp.Accounts;
+using Osysharp.UserAccounts;
 using Osysharp.Identity;
 using Osysharp.Shop;
 

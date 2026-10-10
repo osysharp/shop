@@ -1,4 +1,4 @@
-using Osysharp.Delivery;
+using Osysharp.Shipping;
 
 /// A carrier written in the test app, as anyone can: it books a parcel and answers a tracking number, a link and a
 /// label — what PostNord or any other carrier answers — without reaching anywhere.

@@ -15,7 +15,7 @@
 
 namespace Osysharp.Shop;
 
-using Osysharp.Accounts;
+using Osysharp.UserAccounts;
 using Osysharp.MailingLists;
 
 using Osysharp.Storage;
@@ -179,7 +179,7 @@ void Erase(ShopAccount account) {
   account.City = null;
   account.Country = null;
   account.Language = null;
-  // …and the account itself, as Osysharp.Accounts erases one: it can no longer sign in (no password, no second factor,
+  // …and the account itself, as Osysharp.UserAccounts erases one: it can no longer sign in (no password, no second factor,
   // no linked provider, no role, every session ended, every link and code it was mailed spent), and its address and name
   // are gone — the row stays, because the books' orders still name it.
   EraseAccount(account);

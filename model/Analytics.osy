@@ -1,4 +1,4 @@
-// What the shop tells the store's analytics (`Osysharp.Analytics`): which page is a product and which the checkout, and
+// What the shop tells the store's analytics (`Osysharp.WebAnalytics`): which page is a product and which the checkout, and
 // which of this visit's orders are sales to report. A store puts `ShopAnalytics()` in its frame once and writes nothing
 // else — the events come from the shop's own rows (see ui/Analytics.osy).
 //
@@ -10,7 +10,7 @@
 
 namespace Osysharp.Shop;
 
-using Osysharp.Analytics;
+using Osysharp.WebAnalytics;
 
 /// A sale waiting to be reported to the store's analytics, by the browser of the visit that made it.
 public entity ShopPurchaseReport {

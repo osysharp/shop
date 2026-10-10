@@ -3031,15 +3031,15 @@ translations sv {
   /// also in Osysharp.Shop.CounterReturnStatus
   label "Refused" => "Nekad";
 
-  // ── Osysharp.Delivery.DeliveryState ──
-  /// Osysharp.Delivery.DeliveryState · a label (a field, a list item, a menu entry) · at most ~16 characters
-  /// shown through Osysharp.Delivery.DeliveryState.InTransit
+  // ── Osysharp.Shipping.DeliveryState ──
+  /// Osysharp.Shipping.DeliveryState · a label (a field, a list item, a menu entry) · at most ~16 characters
+  /// shown through Osysharp.Shipping.DeliveryState.InTransit
   /// beside: "Booked", "Ready to collect", "Delivered", "Problem", "Returned"
   /// also in Osysharp.Shop.TransferStatus
   /// also in ShopMailPreviewKinds
   label "On its way" => "På väg";
-  /// Osysharp.Delivery.DeliveryState · a label (a field, a list item, a menu entry) · at most ~14 characters
-  /// shown through Osysharp.Delivery.DeliveryState.Returned
+  /// Osysharp.Shipping.DeliveryState · a label (a field, a list item, a menu entry) · at most ~14 characters
+  /// shown through Osysharp.Shipping.DeliveryState.Returned
   /// beside: "Booked", "On its way", "Ready to collect", "Delivered", "Problem"
   /// also in Osysharp.Shop.StockReason
   /// also in Osysharp.Shop.GiveBackCause
@@ -3082,7 +3082,7 @@ translations sv {
   /// Osysharp.RaisedEventState · a label (a field, a list item, a menu entry) · at most ~15 characters
   /// shown through Osysharp.RaisedEventState.Delivered
   /// beside: "Waiting"
-  /// also in Osysharp.Delivery.DeliveryState
+  /// also in Osysharp.Shipping.DeliveryState
   /// also in Osysharp.Shop.OrderStatus
   /// also in OrderProgress
   label "Delivered" => "Levererad";

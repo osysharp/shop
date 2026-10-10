@@ -1,7 +1,7 @@
 // A delivery the customer collects from a point they choose: the points near their address, the choice required,
 // kept on the bag and the order, in the confirmation, and handed to the carrier when the parcel is booked.
 
-using Osysharp.Delivery;
+using Osysharp.Shipping;
 using Osysharp.Shop;
 using Osysharp.Workflow;
 

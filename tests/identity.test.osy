@@ -1,8 +1,8 @@
-// The shop's staff sign in as its customers do — through Osysharp.Accounts, with the shop's `[Role]` enum, and the
+// The shop's staff sign in as its customers do — through Osysharp.UserAccounts, with the shop's `[Role]` enum, and the
 // app states that once, in `app.Accounts = ShopAccounts(…)` (model/shop.osy). These tests prove that identity works end
 // to end. `Floor` and `Desk` are declared in fixture.test.osy.
 
-using Osysharp.Accounts;
+using Osysharp.UserAccounts;
 using Osysharp.Identity;
 using Osysharp.Shop;
 
@@ -10,7 +10,7 @@ using Osysharp.Shop;
 void staff_sign_in_through_the_accounts_sign_in() {
   // Called anonymously, exactly as a signed-out visitor reaches it. It can read the account and its masked
   // `PasswordHash` only because the platform arms the ephemeral AuthBootstrap principal — `ShopRole.Authenticator`,
-  // a role the shop PACKAGE declares, armed for Osysharp.Accounts' sign-in — for the call. Without that principal the row read is denied and every correct
+  // a role the shop PACKAGE declares, armed for Osysharp.UserAccounts' sign-in — for the call. Without that principal the row read is denied and every correct
   // password is refused, so a token here is the proof that the package's role was the one armed.
   Assert.NotEqual("", SignIn("anna@shop.test", "desk-pass-1").Ticket);
   Assert.Equal("", SignIn("anna@shop.test", "wrong-guess").Ticket);

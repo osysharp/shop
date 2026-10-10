@@ -24,7 +24,7 @@ osy init shop --style atelier
 | area | what you get |
 |---|---|
 | **Catalogue** | categories as a tree, products with variants (size, colour) and their own stock and price, a spec sheet per product, photos, draft/listed/archived |
-| **Accounts** | customers and staff are one kind of account — `ShopAccount`, an Osysharp.Accounts `User` — so sign-up (which never says an address is taken — the mail tells its owner), sign-in, two-step sign-in, a reset by mail, a changed password, a changed address (moved once the new address confirms it), an address proven before the first sign-in (off by default) and erasure are that kit's, with the shop's own screens and mail; Customer, Staff, Packer and Counter roles; guest checkout still works |
+| **Accounts** | customers and staff are one kind of account — `ShopAccount`, an Osysharp.UserAccounts `User` — so sign-up (which never says an address is taken — the mail tells its owner), sign-in, two-step sign-in, a reset by mail, a changed password, a changed address (moved once the new address confirms it), an address proven before the first sign-in (off by default) and erasure are that kit's, with the shop's own screens and mail; Customer, Staff, Packer and Counter roles; guest checkout still works |
 | **The bag** | kept per visit and saved on the account, merged at sign-in, re-checked against stock on return; "mail me when it is back"; one reminder about a bag left behind (to a reader of the list the store names), whose "Back to your bag" is a `ResumeBag` link that opens the bag on any device, signed in or not (`ShopResumeBag`), at today's prices and stock, and stops once the bag is ordered or emptied |
 | **Orders** | placing an order reserves its goods; an unpaid order lapses after the shop's hold days and puts them back; paid → sent → refunded, each step mailed. An order is read by the account it was placed from, the browser that placed it, staff — and whoever holds its link: every mail about it, the page a payment comes back to and the receipt carry an `OrderLink` (a year), opened by `ShopOrderByLink(link)` at `ShopSetup.OrderPath`; the reference alone opens nothing, and nobody lists orders. An order is priced by the shop: its workflow prices every customer's order again from the bag it came from, with the checkout's own computation, before it holds anything — an order written at any other price is refused. The link also sends things back — a guest has no account to return from: `ReturnWithLink`, by the account's own rules, refunded the way it was paid — and fetches the receipt. "Bought together" is a tally the order's workflow keeps; `BoughtTogetherRecount` (a row in the store's data, or `RecountBoughtTogether` at the desk) counts it again from every order, once or as often as asked, for orders paid before it existed |
 | **Payments** | Stripe Checkout (card, wallets) with its signed webhook; Klarna's hosted page (charged when the order is sent); bank transfer; pay on collection; a payment link for an order staff took by phone, or an exchange's difference — a `Pay` grant (`SendPayLink`, `ShopPayByLink`) that works for seven days and is taken back once the order is paid or called off |
@@ -34,10 +34,10 @@ osy init shop --style atelier
 | **Store credit** | a ledger per account in the shop's currency, written only by the shop's workflows: given for a return or by staff with a reason, spent at the checkout in part or in full (`CheckoutStoreCredit`), given back when an order it paid is refunded or called off; the customer reads their own (`ShopMyStoreCredit`) |
 | **Gift cards** | a product whose sizes are amounts, or the buyer's own amount (`Variant.AnyAmount`, between `GiftCardMin` and `GiftCardMax`), bought for somebody with a message and a day it arrives (`AddGiftCardToBag`); issued when the order is paid and mailed with its code, now or on that day. The code is never stored — only its keyed fingerprint (`Security.Fingerprint`) — and no card is ever listed: a shopper asks about a code (`GiftCardBalance`, `ApplyGiftCard`) and the shop answers. Spent at the checkout in part or in full beside any way to pay (`CheckoutGiftCard`); given back onto the card when the order is refused, cancelled or refunded, and in the part it paid when goods come back. Staff issue, adjust, void, re-code or send one early, each with a reason, and read its ledger (`DeskGiftCards`); what is left at expiry is written off. The buyer reads the cards they bought (`ShopMyGiftCards`), never what is left on them |
 | **Digital products** | a variant that is a FILE — a PDF, an audio file, a zip — uploaded privately on the desk (`DeskDownloadFile`, `Upload(privately: true)`); never out of stock and never posted. A bag of nothing but files and gift cards has one delivery, "By email", free; paid is delivered. A download opens from the link in its mail (`DownloadLink`, `ShopDownload`) or from the account (`ShopMyDownloads`), `DownloadLimit` times for `DownloadDays` days, each time as a 15-minute signed link; staff open one again (`ReopenDownload`), a refund closes it. The checkout asks for, and the order keeps, the consent to have it at once (`CheckoutDigitalConsent`) |
-| **Prices in the visitor's currency** | the visitor picks a currency (`ShowPricesIn`, kept per visit in `VisitCurrency`). Rates come from a provider the app lists (`ShopSetup.ExchangeRates` — `Osysharp.Shop.Ecb` asks the European Central Bank), fetched by a job (`StartExchangeRates`, or the desk's settings) as it starts and every six hours, never per page view, and kept per day (`ExchangeRateDay`); a rate older than `RatesStaleAfterDays` (6) converts nothing. Each offered currency is **SHOWN** or **SOLD** (below) |
+| **Prices in the visitor's currency** | the visitor picks a currency (`ShowPricesIn`, kept per visit in `VisitCurrency`). Rates come from a provider the app lists (`ShopSetup.ExchangeRates` — `Osysharp.Shop.ExchangeRates` asks the European Central Bank), fetched by a job (`StartExchangeRates`, or the desk's settings) as it starts and every six hours, never per page view, and kept per day (`ExchangeRateDay`); a rate older than `RatesStaleAfterDays` (6) converts nothing. Each offered currency is **SHOWN** or **SOLD** (below) |
 | **Shown** | an estimate: "≈ €14.58", and where money changes hands "≈ €14.58 · charged as 165 kr" (`InTheirMoney`, `ShownMoney`, `ChargedAs`); the order, its invoice, VAT and payment are in the shop's own currency |
 | **Sold** | real prices in that currency (`SellInCurrency`, the desk's "Sell in EUR"): each size's own price there (`VariantPrice` — the price list, edited in a size's details and carried by the spreadsheet as a "Price EUR" column), else its own price converted at the day's rate and rounded by the currency's rule (`PriceRounding`: .95, .90, whole units, 5s, 10s — the nearest such price). The bag is bought in it (`Bag.Currency`), the order is placed, invoiced and charged in it (`Order.Currency`, the day's `Rate` recorded on the order and on its invoice), and its invoice and credit notes state the VAT in the shop's own currency too. Delivery has its own price per option (`SoldDeliveryPrice`) and its own free-from (`ExchangeRate.FreeDeliveryFrom`), else both converted and rounded. A currency with no minor unit (the yen) can be shown, not sold |
-| **Goods with an age** | `Product.MinimumAge` (wine at 20 in Sweden's retail, 18 elsewhere): the checkout asks for a date of birth (`SetBirthDate`) and refuses the underage; the carrier is booked to hand the parcel over against ID. Or the buyer PROVES it with an identity provider the app lists (`ShopSetup.AgeVerifier` — `Osysharp.Shop.BankId` for Swedish BankID): `StartAgeCheck`, then `AgeCheckNow` every second for the QR code (`AgeCheckView.Qr`) or the provider's app link, until the provider — asked by the server, never the page — says so. A verified order keeps only "at least N, when, by whom" (`Order.AgeVerifiedBy/At`), no date of birth; a declared one keeps the date and says "check ID". `AgeMustBeVerified` refuses a declared date. The desk and the packing slip say which (`DeskAgeLine`) |
+| **Goods with an age** | `Product.MinimumAge` (wine at 20 in Sweden's retail, 18 elsewhere): the checkout asks for a date of birth (`SetBirthDate`) and refuses the underage; the carrier is booked to hand the parcel over against ID. Or the buyer PROVES it with an identity provider the app lists (`ShopSetup.AgeVerifier` — `Osysharp.Shop.AgeCheck.BankId` for Swedish BankID): `StartAgeCheck`, then `AgeCheckNow` every second for the QR code (`AgeCheckView.Qr`) or the provider's app link, until the provider — asked by the server, never the page — says so. A verified order keeps only "at least N, when, by whom" (`Order.AgeVerifiedBy/At`), no date of birth; a declared one keeps the date and says "check ID". `AgeMustBeVerified` refuses a declared date. The desk and the packing slip say which (`DeskAgeLine`) |
 | **Stock in several places** | locations (`StockLocation`) — a warehouse, a counter, a pop-up — each holding its own stock of each variant (`StockLevel`), with an address, and sending parcels, handing orders over, or both. A shop with ONE place has no locations and nothing changes; the first one added (`AddLocation`, the desk's Stock tab) makes the shop's own stock its DEFAULT location. An order is picked from one location (`Order.Location`, chosen by its workflow); holds, sales, lapses and refunds move stock there; transfers between locations are on the road until received (`SendTransfer`, `ReceiveTransfer`, `CancelTransfer`), every step a `StockMove`; returns go back where staff say (`ReceiveReturnAt`); a carrier books a parcel from its location's address (`ShipmentRequest.SendFrom`); a packer may be limited to one location (`LimitPacker`) |
 | **Wholesale** | price lists (`PriceList`): a price of its own per variant, per sold currency where it matters (`PriceListPrice`), else a percentage off the retail price; minimum quantities and a minimum order; invoice terms. Staff make an account wholesale with its VAT number checked against the register (`MakeWholesale`, `ShopSetup.VatNumbers`); its bag is priced on its list, and an invoice (`ShopSetup.OnlyForWholesale`) is offered to it alone. The desk's Wholesale tab keeps the lists, the accounts and the invoices to be paid (`MarkInvoicePaid`) |
 | **The counter** | a till for a tablet on the shop's counter (`ShopCounter`, for a `ShopRole.Counter` clerk or staff): scan a barcode or search into a sale at the clerk's counter, with what that location has on the shelf; a customer brought in by a code mailed to their account (their store credit, their trade prices); a gift card or discount code; paid by card on the shop's own terminal (recorded), Swish's QR code or a Stripe reader (`ShopSetup.CounterPayments`, `ICounterPayment`); handed over the moment it is paid, with a receipt printed or mailed; goods taken back over the counter the way they were paid. A counter sale is an ORDER — priced again by its workflow, invoiced, in the VAT report and the books like the web's (below) |
@@ -74,9 +74,9 @@ app MyShop {
     secret "StripeApiKey"; secret "StripeWebhookSecret"; secret "ResendApiKey";
     secret "KlarnaUsername"; secret "KlarnaPassword";
   }
-  // Who signs in — customers and staff — is Osysharp.Accounts'; its mail goes through Osysharp.Mail.
+  // Who signs in — customers and staff — is Osysharp.UserAccounts'; its mail goes through Osysharp.Mail.
   use Osysharp.Identity@0;
-  use Osysharp.Accounts@1;
+  use Osysharp.UserAccounts@1;
   use Osysharp.Mail@0;
   use Osysharp.Payments.Stripe@0 { egress "api.stripe.com"; }
   use Osysharp.Payments.Klarna@0 { egress "api.klarna.com"; egress "api.playground.klarna.com"; }
@@ -90,10 +90,10 @@ routes are the app's:
 
 ```osy
 using Osysharp.Identity;
-using Osysharp.Accounts;
+using Osysharp.UserAccounts;
 using Osysharp.Shop;
 
-// Every sign-up makes a ShopAccount with the Customer role, and the account's mail is the shop's. Osysharp.Accounts
+// Every sign-up makes a ShopAccount with the Customer role, and the account's mail is the shop's. Osysharp.UserAccounts
 // wires the sign-in itself.
 app.Accounts = ShopAccounts("My Shop");
 // Staff see who holds which role — the desk's packers and counter staff.
@@ -118,7 +118,7 @@ osy secret set ResendApiKey          # and "Mail from" in the desk's settings
 osy user add you@yourshop.se --role Staff
 ```
 
-**The account pages are at Osysharp.Accounts' addresses** — `/login`, `/sign-up`, `/forgot-password`,
+**The account pages are at Osysharp.UserAccounts' addresses** — `/login`, `/sign-up`, `/forgot-password`,
 `/reset-password/{token}`, `/verify-email/{token}` and `/account` — which its mail links to and where the platform sends
 a visitor who must sign in. That kit serves a plain page at each; a store takes one over in its own frame by declaring a
 component of the same name around the shop's screen:
@@ -141,16 +141,16 @@ FIRST proof of an address takes the account's password — or a new one, which s
 somebody who signed up first with another person's address loses it to its owner. It asks every account that has not
 proven its address, those made before it was turned on too: each is sent a code at its next sign-in.
 
-**Staff are accounts too.** `osy user add you@yourshop.se --role Staff` makes one (an Osysharp.Accounts `User`, which
+**Staff are accounts too.** `osy user add you@yourshop.se --role Staff` makes one (an Osysharp.UserAccounts `User`, which
 has no bag or orders of its own); a customer who signs up and is then given `Staff` is both. The staff sign-in page
-(`/staff`) is Osysharp.Accounts' own form, so an app that requires two-step sign-in of its staff
+(`/staff`) is Osysharp.UserAccounts' own form, so an app that requires two-step sign-in of its staff
 (`SecondFactor = …` in an `AccountsSetup` of its own) has it there too.
 
 To show prices in a visitor's own currency, list a rate provider and the currencies (the ECB's host is granted on its
 own `use`, so a shop that shows one currency grants nothing):
 
 ```osy
-// app.osy:   use Osysharp.Shop.Ecb@0 { egress "www.ecb.europa.eu"; }
+// app.osy:   use Osysharp.Shop.ExchangeRates@0 { egress "www.ecb.europa.eu"; }
 app.Shop = new ShopSetup { …, ExchangeRates = new EcbRates(), DisplayCurrencies = ["EUR", "NOK", "DKK", "USD"] };
 ```
 
@@ -413,7 +413,7 @@ Z report are a cash register's job.
   `Osysharp.EmailTemplates`, rendered in your theme as HTML plus a plain-text twin. The desk's Mail tab previews each
   one for a real recent order. **What the confirmation, on its way / collected and refunded say around the order is
   yours to arrange** — each holds a region (`shop-order-confirmation`, `shop-shipped`, `shop-collected`,
-  `shop-refunded`) your staff arrange at the page desk (`Osysharp.Pages`), per language and in the site's versions: a
+  `shop-refunded`) your staff arrange at the page desk (`Osysharp.PageBuilder`), per language and in the site's versions: a
   paragraph in your voice, a photograph, a quote, a button. The confirmation keeps the order's lines (the block **The
   order**), and the right of withdrawal stays outside the region. Grant your staff `Osysharp.Blocks`' tables as for any
   page. A mail rendered while a member of staff previews the site is never sent — the outbox refuses it. To send your own version of one, derive from `ShopMails`, override that method, and

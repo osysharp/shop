@@ -14,7 +14,7 @@
 namespace Osysharp.Shop;
 
 using Osysharp.Ui;
-using Osysharp.Accounts;
+using Osysharp.UserAccounts;
 
 /// The desk: orders for whoever packs them, and for staff the figures, the products, the stock, the customers, the gift
 /// cards, the mail and the settings.
@@ -57,7 +57,7 @@ public component ShopStaffSignInPage() {
         }
       } else {
         PageTitle("Sign in");
-        // Osysharp.Accounts' own form: the password, then an authenticator's code or setting one up when the account
+        // Osysharp.UserAccounts' own form: the password, then an authenticator's code or setting one up when the account
         // has (or the app asks for) two-step sign-in — what a desk that handles money should be able to require.
         SignInForm(then: "/staff");
       }

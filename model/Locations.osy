@@ -20,7 +20,7 @@
 namespace Osysharp.Shop;
 
 using Osysharp.Identity;
-using Osysharp.Delivery;
+using Osysharp.Shipping;
 
 /// A place the shop keeps goods. The DEFAULT one holds everything the others do not (see the top of this file) and is
 /// made from the shop's own settings the first time staff add a location.

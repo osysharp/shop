@@ -8,7 +8,7 @@
 
 namespace Osysharp.Shop;
 
-using Osysharp.Delivery;
+using Osysharp.Shipping;
 
 public entity VatCountry {
   /// ISO 3166 alpha-2 — "DE", "FR".
@@ -73,7 +73,7 @@ public int SeedEuVatRates() {
 //
 // A business in ANOTHER EU country, with a VAT number that checks out and the goods delivered to it there, buys
 // without VAT — it accounts for the VAT itself (reverse charge, art. 138 of the VAT Directive). The check is a
-// provider the app lists (`ShopSetup.VatNumbers`), like payment and delivery — `Osysharp.Shop.Vies` asks the EU's VIES.
+// provider the app lists (`ShopSetup.VatNumbers`), like payment and delivery — `Osysharp.Shop.VatNumbers` asks the EU's VIES.
 
 /// What a VAT-number check answers.
 public class VatNumberResult {

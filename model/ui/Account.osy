@@ -4,14 +4,14 @@
 //
 // ⚑ THE FLOWS ARE OSYSHARP.ACCOUNTS'. These are the shop's screens — in its words and its languages — over that kit's
 //   sign-in flow (`SignIn`, `SignUp`, `VerifyEmailCode`, `RequestPasswordReset`, …). A step the shop does not draw
-//   itself (an authenticator's code, setting two-step sign-in up) is the Accounts kit's own screen, in place.
+//   itself (an authenticator's code, setting two-step sign-in up) is the UserAccounts kit's own screen, in place.
 // ⚑ AT THE ACCOUNTS KIT'S ADDRESSES — `/login`, `/sign-up`, `/forgot-password`, `/reset-password/{token}`,
 //   `/verify-email/{token}`, `/account` — which its mail links to. A store takes each page over by name (Accounts.osy).
 
 namespace Osysharp.Shop;
 
 using Osysharp.Ui;
-using Osysharp.Accounts;
+using Osysharp.UserAccounts;
 using Osysharp.MailingLists;
 
 /// Sign in. `then` is where to go afterwards when the visitor was not sent here from somewhere else. When the shop asks
@@ -434,7 +434,7 @@ public component ShopMyData() {
 }
 
 /// How the account signs in — its password, its address (moved once the new address confirms it), two-step sign-in, a
-/// phone and the providers it signs in with: Osysharp.Accounts' own settings, in the account panel.
+/// phone and the providers it signs in with: Osysharp.UserAccounts' own settings, in the account panel.
 [Composable]
 public component ShopMySignIn() {
   render {

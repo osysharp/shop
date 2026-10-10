@@ -1,7 +1,7 @@
 // A VERIFIED AGE — the buyer proves it with an identity provider (BankID in Sweden) instead of typing a date of birth.
 //
 // The provider is the app's choice, like payment and delivery: it lists one in `ShopSetup.AgeVerifier` — a class
-// derived from `AgeVerifier`, which `Osysharp.Shop.BankId` provides for BankID and another country's e-ID would provide
+// derived from `AgeVerifier`, which `Osysharp.Shop.AgeCheck.BankId` provides for BankID and another country's e-ID would provide
 // for its own. With none listed (or one not ready — its certificate not set) the checkout asks for the date of birth as
 // before, and the order says the age was DECLARED: the parcel is handed over against ID.
 //

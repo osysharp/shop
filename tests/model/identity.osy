@@ -1,4 +1,4 @@
-// An identity provider for the age-check tests (age.test.osy) — what `Osysharp.Shop.BankId` is to a real store, with
+// An identity provider for the age-check tests (age.test.osy) — what `Osysharp.Shop.AgeCheck.BankId` is to a real store, with
 // nothing to reach. It is offered only when a test says so (`FakeIdOffered.Stub(() => true)`), so every other test
 // sees the shop without one: the date of birth is asked for, as before. What the provider ANSWERS is the test's too —
 // `FakeIdSays.Stub(handle => …)` — and each handle it hands out is recorded, so a test can see which one was asked.

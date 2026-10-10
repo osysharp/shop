@@ -1,6 +1,6 @@
-// Accounts. A shop's customers and its staff are ONE kind of account — Osysharp.Accounts' `User`, as the shop's own
+// Accounts. A shop's customers and its staff are ONE kind of account — Osysharp.UserAccounts' `User`, as the shop's own
 // `ShopAccount` — told apart by role. Signing up, signing in, a forgotten password, a changed address (confirmed from the
-// new address), two-step sign-in, a phone and a provider are all Osysharp.Accounts'; what the shop adds is what a shop
+// new address), two-step sign-in, a phone and a provider are all Osysharp.UserAccounts'; what the shop adds is what a shop
 // keeps about a customer (where their orders go, the language it writes to them in) and its roles.
 //
 // ⚑ THE APP STATES THE ACCOUNTS SETUP ONCE: `app.Accounts = ShopAccounts("Rust & Chrome");` — the shop's kind of account
@@ -20,7 +20,7 @@
 namespace Osysharp.Shop;
 
 using Osysharp.Identity;
-using Osysharp.Accounts;
+using Osysharp.UserAccounts;
 using Osysharp.EmailTemplates;
 using Osysharp.Workflow;
 
@@ -65,7 +65,7 @@ policy SellsAt(StockLocation? location) => IsShopStaff
       && !ShopRoleLimit.Any(l => l.Member == user && l.Role == ShopRole.Counter && l.Location != location));
 
 /// A shop's account — a customer keeping their bag and seeing their orders, or one of the staff who run the shop. It IS
-/// an Osysharp.Accounts `User`: the address, the name (`DisplayName`), the password and every way of signing in are that
+/// an Osysharp.UserAccounts `User`: the address, the name (`DisplayName`), the password and every way of signing in are that
 /// kit's, with its rules; these are what the shop adds.
 public entity ShopAccount : User {
   /// A phone number for a delivery — what the checkout fills in. Not the number the account signs in with
@@ -81,7 +81,7 @@ public entity ShopAccount : User {
   /// choose otherwise there, and the shop's mail to them that is not about an order (a reset link, their store credit,
   /// a bag left behind, a newsletter) is written in it. An order's mail is in the language the order was placed in.
   [PreferredCulture] Culture? Language;
-  // ⚠ Osysharp.Accounts' rules on `User` are the floor: these can only narrow them. Each customer reads and edits their
+  // ⚠ Osysharp.UserAccounts' rules on `User` are the floor: these can only narrow them. Each customer reads and edits their
   //   own account; staff and the sign-in flow read every account. Nobody else sees who shops here.
   security {
     allow read when IsAuthenticated || IsAuthenticator;
@@ -106,9 +106,9 @@ public class ShopAccountKinds : AccountKinds {
 }
 
 /// The account's mail, in the shop's design and in the account's language — each one the shop's `ShopMails` writes, so a
-/// store that rewrote a shop mail has it here too. Osysharp.Accounts sends them; `ShopAccounts()` names this.
+/// store that rewrote a shop mail has it here too. Osysharp.UserAccounts sends them; `ShopAccounts()` names this.
 /// An account the shop did not make (staff added with `osy user add`, which makes a plain `User`), and any account before
-/// the shop is set up (its first day: no name, no address to write from yet), is sent the Accounts kit's own mail.
+/// the shop is set up (its first day: no name, no address to write from yet), is sent the UserAccounts kit's own mail.
 public class ShopAccountMails : AccountMails {
   public override RenderedEmail PasswordReset(User account, string link) {
     if (account is ShopAccount a && ShopSettings.Any()) { return App.Setting<ShopSetup>().Mails.PasswordReset(a, link); }

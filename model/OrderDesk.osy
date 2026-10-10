@@ -14,7 +14,7 @@
 namespace Osysharp.Shop;
 
 using Osysharp.Identity;
-using Osysharp.Delivery;
+using Osysharp.Shipping;
 using Osysharp.Payments;
 using Osysharp.Workflow;
 

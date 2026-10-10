@@ -2,17 +2,17 @@
 
 
 
-using Osysharp.Delivery;
+using Osysharp.Shipping;
 using Osysharp.Payments.Klarna;
 using Osysharp.Payments;
 using Osysharp.Shop;
 using Osysharp.Identity;
-using Osysharp.Accounts;
+using Osysharp.UserAccounts;
 using Osysharp.Payments.Stripe;
-using Osysharp.Analytics;
+using Osysharp.WebAnalytics;
 
 
-// Who signs in is Osysharp.Accounts' — the shop's `ShopAccount` for every sign-up, with the Customer role. Off, as a store
+// Who signs in is Osysharp.UserAccounts' — the shop's `ShopAccount` for every sign-up, with the Customer role. Off, as a store
 // starts: a test stubs `AddressProofRequired` to see an account that must prove its address (confirm-email.test.osy).
 app.Accounts = ShopAccounts("Kit Test Shop", requireVerifiedEmail: AddressProofRequired());
 

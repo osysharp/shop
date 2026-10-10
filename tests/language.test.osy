@@ -2,7 +2,7 @@
 // they switch while signed in; what the shop's mail to them that is not about an order is written in — the words, the
 // money and the dates alike. An order's mail stays in the language the order was placed in.
 
-using Osysharp.Accounts;
+using Osysharp.UserAccounts;
 using Osysharp.Mail;
 using Osysharp.Shop;
 using Osysharp.Workflow;

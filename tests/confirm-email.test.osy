@@ -1,9 +1,9 @@
 // A proven address (`ShopAccounts(…, requireVerifiedEmail: true)`): no ticket until the address is proven, by the link
 // or the code the SHOP's mail carries; sign-up answers a new address and a taken one alike, and the mail says which. The
-// flow is Osysharp.Accounts' (its own tests prove the codes' limits and the first proof's claim); these prove the shop's
+// flow is Osysharp.UserAccounts' (its own tests prove the codes' limits and the first proof's claim); these prove the shop's
 // screens and mail drive it end to end.
 
-using Osysharp.Accounts;
+using Osysharp.UserAccounts;
 using Osysharp.Mail;
 using Osysharp.Shop;
 

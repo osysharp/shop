@@ -1,17 +1,17 @@
 // The store's analytics, from the shop's own rows — put `ShopAnalytics()` in the store's frame once, beside
 // `ShopVisitSync()`, and every page reports what it is:
 //
-//   · a page view, on every route (Osysharp.Analytics does that on its own);
+//   · a page view, on every route (Osysharp.WebAnalytics does that on its own);
 //   · `view_item` on a product's page (`ShopSetup.ProductPath`), for the size a visitor sees first;
 //   · `add_to_cart` for whatever grows in the visitor's bag — wherever it was added from;
 //   · `begin_checkout` on the checkout (`ShopSetup.CheckoutPath`), with the bag;
 //   · `purchase` once per order, from the order (see ../Analytics.osy for why not from a thank-you page).
 //
-// Which provider, and whether any, is the app's `app.Analytics` (Osysharp.Analytics). With none, this reads nothing.
+// Which provider, and whether any, is the app's `app.Analytics` (Osysharp.WebAnalytics). With none, this reads nothing.
 
 namespace Osysharp.Shop;
 
-using Osysharp.Analytics;
+using Osysharp.WebAnalytics;
 
 [Composable]
 [AllowAnonymous]

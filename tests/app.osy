@@ -9,16 +9,16 @@ app ShopKitTests {
 
   // The kit reads its mail key; the providers the app lists bring their own hosts, which the app grants.
   use Osysharp.Shop@1 { egress "api.resend.com"; secret "ResendApiKey"; }
-  // Who signs in — the shop's customers and staff — through Osysharp.Accounts (model/shop.osy states its setup), whose
+  // Who signs in — the shop's customers and staff — through Osysharp.UserAccounts (model/shop.osy states its setup), whose
   // mail waits in Osysharp.Mail's outbox, where the tests read the links and codes it carried.
   use Osysharp.Identity@0;
-  use Osysharp.Accounts@1;
+  use Osysharp.UserAccounts@1;
   use Osysharp.Mail@0;
   use Osysharp.Payments@0;
-  use Osysharp.Delivery@0;
+  use Osysharp.Shipping@0;
   use Osysharp.Seo@0;
   // Analytics to Plausible under a reserved domain (model/shop.osy): sales are noted for it, and nothing is ever sent.
-  use Osysharp.Analytics@0 { egress browser "plausible.io"; }
+  use Osysharp.WebAnalytics@0 { egress browser "plausible.io"; }
   use Osysharp.Payments.Klarna@0 { egress "api.klarna.com"; egress "api.playground.klarna.com"; }
   use Osysharp.Payments.Stripe@0 { egress "api.stripe.com"; }
   use Osysharp.Resend@0 { egress "api.resend.com"; }

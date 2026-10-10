@@ -1,6 +1,6 @@
 using Osysharp.Shop;
 
-/// Exchange rates written in the test app, as `Osysharp.Shop.Ecb` is written: a sheet against the euro. What it
+/// Exchange rates written in the test app, as `Osysharp.Shop.ExchangeRates` is written: a sheet against the euro. What it
 /// answers is `RatesInTests()`, which a test stubs.
 public class FakeRates : IExchangeRates {
   public string Source { get; } = "Test Bank";

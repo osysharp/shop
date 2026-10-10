@@ -4,7 +4,7 @@ using Osysharp.Shop;
 using Osysharp.Ui;
 
 [Route("/")] [AllowAnonymous] component KitHome() { render { Text("Kit test shop"); } }
-// The Accounts kit's addresses, taken over by name — what its mail links to, and where a visitor is sent to sign in.
+// The UserAccounts kit's addresses, taken over by name — what its mail links to, and where a visitor is sent to sign in.
 [Route("/login")] [AllowAnonymous] component SignInPage() { render { ShopSignIn(); } }
 [Route("/sign-up")] [AllowAnonymous] component SignUpPage() { render { ShopSignUp(); } }
 [Route("/forgot-password")] [AllowAnonymous] component ForgotPasswordPage() { render { ShopForgotPassword(); } }

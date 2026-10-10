@@ -3,7 +3,7 @@
 
 namespace Osysharp.Shop;
 
-using Osysharp.Delivery;
+using Osysharp.Shipping;
 using Osysharp.Ui;
 
 /// The checkout's total, priced exactly as the order will be.

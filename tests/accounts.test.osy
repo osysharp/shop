@@ -1,9 +1,9 @@
-// Customer accounts: signing up and in through Osysharp.Accounts, a reset by mail in the shop's design, and what a
+// Customer accounts: signing up and in through Osysharp.UserAccounts, a reset by mail in the shop's design, and what a
 // customer may and may not see and change. (The sign-in flow's own guarantees — a taken address never said, a first
 // proof claiming the account, the timing of a miss — are that kit's, proved by its own tests.)
 
 using Osysharp.Identity;
-using Osysharp.Accounts;
+using Osysharp.UserAccounts;
 using Osysharp.Mail;
 using Osysharp.Shop;
 
@@ -38,7 +38,7 @@ void signup_for_a_taken_address_says_nothing_and_the_shops_mail_tells_its_owner(
 }
 
 // SECURITY-INVARIANT(shop-a-customer-sees-no-other-account): another account — who it is, where it lives — is staff's
-// and the sign-in flow's to read, never another customer's: not as a shop account, not through Osysharp.Accounts' `User`
+// and the sign-in flow's to read, never another customer's: not as a shop account, not through Osysharp.UserAccounts' `User`
 // or Osysharp.Identity's `Principal`, which every signed-in person may otherwise read.
 [Test(Floor)]
 void a_customer_sees_and_edits_only_their_own_account() {
@@ -74,7 +74,7 @@ void a_reset_mail_in_the_shops_design_sets_a_new_password_once() {
     var mail = OutgoingMail.Single(m => m.To == "maja@example.test");
     Assert.Equal("Reset your password at Kit Test Shop", mail.Subject);
     Assert.Equal(0, OutgoingMail.Count(m => m.To == "nobody@example.test"));
-    // A LINK to choose the new password — the Accounts kit's address, which the store's page takes over.
+    // A LINK to choose the new password — the UserAccounts kit's address, which the store's page takes over.
     var text = mail.Text ?? "";
     Assert.Contains("Choose a new password here: http", text);
     token = text.Substring(text.IndexOf("/reset-password/") + 16, 32);

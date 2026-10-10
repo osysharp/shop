@@ -1229,7 +1229,7 @@ public component DeskOutbox() {
 ///
 /// ⚑ WHAT THE MAILS SAY AROUND THE ORDER IS ARRANGED WHERE THE PAGES ARE: the confirmation's,
 ///   on its way's, collected's and refunded's words — and a picture, a quote or a button staff place beside them — are
-///   the region of each mail, arranged at the page desk (`Osysharp.Pages`) with a draft, a publish and a preview of the
+///   the region of each mail, arranged at the page desk (`Osysharp.PageBuilder`) with a draft, a publish and a preview of the
 ///   mail itself. This tab shows what goes out.
 [Composable]
 [Authorize(IsShopStaff)]

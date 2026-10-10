@@ -25,7 +25,7 @@
 //
 //     app.Shop = new ShopSetup {
 //       …,
-//       ExchangeRates = new EcbRates(),                    // Osysharp.Shop.Ecb, or any IExchangeRates
+//       ExchangeRates = new EcbRates(),                    // Osysharp.Shop.ExchangeRates, or any IExchangeRates
 //       DisplayCurrencies = ["EUR", "NOK", "DKK", "USD"],  // offered besides the shop's own
 //     };
 //
@@ -38,7 +38,7 @@
 
 namespace Osysharp.Shop;
 
-using Osysharp.Delivery;
+using Osysharp.Shipping;
 using Osysharp.Workflow;
 
 /// One currency as a rate provider quotes it: how many of `Currency` one unit of the sheet's `Base` buys.
@@ -57,7 +57,7 @@ public class RateSheet {
 }
 
 /// Where the shop's exchange rates come from — a provider the app lists (`ShopSetup.ExchangeRates`), as it lists its
-/// payment and delivery providers. `Osysharp.Shop.Ecb` asks the European Central Bank.
+/// payment and delivery providers. `Osysharp.Shop.ExchangeRates` asks the European Central Bank.
 public interface IExchangeRates {
   /// Who publishes the rates, as a visitor may be told: "European Central Bank".
   string Source { get; }

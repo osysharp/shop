@@ -1,26 +1,26 @@
 package Osysharp.Shop {
-  version "1.0.2";
+  version "1.0.3";
   minPlatform "0.9.0";
   // A product capability: other kits meet it through a bridge that `completes` it, never by using it.
   role        vertical;
-  summary     "an online shop's backend — catalogue, bag, orders, pluggable payment and delivery providers, returns, mail and the staff desk — with its customers and staff signing in through Osysharp.Accounts.";
+  summary     "an online shop's backend — catalogue, bag, orders, pluggable payment and delivery providers, returns, mail and the staff desk — with its customers and staff signing in through Osysharp.UserAccounts.";
   model "model/**/*.osy";
   use Osysharp.Workflow;
   use Osysharp.Ui;
-  // Who signs in — customers and staff alike — is an Osysharp.Accounts `User`: the shop's `ShopAccount` derives from it.
+  // Who signs in — customers and staff alike — is an Osysharp.UserAccounts `User`: the shop's `ShopAccount` derives from it.
   use Osysharp.Identity@0;
-  use Osysharp.Accounts@1;
+  use Osysharp.UserAccounts@1;
   use Osysharp.Storage;
   use Osysharp.PdfWriter@0;
   // How it is paid and how goods reach the customer are contracts; the providers are the app's choice (`app.Shop`).
   use Osysharp.Payments@0;
-  use Osysharp.Delivery@0;
+  use Osysharp.Shipping@0;
   use Osysharp.Http;
   // A product page's structured data (schema.org Product) comes from the SEO kit.
   use Osysharp.Seo@0;
   // What the store's pages report to its analytics (Plausible or GA4) — `ShopAnalytics()` (model/ui/Analytics.osy).
-  // The provider's hosts are the APP's to grant, on its own `use Osysharp.Analytics`.
-  use Osysharp.Analytics@0;
+  // The provider's hosts are the APP's to grant, on its own `use Osysharp.WebAnalytics`.
+  use Osysharp.WebAnalytics@0;
   // Its mail is designed, not typed: every mail is an `[Email]` template built from these parts (model/mail).
   use Osysharp.EmailTemplates@0;
   // The catalogue in and out of a spreadsheet (ProductsCsv.osy).

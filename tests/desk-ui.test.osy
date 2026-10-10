@@ -1,6 +1,6 @@
 // The kit's desk, driven through the screen as a member of staff.
 
-using Osysharp.Accounts;
+using Osysharp.UserAccounts;
 using Osysharp.Shop;
 using Osysharp.Workflow;
 

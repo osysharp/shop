@@ -1,6 +1,6 @@
 // How this shop takes money and hands goods over — the providers the APP chooses, through `app.Shop`.
 //
-// The shop depends on the two contracts (`Osysharp.Payments`, `Osysharp.Delivery`) and on no provider. An app lists
+// The shop depends on the two contracts (`Osysharp.Payments`, `Osysharp.Shipping`) and on no provider. An app lists
 // what it offers, once:
 //
 //     app.Shop = new ShopSetup {
@@ -26,7 +26,7 @@
 
 namespace Osysharp.Shop;
 
-using Osysharp.Delivery;
+using Osysharp.Shipping;
 using Osysharp.Payments;
 using Osysharp.Workflow;
 
@@ -53,9 +53,9 @@ public class ShopSetup {
   public string CategoryPath = "/shop/{slug}";
   /// Where the store's checkout is — what its analytics reports as `begin_checkout`, and what robots.txt keeps out.
   public string CheckoutPath = "/checkout";
-  /// Checks a business buyer's VAT number (`Osysharp.Shop.Vies`). Null: the shop sells to everyone with VAT.
+  /// Checks a business buyer's VAT number (`Osysharp.Shop.VatNumbers`). Null: the shop sells to everyone with VAT.
   public IVatNumberCheck? VatNumbers = null;
-  /// Proves a buyer's age with an identity provider (`Osysharp.Shop.BankId`'s `BankIdAgeCheck`) — AgeChecks.osy.
+  /// Proves a buyer's age with an identity provider (`Osysharp.Shop.AgeCheck.BankId`'s `BankIdAgeCheck`) — AgeChecks.osy.
   /// Null, or not `Offered()` yet: the checkout asks for a date of birth, and the parcel is handed over against ID.
   public AgeVerifier? AgeVerifier = null;
   /// With a provider offered: whether goods with an age are sold ONLY to a verified buyer. False lets a buyer give a
@@ -64,7 +64,7 @@ public class ShopSetup {
   /// How long a verification counts for the bag it was made for.
   public int AgeCheckValidHours = 24;
   /// Where the rates come from when the store shows prices in a visitor's own currency (Currencies.osy) —
-  /// `Osysharp.Shop.Ecb`'s `EcbRates`. Null: every price is in the shop's own currency, and no picker is offered.
+  /// `Osysharp.Shop.ExchangeRates`'s `EcbRates`. Null: every price is in the shop's own currency, and no picker is offered.
   public IExchangeRates? ExchangeRates = null;
   /// The currencies a visitor may choose to see prices in, besides the shop's own — ISO 4217 codes. Only a DISPLAY:
   /// orders, invoices, VAT and payments stay in the shop's own currency.

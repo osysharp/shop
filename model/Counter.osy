@@ -31,7 +31,7 @@ namespace Osysharp.Shop;
 using Osysharp.Identity;
 using Osysharp.Payments;
 using Osysharp.Workflow;
-using Osysharp.Delivery;
+using Osysharp.Shipping;
 using Osysharp.Storage;
 
 // ── where a clerk sells ──────────────────────────────────────────────────────────────────────────────────────────

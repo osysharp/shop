@@ -1,0 +1,131 @@
+// The kit's own tests. Every call to BankID is stubbed; the personal identity numbers are made up, with valid check
+// digits (the Luhn rule the number carries) — none belongs to anybody.
+
+using Osysharp.Http;
+using Osysharp.Shop;
+using Osysharp.Shop.AgeCheck.BankId;
+
+BankIdAgeCheck Check() { return new BankIdAgeCheck { BaseUrl = "https://appapi2.test.bankid.com/rp/v6.0", CertificateSet = true }; }
+
+DateOnly Day(int y, int m, int d) { return new DateOnly(y, m, d); }
+
+HttpResponse Collected(string status, string hint, string personalNumber) {
+  var completion = personalNumber == "" ? "" : ",\"completionData\":{\"user\":{\"personalNumber\":\"" + personalNumber
+    + "\",\"name\":\"Anna Andersson\",\"givenName\":\"Anna\",\"surname\":\"Andersson\"},\"device\":{\"ipAddress\":\"203.0.113.9\"},"
+    + "\"signature\":\"PD94bWw=\",\"ocspResponse\":\"MIIHYgoB\"}";
+  return new HttpResponse { StatusCode = 200,
+    Body = "{\"orderRef\":\"131daac9\",\"status\":\"" + status + "\"" + (hint == "" ? "" : ",\"hintCode\":\"" + hint + "\"") + completion + "}" };
+}
+
+// ── the personal identity number ────────────────────────────────────────────────────────────────────────────────
+
+[Test]
+void twelve_digits_as_bankid_gives_them_are_a_date() {
+  Assert.Equal(Day(1990, 1, 1), BirthDateOfPersonalNumber("199001012385", Day(2026, 9, 29)));
+  Assert.Equal(Day(2000, 1, 1), BirthDateOfPersonalNumber("200001019876", Day(2026, 9, 29)));
+  Assert.Equal(Day(1990, 1, 1), BirthDateOfPersonalNumber("19900101-2385", Day(2026, 9, 29)));
+}
+
+[Test]
+void ten_digits_take_their_century_from_the_separator() {
+  // `-` under 100 years old; `+` 100 or older. The same six digits, a century apart.
+  Assert.Equal(Day(2012, 12, 12), BirthDateOfPersonalNumber("121212-1212", Day(2026, 9, 29)));
+  Assert.Equal(Day(1912, 12, 12), BirthDateOfPersonalNumber("121212+1212", Day(2026, 9, 29)));
+  // A date later this century than today is last century's.
+  Assert.Equal(Day(1990, 1, 1), BirthDateOfPersonalNumber("900101-2385", Day(2026, 9, 29)));
+}
+
+[Test]
+void a_coordination_number_carries_the_day_plus_sixty() {
+  Assert.Equal(Day(1990, 1, 1), BirthDateOfPersonalNumber("199001611236", Day(2026, 9, 29)));
+}
+
+[Test]
+void an_unknown_day_is_the_last_it_could_be_because_a_guess_must_guess_young() {
+  // Day 60 in a coordination number: the day is not known. The 30th of April is the youngest the person could be.
+  Assert.Equal(Day(1990, 4, 30), BirthDateOfPersonalNumber("199004601234", Day(2026, 9, 29)));
+}
+
+[Test]
+void a_number_that_is_not_one_gives_no_date() {
+  Assert.Null(BirthDateOfPersonalNumber("199001012384", Day(2026, 9, 29)));    // the check digit does not add up
+  Assert.Null(BirthDateOfPersonalNumber("198602301239", Day(2026, 9, 29)));    // the 30th of February
+  Assert.Null(BirthDateOfPersonalNumber("19900101238", Day(2026, 9, 29)));     // eleven digits
+  Assert.Null(BirthDateOfPersonalNumber("", Day(2026, 9, 29)));
+}
+
+// ── the check, against BankID ───────────────────────────────────────────────────────────────────────────────────
+
+[Test]
+void starting_asks_bankid_for_an_auth_order_that_says_why_and_keeps_the_secret_in_the_handle() {
+  var posted = new List<string>();
+  var urls = new List<string>();
+  Http.Post.Stub((url, body) => {
+    urls.Add(url); posted.Add(body);
+    return new HttpResponse { StatusCode = 200, Body = "{\"orderRef\":\"131daac9\",\"autoStartToken\":\"7c40b5c9\",\"qrStartToken\":\"67df3917-fa0d-44e5-b327-edcc928297f8\",\"qrStartSecret\":\"d28db9a7-4cde-429e-a983-359be676944c\"}" };
+  });
+
+  var started = Check().Start("203.0.113.9", "https://shop.example/checkout", "The shop asks you to prove that you are 20 or older.");
+
+  Assert.Equal("https://appapi2.test.bankid.com/rp/v6.0/auth", urls[0]);
+  Assert.Contains("\"endUserIp\":\"203.0.113.9\"", posted[0]);
+  Assert.Contains("userVisibleData", posted[0]);
+  Assert.StartsWith("bankid:///?autostarttoken=7c40b5c9&redirect=", started.AppLink);
+  // The secret rides the HANDLE (which the shop keeps encrypted), never the link the page is given.
+  Assert.Contains("d28db9a7-4cde-429e-a983-359be676944c", started.Handle);
+  Assert.DoesNotContain("d28db9a7", started.AppLink);
+  // …and the frame for second 0 is BankID's published vector.
+  Assert.Equal("bankid.67df3917-fa0d-44e5-b327-edcc928297f8.0.dc69358e712458a66a7525beef148ae8526b1c71610eff2c16cdffb4cdac9bf8",
+               Check().Frame(started.Handle, 0));
+}
+
+[Test]
+void a_completed_order_answers_the_date_and_nothing_of_the_number() {
+  Http.Post.Stub((url, body) => Collected("complete", "", "199001012385"));
+
+  var answer = Check().Collect("131daac9|67df3917|d28db9a7");
+
+  Assert.Equal(AgeCheckStatus.Verified, answer.Status);
+  Assert.Equal(Day(1990, 1, 1), answer.BornOn);
+  // ⭐ DATA MINIMISATION: what goes back to the shop carries the date, and not the number or the name.
+  Assert.DoesNotContain("2385", answer.Message);
+  Assert.DoesNotContain("199001012385", JsonSerializer.Serialize(answer));
+  Assert.DoesNotContain("Andersson", JsonSerializer.Serialize(answer));
+}
+
+[Test]
+void a_pending_order_says_what_to_do_and_a_failed_one_says_why() {
+  Http.Post.Stub((url, body) => Collected("pending", "userSign", ""));
+  var waiting = Check().Collect("131daac9|a|b");
+  Assert.Equal(AgeCheckStatus.Waiting, waiting.Status);
+  Assert.Contains("security code", waiting.Message);
+
+  Http.Post.Stub((url, body) => Collected("failed", "userCancel", ""));
+  var failed = Check().Collect("131daac9|a|b");
+  Assert.Equal(AgeCheckStatus.Failed, failed.Status);
+  Assert.Contains("cancelled", failed.Message);
+}
+
+[Test]
+void a_completed_order_whose_number_cannot_be_read_verifies_nothing() {
+  Http.Post.Stub((url, body) => Collected("complete", "", "199001012384"));
+  var answer = Check().Collect("131daac9|a|b");
+  Assert.Equal(AgeCheckStatus.Failed, answer.Status);
+  Assert.Null(answer.BornOn);
+}
+
+[Test]
+void it_is_offered_only_with_its_certificate() {
+  Assert.False(new BankIdAgeCheck().Offered());
+  Assert.True(Check().Offered());
+}
+
+[Test]
+void cancelling_ends_the_order_at_bankid() {
+  var urls = new List<string>();
+  var posted = new List<string>();
+  Http.Post.Stub((url, body) => { urls.Add(url); posted.Add(body); return new HttpResponse { StatusCode = 200, Body = "{}" }; });
+  Check().Cancel("131daac9|a|b");
+  Assert.Equal("https://appapi2.test.bankid.com/rp/v6.0/cancel", urls[0]);
+  Assert.Contains("\"orderRef\":\"131daac9\"", posted[0]);
+}

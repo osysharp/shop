@@ -1,0 +1,17 @@
+// Osysharp.Shop.AgeCheck.BankId — a buyer's age, PROVED with Swedish BankID, for a shop that sells wine (or anything with an
+// age). A provider for `ShopSetup.AgeVerifier`, over `Osysharp.BankId`.
+//
+// ⚑ IT TAKES A PERSONAL IDENTITY NUMBER AND GIVES BACK A DATE. BankID answers a completed order with the person's
+//   personnummer; this kit turns it into the date of birth the shop compares with the bag's age, and drops it. The
+//   number never reaches the shop kit, the database or a log — see BankIdAgeCheck.Collect.
+package Osysharp.Shop.AgeCheck.BankId {
+  version     "0.2.1";
+  minPlatform "0.9.0";
+  summary     "Age verification with Swedish BankID — the shop's AgeVerifier, over mutual TLS.";
+  completes   Osysharp.Shop@1, Osysharp.BankId@0;
+  model "model/*.osy";
+  use Osysharp.Shop@1;
+  // BankID itself — its hosts and its certificate are that kit's grants, which the app gives on its own `use` line.
+  use Osysharp.BankId@0;
+  tests "tests";
+}

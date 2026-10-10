@@ -1,0 +1,139 @@
+namespace Osysharp.Shop.AgeCheck.BankId;
+
+using Osysharp.Shop;
+using Osysharp.BankId;
+
+/// Swedish BankID as the shop's age check:
+///
+///     app.Shop = new ShopSetup { …, AgeVerifier = new BankIdAgeCheck { CertificateSet = Security.IsSecretSet("BankIdCert") } };
+///     use Osysharp.BankId@0 { egress "appapi2.bankid.com"; clientCert "BankIdCert"; serverCa "BankIdCa"; }
+///
+/// The buyer identifies with BankID — the QR code on a computer, the app itself on a phone — and the shop learns that
+/// they are old enough, and nothing else it keeps.
+///
+/// ⚠ `BaseUrl` DEFAULTS TO PRODUCTION, like the BankID kit's. The test environment is
+///   `https://appapi2.test.bankid.com/rp/v6.0`, with BankID's published test certificate.
+public class BankIdAgeCheck : AgeVerifier {
+  /// The RP API root. Production by default.
+  public string BaseUrl = "https://appapi2.bankid.com/rp/v6.0";
+  /// Whether the RP certificate is set — the app says so (`Security.IsSecretSet("BankIdCert")`), because the
+  /// certificate is granted to the BankID kit and nothing here can see it. Without it BankID refuses every call, so
+  /// the check is not offered and the checkout asks for a date of birth.
+  public bool CertificateSet = false;
+
+  public BankIdAgeCheck() { Key = "bankid"; Label = "BankID"; }
+
+  public override bool Offered() { return CertificateSet; }
+
+  BankIdClient Bank() { return new BankIdClient { BaseUrl = BaseUrl }; }
+
+  /// An AUTH order — nothing is signed — with the shop's reason shown in the BankID app. The handle keeps the order's
+  /// reference and the QR's token and secret; the shop keeps it encrypted, and it never reaches the page.
+  public override AgeCheckStart Start(string endUserAddress, string returnUrl, string visibleText) {
+    var bank = Bank();
+    var order = bank.Auth(endUserAddress, visibleText);
+    var handle = (order.OrderRef ?? "") + "|" + (order.QrStartToken ?? "") + "|" + (order.QrStartSecret ?? "");
+    var link = order.AutoStartToken == null ? "" : bank.AutoStartUrl(order.AutoStartToken!, returnUrl);
+    return new AgeCheckStart { Handle = handle, AppLink = link };
+  }
+
+  /// The animated QR's text for this second — BankID's own algorithm, from the secret in the handle.
+  public override string Frame(string handle, int seconds) {
+    var parts = Text.Split(handle, "|");
+    if (parts.Count < 3 || parts[1] == "" || parts[2] == "") { return ""; }
+    return Bank().QrData(parts[1], parts[2], seconds);
+  }
+
+  /// How the order stands, from BankID.
+  ///
+  /// ⭐ THE PERSONAL IDENTITY NUMBER STOPS HERE. It is read into a local, turned into a date of birth, and the answer
+  ///    carries only the date — which the shop in turn compares with the bag's age and does not keep. Nothing in this
+  ///    method logs, stores or returns the number (bankid-age.test.osy
+  ///    a_completed_order_answers_the_date_and_nothing_of_the_number).
+  public override AgeCheckAnswer Collect(string handle) {
+    var orderRef = Text.Split(handle, "|")[0];
+    var r = Bank().Collect(orderRef);
+    if (r.Status == "complete") {
+      var born = BirthDateOfPersonalNumber(r.Completion?.User?.PersonalNumber ?? "", DateOnly.FromDateTime(DateTime.UtcNow));
+      if (born == null) {
+        return new AgeCheckAnswer { Status = AgeCheckStatus.Failed, Message = "BankID answered, but not with a date of birth we could read. Try again." };
+      }
+      return new AgeCheckAnswer { Status = AgeCheckStatus.Verified, BornOn = born };
+    }
+    if (r.Status == "failed") {
+      return new AgeCheckAnswer { Status = AgeCheckStatus.Failed, Message = BankIdFailed(r.HintCode ?? "") };
+    }
+    return new AgeCheckAnswer { Status = AgeCheckStatus.Waiting, Message = BankIdWaiting(r.HintCode ?? "") };
+  }
+
+  /// Ends the order at BankID, so a live one does not block the next with `alreadyInProgress`.
+  public override void Cancel(string handle) {
+    var orderRef = Text.Split(handle, "|")[0];
+    if (orderRef != "") { Bank().Cancel(orderRef); }
+  }
+}
+
+/// What to tell someone while BankID waits, by BankID's hint — in the words of BankID's own guidelines, shortened.
+public string BankIdWaiting(string hint) {
+  if (hint == "userSign" || hint == "userMrtd") { return "Enter your security code in the BankID app and select Identify."; }
+  if (hint == "started") { return "Searching for BankID. Open the app."; }
+  return "Open the BankID app.";
+}
+
+/// Why a BankID order ended without an answer, by BankID's hint.
+public string BankIdFailed(string hint) {
+  if (hint == "userCancel") { return "You cancelled in BankID."; }
+  if (hint == "expiredTransaction") { return "BankID did not answer in time. Try again."; }
+  if (hint == "startFailed") { return "The code was not scanned in time. Try again."; }
+  if (hint == "certificateErr") { return "That BankID is blocked or too old. Use another, or get a new one from your bank."; }
+  return "BankID could not confirm who you are. Try again.";
+}
+
+/// The date of birth in a Swedish personal identity number (personnummer) — twelve digits as BankID gives it
+/// (YYYYMMDDNNNC), or ten (YYMMDD-NNNC; `+` for someone 100 or older). Null when it is not one: the wrong length, a
+/// check digit that does not add up, a date that does not exist.
+///
+/// ⚠ A COORDINATION NUMBER (samordningsnummer) carries the DAY PLUS 60 — "19900161-…" was born on the 1st. When the
+///   day or the month is not known it is written 0 (a coordination day of 60): the date is then the LAST day it could
+///   be — the youngest the person could be — because an age check that guesses must guess against selling.
+public DateOnly? BirthDateOfPersonalNumber(string number, DateOnly today) {
+  var s = number.Trim().Replace(" ", "");
+  var centenarian = s.Contains("+");
+  s = s.Replace("-", "").Replace("+", "");
+  if ((s.Length != 12 && s.Length != 10) || !Regex.IsMatch(s, "^[0-9]+$")) { return null; }
+  var ten = s.Length == 12 ? s.Substring(2) : s;
+  if (!LuhnHolds(ten)) { return null; }
+  int year;
+  if (s.Length == 12) {
+    year = int.Parse(s.Substring(0, 4));
+  } else {
+    var yy = int.Parse(s.Substring(0, 2));
+    year = today.Year / 100 * 100 + yy;
+    if (year > today.Year) { year = year - 100; }
+    if (centenarian) { year = year - 100; }
+  }
+  var month = int.Parse(ten.Substring(2, 2));
+  var day = int.Parse(ten.Substring(4, 2));
+  if (day > 60) { day = day - 60; }
+  else if (day == 60) { day = 0; }
+  if (month > 12 || day > 31) { return null; }
+  if (month == 0) { month = 12; day = 0; }
+  var first = new DateOnly(year, month, 1);
+  var last = first.AddMonths(1).AddDays(-1).Day;
+  if (day == 0) { day = last; }
+  if (day > last) { return null; }
+  var born = new DateOnly(year, month, day);
+  // Ten digits with `-`: under 100. A date in the future is a century off.
+  if (s.Length == 10 && born > today) { born = born.AddYears(-100); }
+  return born;
+}
+
+/// The personnummer's check digit: Luhn over the ten digits, weights 2 and 1 from the left.
+bool LuhnHolds(string ten) {
+  var sum = 0;
+  for (var i = 0; i < 9; i++) {
+    var d = int.Parse(ten.Substring(i, 1)) * (i % 2 == 0 ? 2 : 1);
+    sum = sum + d / 10 + d % 10;
+  }
+  return (10 - sum % 10) % 10 == int.Parse(ten.Substring(9, 1));
+}

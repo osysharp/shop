@@ -1,0 +1,39 @@
+// ar (العربية): the words of Osysharp.Shop.AgeCheck.BankId, translated.
+// Written and kept in step with the source by `osy translate`: a new text arrives as `=> null`, a text
+// whose source changed keeps its old translation in a `was` clause. The words are yours to edit.
+// Source language: en.
+
+translations ar {
+  // ── BankIdFailed ──
+  /// BankIdFailed · message
+  /// shown through BankIdFailed()
+  message "BankID could not confirm who you are. Try again." => "تعذّر على BankID التحقق من هويتك. حاول مرة أخرى.";
+  /// BankIdFailed · message
+  /// shown through BankIdFailed()
+  message "BankID did not answer in time. Try again." => "لم يستجب BankID في الوقت المحدد. حاول مرة أخرى.";
+  /// BankIdFailed · message
+  /// shown through BankIdFailed()
+  message "That BankID is blocked or too old. Use another, or get a new one from your bank." => "هذا الـ BankID محظور أو قديم جدًا. استخدم هوية أخرى أو احصل على هوية جديدة من مصرفك.";
+  /// BankIdFailed · message
+  /// shown through BankIdFailed()
+  message "The code was not scanned in time. Try again." => "لم يتم مسح الرمز في الوقت المحدد. حاول مرة أخرى.";
+  /// BankIdFailed · message
+  /// shown through BankIdFailed()
+  message "You cancelled in BankID." => "لقد ألغيت العملية في BankID.";
+
+  // ── BankIdWaiting ──
+  /// BankIdWaiting · message
+  /// shown through BankIdWaiting()
+  message "Enter your security code in the BankID app and select Identify." => "أدخل رمز الأمان في تطبيق BankID ثم اختر Identify.";
+  /// BankIdWaiting · message
+  /// shown through BankIdWaiting()
+  message "Open the BankID app." => "افتح تطبيق BankID.";
+  /// BankIdWaiting · message
+  /// shown through BankIdWaiting()
+  message "Searching for BankID. Open the app." => "جارٍ البحث عن BankID. افتح التطبيق.";
+
+  // ── Osysharp.Shop.AgeCheck.BankId.BankIdAgeCheck.Collect ──
+  /// Osysharp.Shop.AgeCheck.BankId.BankIdAgeCheck.Collect · message
+  /// shown through AgeCheckAnswer.Message
+  message "BankID answered, but not with a date of birth we could read. Try again." => "استجاب BankID، لكن دون تاريخ ميلاد يمكننا قراءته. حاول مرة أخرى.";
+}

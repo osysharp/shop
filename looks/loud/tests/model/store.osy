@@ -1,13 +1,13 @@
 // The store: it wears the Loud look, and serves the bag page the look takes a customer to (`appPage "/bag"`).
-using Osysharp.Accounts;
+using Osysharp.UserAccounts;
 using Osysharp.Shop;
 using Osysharp.Shop.Looks;
 using Osysharp.Payments;
-using Osysharp.Delivery;
+using Osysharp.Shipping;
 
 app.Look = Loud;
 
-// Who signs in — customers and staff — is Osysharp.Accounts', as the shop's own kind of account (`ShopAccounts`).
+// Who signs in — customers and staff — is Osysharp.UserAccounts', as the shop's own kind of account (`ShopAccounts`).
 app.Accounts = ShopAccounts("Loud Look Tests");
 
 app.Shop = new ShopSetup {
@@ -29,7 +29,7 @@ component Home() {
   render { Text("Pressings, bought and sold"); }
 }
 
-/// The customer's account — the shop kit's panel, on the store's own page (Osysharp.Accounts' `/account`, taken over by its name).
+/// The customer's account — the shop kit's panel, on the store's own page (Osysharp.UserAccounts' `/account`, taken over by its name).
 [Route("/account")]
 [Layout(Store)]
 component AccountPage() {

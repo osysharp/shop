@@ -1,10 +1,10 @@
-using Osysharp.Accounts;
-using Osysharp.Delivery;
+using Osysharp.UserAccounts;
+using Osysharp.Shipping;
 using Osysharp.Shop.Reviews;
 using Osysharp.Payments;
 using Osysharp.Shop;
 
-// Who signs in — customers and staff — is Osysharp.Accounts', as the shop's own kind of account (`ShopAccounts`).
+// Who signs in — customers and staff — is Osysharp.UserAccounts', as the shop's own kind of account (`ShopAccounts`).
 app.Accounts = ShopAccounts("Reviews Kit Tests");
 
 app.Shop = new ShopSetup {

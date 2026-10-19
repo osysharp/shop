@@ -147,7 +147,8 @@ public component ReviewEntry(ProductReview review) {
 [Composable]
 [Authorize(IsShopStaff)]
 public component DeskReviews() {
-  live var reviews = ProductReview.Include(r => r.Product).OrderBy(r => r.State).ThenByDescending(r => r.WrittenAt).ToList();
+  // The waiting first, then the newest — five hundred; the older ones are the product page's to show.
+  live var reviews = ProductReview.Include(r => r.Product).OrderBy(r => r.State).ThenByDescending(r => r.WrittenAt).Take(500).ToList();
   bool atOnce = false;
   ProductReview? hiding = null;
   string reason = "";

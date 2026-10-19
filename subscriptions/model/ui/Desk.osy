@@ -22,9 +22,14 @@ public component SubscriptionsDeskPage() {
 [Composable]
 [Authorize(IsShopStaff)]
 public component SubscriptionsDesk() {
+  // The newest two hundred, and how many there are counted over every one.
   live var subs = Subscription.Include(s => s.Items.Plan).Include(s => s.Customer).Include(s => s.NextPlan)
-    .OrderByDescending(s => s.StartedAt).ToList();
-  live var asked = SubscriptionRequest.Include(r => r.Subscription).OrderByDescending(r => r.At).ToList();
+    .OrderByDescending(s => s.StartedAt).Take(200).ToList();
+  live var activeCount = Subscription.Count(s => s.Status == SubscriptionStatus.Active);
+  live var pausedCount = Subscription.Count(s => s.Status == SubscriptionStatus.Paused);
+  live var subIds = subs.Select(s => s.Id).ToList();
+  live var asked = SubscriptionRequest.Include(r => r.Subscription).Where(r => subIds.Contains(r.Subscription.Id))
+    .OrderByDescending(r => r.At).ToList();
   live var shop = ShopSettings.FirstOrDefault();
   string said = "";
   bool refused = false;
@@ -38,7 +43,7 @@ public component SubscriptionsDesk() {
   render {
     Stack(gap: 5) {
       SubscriptionPriceChanger();
-      Text($"{subs.Count(s => s.Status == SubscriptionStatus.Active)} active, {subs.Count(s => s.Status == SubscriptionStatus.Paused)} paused",
+      Text($"{activeCount} active, {pausedCount} paused",
            color: Colors.TextMuted);
       if (said != "") { Text(said, role: UiRole.Status, color: refused ? Colors.Danger : Colors.TextSecondary); }
       if (subs.Count == 0) {
@@ -97,8 +102,8 @@ public component SubscriptionsDesk() {
 [Composable]
 [Authorize(IsShopStaff)]
 public component SubscriptionPriceChanger() {
-  live var plans = SubscriptionPlan.Where(p => !p.IsAddOn && !p.Retired).OrderBy(p => p.Name).ToList();
-  live var sold = ExchangeRate.Where(r => r.Sold).OrderBy(r => r.Currency).ToList();
+  live var plans = SubscriptionPlan.Where(p => !p.IsAddOn && !p.Retired).OrderBy(p => p.Name).Take(200).ToList();
+  live var sold = ExchangeRate.Where(r => r.Sold).OrderBy(r => r.Currency).Take(200).ToList();
   live var shop = ShopSettings.FirstOrDefault();
   string currency = "";
   SubscriptionPlan? plan = null;

@@ -50,4 +50,22 @@ component CodesInstead() : GiftCardGoodwill {
 }
 [Route("/search")] [AllowAnonymous] component KitSearch() { render { ShopSearchPage(); } }
 [Route("/sale")] [AllowAnonymous] component KitSale() { render { ShopSearchPage(onlySale: true); } }
+// A store's own card on the kit's listing: the search, the sizes and the sorting stay the kit's.
+[Route("/search-own-card")] [AllowAnonymous] component KitSearchOwnCard() {
+  render {
+    ShopSearchPage(showStockUnder: 2) {
+      slot card { c =>
+        Link(href: c.Href, label: "Piece: " + c.Name) {
+          Stack(gap: 1, p: 3, bg: Colors.Surface, rounded: Radius.Md) {
+            if (c.Photo != "") { Image(src: c.Photo, alt: c.PhotoAlt, aspectRatio: "1 / 1", objectFit: ObjectFit.Cover); }
+            Text(c.Photo != "" ? "pictured: " + c.PhotoAlt : "no picture yet", fontSize: FontSize.Label, color: Colors.TextMuted);
+            Text(c.Name.ToUpper(), fontWeight: FontWeight.Bold);
+            Text(c.WasPrice == "" ? c.Price : c.Price + " (was " + c.WasPrice + ")");
+            Text(c.SoldOut ? "gone" : c.Stock == "" ? "in the shop" : c.Stock);
+          }
+        }
+      }
+    }
+  }
+}
 [Route("/returns-policy")] [AllowAnonymous] component KitReturns() { render { ShopPolicy("returns"); } }

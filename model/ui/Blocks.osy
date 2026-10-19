@@ -52,16 +52,20 @@ public component ShopHero(string title, Markdown words = "", Picture photo = "",
 /// A row of the shop's products — from one shelf, or the newest — each with its photograph and price.
 public component ShopProductRow(string title = "New in", Category? shelf = null, int count = 4, string more = "See them all", PageLink link = "/search") : ProductRow {
   live var shop = ShopSettings.FirstOrDefault();
-  live var products = Product.Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard)
-    .OrderBy(p => p.Rank).ToList();
-  live var covers = ProductImage.Where(i => i.Rank == 0).ToList();
-  live var sales = Sale.ToList();
+  // The row's own products, asked for as the row shows them — its shelf, its count — so a shop of ten thousand sends
+  // four; and the covers and sales of those four only.
+  live var products = Product.Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard
+      && (shelf == null || (p.Category != null && p.Category.Id == shelf.Id)))
+    .OrderBy(p => p.Rank).Take(count).ToList();
+  live var shownIds = products.Select(p => p.Id).ToList();
+  live var covers = ProductImage.Where(i => i.Rank == 0 && shownIds.Contains(i.Product.Id)).ToList();
+  live var sales = Sale.Where(s => shownIds.Contains(s.Product.Id)).ToList();
   string path = "/p/{slug}";
   // The date the site is looked at — a staff preview as of a date shows that date's sale prices.
   DateTime at = DateTime.UtcNow;
   on mount { path = ShopProductPath(); at = SiteDate(); }
   render {
-    var shown = products.Where(p => shelf == null || (p.Category != null && p.Category.Id == shelf.Id)).Take(count).ToList();
+    var shown = products;
     Stack(gap: 5, px: 5, py: 10, bg: Colors.Bg, color: Colors.OnBg, label: "Products: " + title) {
       Row(justify: Justify.Between, align: Align.Baseline, gap: 4, wrap: Wrapping.Wrap) {
         Text(title, fontFamily: Font.Display, fontSize: FontSize.Title, fontWeight: FontWeight.Bold);
@@ -100,7 +104,7 @@ public component ShopProductRow(string title = "New in", Category? shelf = null,
 
 /// The shop's shelves as tiles, each with its picture and name — the way into the catalogue.
 public component ShopCategoryTiles(string title = "The shelves") : CategoryTiles {
-  live var shelves = Category.Where(c => c.Parent == null).OrderBy(c => c.Rank).ToList();
+  live var shelves = Category.Where(c => c.Parent == null).OrderBy(c => c.Rank).Take(24).ToList();
   render {
     Stack(gap: 5, px: 5, py: 10, bg: Colors.Bg, color: Colors.OnBg, label: "Shelves: " + title) {
       Text(title, fontFamily: Font.Display, fontSize: FontSize.Title, fontWeight: FontWeight.Bold);

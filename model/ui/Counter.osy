@@ -230,7 +230,7 @@ public component ShopCounter() {
                   Button("Add", onPress: () => Add(p), disabled: !p.Unlimited && p.HereStock == 0);
                 }
               }
-              Stack(gap: 0, role: UiRole.List, label: "The sale") {
+              Stack(gap: 0, role: (sale!.Lines.Count == 0) ? UiRole.Group : UiRole.List, label: "The sale") {
                 if (sale!.Lines.Count == 0) {
                   EmptyState("Nothing rung up yet", body: "Scan a barcode, or search by name.");
                 }
@@ -413,7 +413,7 @@ public component ShopCounter() {
         }
 
         if (tab == "today") {
-          Stack(gap: 0, role: UiRole.List, label: "Today's sales") {
+          Stack(gap: 0, role: (today.Count == 0) ? UiRole.Group : UiRole.List, label: "Today's sales") {
             if (today.Count == 0) { EmptyState("No sales yet today", body: "Each sale shows here as soon as it is paid or called off."); }
             foreach (var s in today) {
               Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 3, borderBW: 1, border: Colors.Border, role: UiRole.ListItem, label: s.Reference) {

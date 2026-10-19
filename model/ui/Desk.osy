@@ -63,12 +63,23 @@ public component ShopDesk() {
 [Authorize(IsShopPacker)]
 public component DeskOrders() {
   live var shop = ShopSettings.FirstOrDefault();
-  live var orders = Order.Include(o => o.Lines).Include(o => o.Contact).Include(o => o.Location).OrderByDescending(o => o.PlacedAt).ToList();
   string stage = "all";
+  List<OrderStatus> statuses = [];
   // An order acted on stays in view — its buttons greyed now — until a tab is chosen again, so a row does not vanish
   // under the hand that just moved it.
   List<Guid> kept = [];
-  action Show(string which) { stage = which; kept = orders.Where(o => InOrderStage(o, which)).Select(o => o.Id).ToList(); }
+  // The stage on screen, read where the orders are: its newest two hundred (and any acted on since the tab was chosen).
+  // A shop with more waiting than that works the oldest first through the stage's own tab, which reads them as well.
+  live var orders = Order.Include(o => o.Lines).Include(o => o.Contact).Include(o => o.Location)
+    .Where(o => stage == "all" || statuses.Contains(o.Status) || kept.Contains(o.Id))
+    .OrderByDescending(o => o.PlacedAt).Take(200).ToList();
+  // How many are in each stage — counted over every order, so a tab's number is the shop's and not the page's.
+  live var counts = Order.GroupBy(o => o.Status).Select(g => new OrderStatusCount { Status = g.Key, Count = g.Count() }).ToList();
+  action Show(string which) {
+    stage = which;
+    statuses = OrderStatusesIn(which);
+    kept = orders.Where(o => InOrderStage(o, which)).Select(o => o.Id).ToList();
+  }
   // An order taken on the phone or at the counter — staff's, as it is money.
   bool staff = false;
   bool taking = false;
@@ -85,7 +96,8 @@ public component DeskOrders() {
       // Where the orders stand — each tab counts what is in it, so the day's work shows before it is opened.
       Tabs() {
         foreach (var t in OrderStageTabs()) {
-          Tab($"{t.Label} · {orders.Count(o => InOrderStage(o, t.Key))}", selected: stage == t.Key, onPress: () => Show(t.Key));
+          Tab($"{t.Label} · {counts.Where(c => t.Key == "all" || OrderStatusesIn(t.Key).Contains(c.Status)).Sum(c => c.Count)}",
+              selected: stage == t.Key, onPress: () => Show(t.Key));
         }
       }
       if (orders.Count == 0) { EmptyState("No orders yet", body: "An order appears here the moment it is placed."); }
@@ -148,9 +160,9 @@ public bool NothingToDo(Order order, bool staff) {
 [Composable]
 [Authorize(IsShopPacker)]
 public component DeskPickups() {
-  live var pickups = ShopPickup.OrderBy(p => p.Date).ToList();
+  live var pickups = ShopPickup.OrderBy(p => p.Date).Take(200).ToList();
   // With locations: the carrier comes to one of them — the ones that send parcels.
-  live var senders = StockLocation.Where(l => l.Active && l.Ships).OrderBy(l => l.Rank).ToList();
+  live var senders = StockLocation.Where(l => l.Active && l.Ships).OrderBy(l => l.Rank).Take(100).ToList();
   StockLocation? from = null;
   List<PickupCarrier> carriers = [];
   bool asking = false;
@@ -298,17 +310,26 @@ public List<OrderStageTab> OrderStageTabs() {
 
 /// Whether an order is in a stage of the list.
 public bool InOrderStage(Order o, string stage) {
-  return stage == "all"
-      || (stage == "waiting" && o.Status == OrderStatus.Reserved)
-      || (stage == "paid" && o.Status == OrderStatus.Paid)
-      || (stage == "picking" && o.Status == OrderStatus.Picking)
-      || (stage == "packed" && o.Status == OrderStatus.Packed)
-      || (stage == "sent" && o.Status == OrderStatus.Fulfilled)
-      || (stage == "delivered" && o.Status == OrderStatus.Delivered)
-      || (stage == "closed" && (o.Status == OrderStatus.Cancelled || o.Status == OrderStatus.Lapsed || o.Status == OrderStatus.Unavailable
-                                || o.Status == OrderStatus.Refunded || o.Status == OrderStatus.Voided
-                                || o.Status == OrderStatus.RefundRequested || o.Status == OrderStatus.RefundProcessing));
+  return stage == "all" || OrderStatusesIn(stage).Contains(o.Status);
 }
+
+/// The statuses a stage of the order desk holds — "all" holds every one, and is asked for by name rather than listed.
+public List<OrderStatus> OrderStatusesIn(string stage) {
+  if (stage == "waiting") { return [OrderStatus.Reserved]; }
+  if (stage == "paid") { return [OrderStatus.Paid]; }
+  if (stage == "picking") { return [OrderStatus.Picking]; }
+  if (stage == "packed") { return [OrderStatus.Packed]; }
+  if (stage == "sent") { return [OrderStatus.Fulfilled]; }
+  if (stage == "delivered") { return [OrderStatus.Delivered]; }
+  if (stage == "closed") {
+    return [OrderStatus.Cancelled, OrderStatus.Lapsed, OrderStatus.Unavailable, OrderStatus.Refunded, OrderStatus.Voided,
+            OrderStatus.RefundRequested, OrderStatus.RefundProcessing];
+  }
+  return [];
+}
+
+/// How many orders stand at one status — one row of the order desk's counts.
+public class OrderStatusCount { public OrderStatus Status; public int Count; }
 
 /// What staff can do to one order, for the stage of the list it is shown in. A store puts it in its own order row, so
 /// the row's look is the store's and the steps are the kit's.
@@ -536,7 +557,7 @@ public component DeskOrderActions(Order order, string stage = "all") {
 [Authorize(IsShopStaff)]
 public component DeskFigures() {
   live var shop = ShopSettings.FirstOrDefault();
-  live var sales = Sale.Where(s => s.State == SaleState.Live).OrderBy(s => s.EndsAt).ToList();
+  live var sales = Sale.Where(s => s.State == SaleState.Live).OrderBy(s => s.EndsAt).Take(200).ToList();
   ShopTotals totals = null;
   List<ProductFigures> top = [];
   List<ProductFigures> viewed = [];
@@ -652,7 +673,7 @@ public component DeskFigures() {
 [Composable]
 [Authorize(IsShopStaff)]
 public component DeskStock() {
-  live var locations = StockLocation.OrderBy(l => l.Rank).ToList();
+  live var locations = StockLocation.OrderBy(l => l.Rank).Take(100).ToList();
   // Worked out on the server (the default location's share is the totals less the rest), and asked again after every
   // change made here.
   List<StockRow> rows = [];
@@ -766,7 +787,7 @@ public component DeskStock() {
 [Authorize(IsShopStaff)]
 public component DeskTransfers(Action onChange) {
   live var open = StockTransfer.Include(t => t.Variant.Product).Include(t => t.From).Include(t => t.To)
-    .Where(t => t.Status == TransferStatus.InTransit).OrderBy(t => t.SentAt).ToList();
+    .Where(t => t.Status == TransferStatus.InTransit).OrderBy(t => t.SentAt).Take(200).ToList();
   string problem = "";
   action Receive(StockTransfer t) { problem = ""; try { ReceiveTransfer(t); onChange(); } catch (Exception ex) { problem = ex.Message; } }
   action CallOff(StockTransfer t) { problem = ""; try { CancelTransfer(t); onChange(); } catch (Exception ex) { problem = ex.Message; } }
@@ -798,10 +819,10 @@ public component DeskTransfers(Action onChange) {
 [Composable]
 [Authorize(IsShopStaff)]
 public component DeskLocations(Action onChange) {
-  live var locations = StockLocation.OrderBy(l => l.Rank).ToList();
-  live var packers = RoleGrant.Include(g => g.Member).Where(g => g.Role == ShopRole.Packer).ToList();
-  live var clerks = RoleGrant.Include(g => g.Member).Where(g => g.Role == ShopRole.Counter).ToList();
-  live var limits = ShopRoleLimit.Include(l => l.Location).ToList();
+  live var locations = StockLocation.OrderBy(l => l.Rank).Take(100).ToList();
+  live var packers = RoleGrant.Include(g => g.Member).Where(g => g.Role == ShopRole.Packer).Take(200).ToList();
+  live var clerks = RoleGrant.Include(g => g.Member).Where(g => g.Role == ShopRole.Counter).Take(200).ToList();
+  live var limits = ShopRoleLimit.Include(l => l.Location).Take(500).ToList();
   StockLocation? editing = null;
   bool adding = false;
   string name = "";
@@ -951,9 +972,9 @@ public string LocationDoes(StockLocation l) {
 public component DeskReturns() {
   live var shop = ShopSettings.FirstOrDefault();
   live var returns = ReturnRequest.Include(r => r.Lines).Include(r => r.Order).Include(r => r.Replacement.Lines)
-    .OrderByDescending(r => r.RequestedAt).ToList();
+    .OrderByDescending(r => r.RequestedAt).Take(200).ToList();
   // With locations: where goods that come back go on a shelf — none chosen, where each order was picked.
-  live var locations = StockLocation.Where(l => l.Active).OrderBy(l => l.Rank).ToList();
+  live var locations = StockLocation.Where(l => l.Active).OrderBy(l => l.Rank).Take(100).ToList();
   StockLocation? backTo = null;
   ReturnRequest declining = null;
   string reason = "";
@@ -1302,7 +1323,7 @@ public component DeskMailPreview() {
 [Composable]
 [Authorize(IsShopStaff)]
 public component DeskCampaigns() {
-  live var campaigns = ShopCampaign.OrderByDescending(c => c.CreatedAt).ToList();
+  live var campaigns = ShopCampaign.OrderByDescending(c => c.CreatedAt).Take(200).ToList();
   string newSubject = "";
 
   action Create() {
@@ -1470,7 +1491,7 @@ component DeskFirstSettings() {
 [Authorize(IsShopStaff)]
 component DeskShopSettings() {
   var shop = ShopSettings.Single();
-  live var countries = VatCountry.OrderBy(v => v.Country).ToList();
+  live var countries = VatCountry.OrderBy(v => v.Country).Take(300).ToList();
   string note = "";
   List<string> cardWarnings = [];
 
@@ -1675,10 +1696,14 @@ public component DeskExchangeRates() {
 [Authorize(IsShopStaff)]
 public component DeskProducts() {
   live var shop = ShopSettings.FirstOrDefault();
-  live var products = Product.OrderBy(p => p.Status).ThenBy(p => p.Name).ToList();
-  live var allVariants = Variant.ToList();
-  live var categories = Category.OrderBy(c => c.Name).ToList();
   string search = "";
+  // The search is the database's: the two hundred first by standing and name that match what was typed, and the sizes
+  // of those — every product is in the CSV download, which a server function writes.
+  live var products = Product.Where(p => search == "" || p.Name.ToLower().Contains(search.ToLower()))
+    .OrderBy(p => p.Status).ThenBy(p => p.Name).Take(200).ToList();
+  live var shownIds = products.Select(p => p.Id).ToList();
+  live var allVariants = Variant.Where(v => shownIds.Contains(v.Product.Id)).ToList();
+  live var categories = Category.OrderBy(c => c.Name).Take(500).ToList();
   Product editing = null;
   bool creating = false;
   string newName = "";
@@ -1730,7 +1755,7 @@ public component DeskProducts() {
         if (exportLink != "") {
           Row(gap: 2, pb: 2) { Link(href: exportLink, label: "Download the products as CSV") { Text("Download products.csv — every size, one row each", color: Colors.Primary); } }
         }
-        foreach (var p in products.Where(x => search == "" || x.Name.ToLower().Contains(search.ToLower())).ToList()) {
+        foreach (var p in products) {
           Row(justify: Justify.Between, align: Align.Center, gap: 3, py: 2, borderTW: 1, border: Colors.Border, label: p.Name) {
             Stack(gap: 0, minW: "0") {
               Text(p.Name);
@@ -1796,7 +1821,7 @@ public component DeskProducts() {
 [Composable]
 [Authorize(IsShopStaff)]
 public component DeskProductEditor(Product product) {
-  live var categories = Category.OrderBy(c => c.Name).ToList();
+  live var categories = Category.OrderBy(c => c.Name).Take(500).ToList();
   live var variants = Variant.Where(v => v.Product == product).OrderBy(v => v.Rank).ToList();
   live var images = ProductImage.Where(i => i.Product == product).OrderBy(i => i.Rank).ToList();
   string name = product.Name;
@@ -1824,7 +1849,7 @@ public component DeskProductEditor(Product product) {
   string vCost = "";
   string vProblem = "";
   // Its own price in each currency the shop sells in — "" is none: converted and rounded.
-  live var soldIn = ExchangeRate.Where(r => r.Sold).OrderBy(r => r.Currency).ToList();
+  live var soldIn = ExchangeRate.Where(r => r.Sold).OrderBy(r => r.Currency).Take(200).ToList();
   live var listed = VariantPrice.Where(p => p.Variant.Product == product).ToList();
   List<string> vPrices = [];
 

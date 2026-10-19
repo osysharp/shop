@@ -27,6 +27,75 @@ void the_sale_page_shows_only_what_is_marked_down() {
   Assert.Visible("€144");                            // 180 less 20%
 }
 
+/// The loafer's cover photograph: a file in the shop's public store, and the words staff gave it.
+void ALoaferPhotograph() {
+  File.WriteAllBytes("public/products/loafer.png", Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAgklEQVR42g3JIQJEIQhAwT3dO4nJZCKRSCbjj0YikUg0eqZ16vy+xm54IxrZqMZp3Mbv6+yOd6KTneqczu0vBnvggxjkoAZncMcLYQsuhJBCCUe48kLZiiuhpFLKUa6+MLbhRhhplHGMay8me+KTmOSkJmdy54vFXvgiFrmoxVncxR9CdVxBspNprwAAAABJRU5ErkJggg=="));
+  new ProductImage { Product = Product.Single(p => p.Slug == "loafer"), Path = "public/products/loafer.png", Alt = "A brown loafer on a step", Rank = 0 };
+}
+
+// Found in a real build: the listing said neither how many were left nor that something was sold out, so the builder
+// replaced it with one of its own — and search and sorting went with it.
+[Test(Floor)]
+void the_listing_shows_a_products_photograph_and_what_is_left_of_it() {
+  runas (Desk) {
+    ALoaferPhotograph();
+    Pick("Chelsea", "38").Stock = 0;
+    UnitOfWork.Commit();
+  }
+  Ui.Visit("/search");
+  Assert.Visible("3 left", within: "Loafer");        // two 38s and a 39
+  Assert.Visible("Only one left", within: "Super");
+  Assert.Visible("Sold out", within: "Chelsea");
+  Ui.Shot("listing");
+  Ui.Theme("dark");
+  Ui.Shot("listing-dark");
+  Ui.Theme("light");
+  Ui.Viewport(390, 844);
+  Ui.Shot("listing-phone");
+  Ui.Viewport(1280, 900);
+  // A shop of plenty says nothing until it runs low.
+  runas (Desk) { Pick("Super", "").Stock = 40; UnitOfWork.Commit(); }
+  Ui.Visit("/search");
+  Assert.Hidden("40 left");
+  Assert.Hidden("Only one left");
+}
+
+// The general way out: a store draws its own card — and the search, the sizes and the sorting are still the kit's.
+[Test(Floor)]
+void a_store_draws_its_own_card_and_keeps_the_search_and_the_sorting() {
+  runas (Desk) {
+    ALoaferPhotograph();
+    Pick("Chelsea", "38").Stock = 0;
+    UnitOfWork.Commit();
+    Workflow.Settle(MarkDown(Product.Single(p => p.Name == "Super"), 50, 5));
+  }
+  Ui.Visit("/search-own-card");
+  // Its own card, for every product — and nothing of the kit's card beside it.
+  Assert.Visible("LOAFER");
+  Assert.Visible("pictured: A brown loafer on a step", within: "Piece: Loafer");
+  Assert.Visible("no picture yet", within: "Piece: Chelsea");
+  Assert.Visible("gone", within: "Piece: Chelsea");
+  Assert.Visible("in the shop", within: "Piece: Loafer");      // three left, and this store says so only under two
+  Assert.Visible("Only one left", within: "Piece: Super");
+  Assert.Visible("€1,050 (was €2,100)", within: "Piece: Super");
+  Assert.Hidden("Sold out");
+  // The kit's search…
+  Ui.Fill("Search", "loaf");
+  Assert.Visible("LOAFER");
+  Assert.Hidden("CHELSEA");
+  Ui.Fill("Search", "");
+  // …its sizes…
+  Ui.Click("39");
+  Assert.Visible("LOAFER");
+  Assert.Hidden("SUPER");
+  Ui.Click("Clear");
+  // …and its sorting: by name, the boot comes before the loafer before the bike.
+  Ui.Select("Sort by", ProductSort.Name);
+  Assert.Before("CHELSEA", "LOAFER");
+  Assert.Before("LOAFER", "SUPER");
+  Ui.Shot("listing-own-card");
+}
+
 [Test(Floor)]
 void the_returns_policy_says_the_window_when_the_shop_wrote_nothing() {
   Ui.Visit("/returns-policy");

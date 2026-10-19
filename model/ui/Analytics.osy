@@ -30,7 +30,7 @@ public component ShopAnalytics() {
   live var isProductPage = paths != null && candidate != null
     && (PathKey(path, paths.ProductPath, "{slug}") == candidate.Slug || PathKey(path, paths.ProductPath, "{id}") == candidate.Id.ToString());
   live var bag = Bag.Include(b => b.Lines.Variant.Product).Include(b => b.Lines.Agreed).SingleOrDefault(b => b.VisitId == visitId);
-  live var sales = ShopPurchaseReport.Include(r => r.Order).Where(r => r.VisitId == visitId).ToList();
+  live var sales = ShopPurchaseReport.Include(r => r.Order).Where(r => r.VisitId == visitId).Take(50).ToList();   // one visit's
 
   // ⚑ EVERY COLLECTION IS WALKED HERE, in the `live var`s, and handed to the helpers as a list. A helper that walked a
   //   row's collection itself (`order.Lines`) would be a data READ, which a tracked computed cannot make.

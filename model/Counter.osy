@@ -732,8 +732,8 @@ public List<CounterSaleRow> CounterSalesToday(StockLocation? at) {
 /// An order the counter can take goods back from, found by its reference — one collected or sold at the caller's
 /// counter. Null when it is not one of those (a parcel's order goes back by post).
 [Authorize(IsShopCounter)]
-public Order? CounterFindSale(string reference) {
-  var r = reference.Trim().ToUpper();
+public Order? CounterFindSale(string? reference) {
+  var r = (reference ?? "").Trim().ToUpper();     // nothing typed at the counter yet is no reference
   if (r == "") { return null; }
   return Order.Include(o => o.Lines).FirstOrDefault(o => o.Reference == r && o.Fulfilment == Fulfilment.Collect);
 }

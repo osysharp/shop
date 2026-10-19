@@ -10,8 +10,8 @@ using Osysharp.Ui;
 [Authorize(IsShopStaff)]
 public component DeskWholesale() {
   live var shop = ShopSettings.FirstOrDefault();
-  live var lists = PriceList.Include(l => l.Prices).OrderBy(l => l.Name).ToList();
-  live var accounts = WholesaleAccount.Include(w => w.Account).Include(w => w.PriceList).OrderBy(w => w.Company).ToList();
+  live var lists = PriceList.Include(l => l.Prices).OrderBy(l => l.Name).Take(200).ToList();
+  live var accounts = WholesaleAccount.Include(w => w.Account).Include(w => w.PriceList).OrderBy(w => w.Company).Take(500).ToList();
   List<Order> unpaid = [];
   // A price list being written.
   bool editingList = false;

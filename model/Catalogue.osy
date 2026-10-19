@@ -288,6 +288,23 @@ public bool SoldOut(Variant[] variants) {
   return variants.All(v => !v.Unlimited && v.Stock == 0);
 }
 
+/// How many of a product can be bought now, over all its variants — null when one of them never runs out (a gift card,
+/// a file).
+public int? LeftOf(Variant[] variants) {
+  if (variants.Any(v => v.Unlimited)) { return null; }
+  return variants.Sum(v => v.Stock);
+}
+
+/// What a listing says about how much of a product is left: "Sold out", "Only one left", "3 left" — or "" when there
+/// are more than `showUnder`, or it never runs out. `showUnder: 0` says only "Sold out".
+public string StockNote(Variant[] variants, int showUnder = 5) {
+  var left = LeftOf(variants);
+  if (left == null) { return ""; }
+  if (left <= 0) { return "Sold out"; }
+  if (left > showUnder) { return ""; }
+  return left == 1 ? "Only one left" : $"{left} left";
+}
+
 /// The lowest price among a product's variants — what a card says it starts at ("from 129 kr") — or `price`, the
 /// product's own, when it has none. A variant with no price of its own costs the product's.
 public decimal FromPrice(Variant[] variants, decimal price) {

@@ -22,13 +22,19 @@ void one_more_order_placed_stays_within_its_budget() {
   var mark = Cost.Mark();
   var reference = Checkout("v-cost-next").Reference;
   Said("Placed", mark);
+  // Read HERE, before the check below: looking as the desk whether the add-on heard is the test's own reading (four
+  // statements), not something an order costs — counted with the order it took this past its bound with the checkout
+  // itself at 100.
+  var statements = Cost.StatementsSince(mark);
+  var roundTrips = Cost.RoundTripsSince(mark);
+  var requests = Cost.RequestsSince(mark);
   runas (Desk) { Assert.True(AddOnHeard.Any(h => h.What == "placed " + reference)); }
   // A checkout costs about 98 statements: the setup is configuration, worked out once and kept; the shop reads the desk's
   // settings where it uses them; and a unit of work sends a read once while nothing it read has changed. The bound
   // leaves 5% over that.
-  Assert.AtMost(103, Cost.StatementsSince(mark));
-  Assert.AtMost(91, Cost.RoundTripsSince(mark));
-  Assert.Equal(0, Cost.RequestsSince(mark));
+  Assert.AtMost(103, statements);
+  Assert.AtMost(91, roundTrips);
+  Assert.Equal(0, requests);
 }
 
 /// …paid and sent from the desk, the add-on hearing each.

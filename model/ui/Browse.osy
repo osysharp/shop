@@ -7,27 +7,81 @@ using Osysharp.Ui;
 using Osysharp.Storage;
 using Osysharp.Blocks;
 
+/// One product as a listing shows it, with everything a card says already worked out — what `ShopSearchPage` hands a
+/// store's own card (`slot card { c => … }`).
+public class ShopCard {
+  public Product Product;
+  public string Name = "";
+  /// Where its page is.
+  public string Href = "";
+  /// Its cover photograph's address — `Image(src: c.Photo, alt: c.PhotoAlt)` — or "" when it has none.
+  public string Photo = "";
+  /// What the photograph shows: the words staff gave it, or the product's name.
+  public string PhotoAlt = "";
+  /// What it costs now, as the shop writes money ("€120").
+  public string Price = "";
+  /// What it cost before its sale, or "" when it is not marked down.
+  public string WasPrice = "";
+  /// "excl. VAT" in a shop that shows prices so, else "".
+  public string PriceNote = "";
+  /// How many can be bought now; null when it never runs out.
+  public int? Left;
+  public bool SoldOut;
+  /// "Sold out", "Only one left", "3 left" — or "" when there is plenty.
+  public string Stock = "";
+}
+
 /// Search the listed products by name, brand or summary; narrow by size; order them. `productPrefix` is where a
 /// store's product pages live ("/p/"), followed by the product's slug — or its id, when `linkById` says so.
-/// `onlySale` makes it the sale shelf: only what is marked down.
+/// `onlySale` makes it the sale shelf: only what is marked down. Each product is a card with its photograph, its
+/// price and — when `showStockUnder` or fewer are left — how many ("3 left", "Only one left"); "Sold out" always
+/// (`showStockUnder: 0` says nothing else).
+///
+/// ⚑ A STORE DRAWS ITS OWN CARD AND KEEPS THE REST — the search, the sizes, the sorting and the grid stay the kit's:
+///
+///     ShopSearchPage() {
+///       slot card { c =>
+///         Link(href: c.Href, label: c.Name) {
+///           Stack(gap: 2) {
+///             if (c.Photo != "") { Image(src: c.Photo, alt: c.PhotoAlt, aspectRatio: "1 / 1", objectFit: ObjectFit.Cover); }
+///             Text(c.Name, fontWeight: FontWeight.Bold);
+///             Text(c.Price);
+///             if (c.Stock != "") { Badge(c.Stock); }
+///           }
+///         }
+///       }
+///     }
 [Composable]
 [AllowAnonymous]
-public component ShopSearchPage(string productPrefix = "/p/", bool linkById = false, bool onlySale = false) {
+public component ShopSearchPage(string productPrefix = "/p/", bool linkById = false, bool onlySale = false, int showStockUnder = 5) {
   live var shop = ShopSettings.FirstOrDefault();
-  live var products = Product.Where(p => p.Status == ProductStatus.Listed).OrderByDescending(p => p.CreatedAt).ToList();
-  live var variants = Variant.Where(v => v.Product.Status == ProductStatus.Listed).ToList();
-  live var covers = ProductImage.Where(i => i.Rank == 0).ToList();
-  // Every sale the reader may read, and the date the site is looked at: a customer's is today and they read only the
-  // sales that have started; a member of staff previewing the site as of a date sees that date's sales and prices.
-  live var allSales = Sale.ToList();
+  // The sales the reader may read that have not ended, and the date the site is looked at: a customer's is today and
+  // they read only the sales that have started; a member of staff previewing the site as of a date sees that date's
+  // sales and prices. An ended sale prices nothing, so it is not read.
+  live var allSales = Sale.Where(s => s.State != SaleState.Ended).Take(1000).ToList();
   DateTime at = DateTime.UtcNow;
   on mount { at = SiteDate(); }
   string query = "";
   string size = "";
   ProductSort sort = ProductSort.Newest;
+  live var onSale = allSales.Where(s => SaleOn(s, at)).Select(s => s.Product.Id).ToList();
+
+  // THE SEARCH IS THE DATABASE'S: what was typed, the size and the sale shelf narrow the read itself, so a shop of ten
+  // thousand pieces sends the two hundred newest that match — never the catalogue for the browser to sift.
+  live var products = Product.Where(p => p.Status == ProductStatus.Listed
+      && (!onlySale || onSale.Contains(p.Id))
+      && (query == "" || p.Name.ToLower().Contains(query.ToLower())
+          || (p.Brand != null && p.Brand.ToLower().Contains(query.ToLower()))
+          || (p.Summary != null && p.Summary.ToLower().Contains(query.ToLower())))
+      && (size == "" || p.Variants.Any(v => v.Size == size && v.Stock > 0)))
+    .OrderByDescending(p => p.CreatedAt).Take(200).ToList();
+  live var shownIds = products.Select(p => p.Id).ToList();
+  live var variants = Variant.Where(v => shownIds.Contains(v.Product.Id)).ToList();
+  live var covers = ProductImage.Where(i => i.Rank == 0 && shownIds.Contains(i.Product.Id)).ToList();
 
   // The sizes there is something in — none at all (a shop of one-offs) and the filter is not shown.
-  live var sizes = variants.Where(v => v.Size != null && v.Stock > 0).Select(v => v.Size!).Distinct().OrderBy(x => x).ToList();
+  live var sizes = Variant.Where(v => v.Product.Status == ProductStatus.Listed && v.Size != null && v.Stock > 0)
+    .Select(v => v.Size!).Distinct().OrderBy(x => x).Take(100).ToList();
 
   action Clear() { query = ""; size = ""; sort = ProductSort.Newest; }
   action PickSize(string s) { size = size == s ? "" : s; }
@@ -57,27 +111,42 @@ public component ShopSearchPage(string productPrefix = "/p/", bool linkById = fa
       if (onlySale && sales.Count == 0) {
         EmptyState("Nothing is on sale right now", body: "Marked-down pieces appear here while their sale runs.");
       }
-      Box(display: Display.Grid, cols: "repeat(auto-fill, minmax(200px, 1fr))", gap: 5) {
+      // Two cards across on a phone, more as there is room.
+      Box(display: Display.Grid, cols: "repeat(auto-fill, minmax(min(100%, 160px), 1fr))", gap: 5) {
         foreach (var p in products
-            .Where(p => !onlySale || sales.Any(x => x.Product == p))
-            .Where(p => query == "" || p.Name.ToLower().Contains(query.ToLower())
-                        || (p.Brand ?? "").ToLower().Contains(query.ToLower())
-                        || (p.Summary ?? "").ToLower().Contains(query.ToLower()))
-            .Where(p => size == "" || variants.Any(v => v.Product == p && v.Size == size && v.Stock > 0))
             .OrderBy(p => sort == ProductSort.PriceLow ? PriceAt(p, allSales, at).Price : sort == ProductSort.PriceHigh ? -PriceAt(p, allSales, at).Price : 0)
             .ThenBy(p => sort == ProductSort.Name ? p.Name : "")
             .ToList()) {
           var price = PriceAt(p, allSales, at);
-          Link(href: linkById ? productPrefix + p.Id.ToString() : productPrefix + p.Slug, label: p.Name) {
-            Stack(gap: 2) {
-              if (covers.Any(c => c.Product == p)) {
-                Image(src: File.Url(covers.First(c => c.Product == p).Path), alt: p.Name, aspectRatio: "3 / 4", objectFit: ObjectFit.Cover);
-              }
-              Text(p.Name);
-              Row(gap: 2) {
-                Text(Money(ShownPrice(price.Price, p.Vat, shop), shop), color: price.WasPrice == null ? Colors.TextMuted : Colors.Danger);
-                if (price.WasPrice != null) { Text(Money(ShownPrice(price.WasPrice.Value, p.Vat, shop), shop), color: Colors.TextMuted, textDecoration: TextDecoration.LineThrough); }
-                if (PriceNote(shop) != "") { Text(PriceNote(shop), color: Colors.TextMuted, fontSize: FontSize.Label); }
+          var cover = covers.FirstOrDefault(c => c.Product == p);
+          var mine = variants.Where(v => v.Product == p).ToArray();
+          var card = new ShopCard {
+            Product = p, Name = p.Name, Href = linkById ? productPrefix + p.Id.ToString() : productPrefix + p.Slug,
+            Photo = cover == null ? "" : File.Url(cover.Path), PhotoAlt = cover == null || (cover.Alt ?? "") == "" ? p.Name : cover.Alt!,
+            Price = Money(ShownPrice(price.Price, p.Vat, shop), shop),
+            WasPrice = price.WasPrice == null ? "" : Money(ShownPrice(price.WasPrice.Value, p.Vat, shop), shop),
+            PriceNote = PriceNote(shop), Left = LeftOf(mine), SoldOut = SoldOut(mine), Stock = StockNote(mine, showStockUnder),
+          };
+          // The store's own card when it gave one; otherwise this one.
+          Slot("card", card) {
+            Link(href: card.Href, label: card.Name) {
+              Stack(gap: 2) {
+                if (card.Photo != "") {
+                  Image(src: card.Photo, alt: card.PhotoAlt, w: "100%", aspectRatio: "3 / 4", objectFit: ObjectFit.Cover, rounded: Radius.Md,
+                        opacity: card.SoldOut ? "0.6" : "1");
+                } else {
+                  // No photograph yet: the same space, so the names and prices of a row stay in line.
+                  Box(w: "100%", aspectRatio: "3 / 4", bg: Colors.Surface, rounded: Radius.Md);
+                }
+                Text(card.Name, fontWeight: FontWeight.Medium);
+                Row(gap: 2, wrap: Wrapping.Wrap) {
+                  Text(card.Price, color: card.WasPrice == "" ? Colors.TextMuted : Colors.Danger);
+                  if (card.WasPrice != "") { Text(card.WasPrice, color: Colors.TextMuted, textDecoration: TextDecoration.LineThrough); }
+                  if (card.PriceNote != "") { Text(card.PriceNote, color: Colors.TextMuted, fontSize: FontSize.Label); }
+                }
+                if (card.Stock != "") {
+                  Text(card.Stock, fontSize: FontSize.Label, color: card.SoldOut ? Colors.TextMuted : Colors.Warning);
+                }
               }
             }
           }

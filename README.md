@@ -13,11 +13,7 @@ The same package runs a bicycle workshop, a fashion label and a second-hand shop
 |---|---|---|
 | ![Vall, a fashion shop](docs/fashion-store-atelier.jpg) | ![Rail, a second-hand shop](docs/thrift-store-rail.jpg) | ![Rust & Chrome, vintage bicycles](docs/rust-and-chrome.jpg) |
 
-Each of these is a **template** you can start from:
-
-```console
-osy init shop --style atelier
-```
+Each of these is its own app on this one package: the design is the app's, the shop is the kit's.
 
 ## What it ships
 
@@ -59,6 +55,26 @@ at `ShopSetup.DownloadPath`; the page a gift card's mail sends its holder to is 
 `[Route("/pay/{pay}")] component P(Pay pay)` at `ShopSetup.PayLinkPath`, `[Route("/bag/back/{link}")] component
 B(ResumeBag link)` at `ShopSetup.ResumeBagPath` — and names its own page for a link that has run out with
 `app.Ui = new AppUi { InvalidLinkSurface = … }`.
+
+**The listing** (`ShopSearchPage`) is a storefront's front page as it is: each product with its photograph, its
+price and — once five or fewer are left — how many ("3 left", "Only one left", "Sold out"), under the search, the size
+filter and the sort order. `showStockUnder` moves that five (`0`: only "Sold out"). A store that wants its own card
+fills the `card` slot and keeps everything else:
+
+```osy
+ShopSearchPage() {
+  slot card { c =>                                  // c is a ShopCard: Name, Href, Photo, PhotoAlt, Price, WasPrice,
+    Link(href: c.Href, label: c.Name) {             //   PriceNote, Left, SoldOut, Stock — and c.Product itself
+      Stack(gap: 2) {
+        if (c.Photo != "") { Image(src: c.Photo, alt: c.PhotoAlt, aspectRatio: "1 / 1", objectFit: ObjectFit.Cover); }
+        Text(c.Name, fontWeight: FontWeight.Bold);
+        Text(c.Price);
+        if (c.Stock != "") { Badge(c.Stock); }
+      }
+    }
+  }
+}
+```
 
 ## Install and use
 

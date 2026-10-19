@@ -80,8 +80,7 @@ component BoutiqueFrame() : ShopFrame {
 [AllowAnonymous]
 component BoutiqueBag() {
   string visitId = Visitor.Id;
-  live var bag = Bag.Include(b => b.Lines.Variant.Product).SingleOrDefault(b => b.VisitId == visitId);
-  live var covers = ProductImage.Where(i => i.Rank == 0).ToList();
+  live var bag = Bag.Include(b => b.Lines.Variant.Product.Images).SingleOrDefault(b => b.VisitId == visitId);
   live var shop = ShopSettings.FirstOrDefault();
 
   action Remove(BagLine line) { RemoveFromBag(line); }
@@ -94,7 +93,7 @@ component BoutiqueBag() {
       } else {
         foreach (var line in bag.Lines) {
           Row(gap: 4, align: Align.Center, label: line.Variant.Product.Name) {
-            Image(src: File.Url(covers.Where(c => c.Product.Id == line.Variant.Product.Id).OrderBy(c => c.Rank).Select(c => c.Path).FirstOrDefault() ?? ""),
+            Image(src: File.Url(line.Variant.Product.Images.OrderBy(c => c.Rank).Select(c => c.Path).FirstOrDefault() ?? ""),
                   alt: line.Variant.Product.Name, w: "76px", aspectRatio: "3 / 4", objectFit: ObjectFit.Cover, rounded: Radius.Md);
             Stack(gap: 1, grow: 1, minW: "0") {
               Text(line.Variant.Product.Name, fontWeight: FontWeight.Semibold);

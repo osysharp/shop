@@ -44,11 +44,13 @@ public component CheckoutCode(Action onChange) {
 [Composable]
 [Authorize(IsShopStaff)]
 public component DeskDiscountCodes() {
-  live var codes = DiscountCode.OrderByDescending(d => d.CreatedAt).ToList();
+  // The newest two hundred: a desk runs the codes in play, and an older one is found by its code at the checkout.
+  live var codes = DiscountCode.OrderByDescending(d => d.CreatedAt).Take(200).ToList();
   live var shop = ShopSettings.FirstOrDefault();
   // The currencies the shop SELLS in besides its own, and what each code is worth in them (DiscountCodeAmount).
-  live var sold = ExchangeRate.Where(r => r.Sold).OrderBy(r => r.Currency).ToList();
-  live var amounts = DiscountCodeAmount.ToList();
+  live var sold = ExchangeRate.Where(r => r.Sold).OrderBy(r => r.Currency).Take(200).ToList();
+  // The other-currency amounts of the codes listed — the newest codes' first, as the list is.
+  live var amounts = DiscountCodeAmount.OrderByDescending(a => a.Discount.CreatedAt).Take(1000).ToList();
   DiscountCode? pricing = null;
   ExchangeRate? pricingIn = null;
   decimal inValue = 0;

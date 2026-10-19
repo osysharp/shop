@@ -81,10 +81,10 @@ component AtelierHeroLink(string label) {
 [AllowAnonymous]
 component AtelierProductRow(string title = "New in", Category? shelf = null, int count = 4, string more = "See them all",
                             PageLink link = "/search") : ProductRow {
-  live var listed = Product.Include(p => p.Images).Include(p => p.Variants)
-    .Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard).OrderBy(p => p.Rank).ToList();
-  // The pieces this row shows — a computed of the read above, so the grid is handed one list, not a new one per render.
-  live var shown = listed.Where(p => shelf == null || (p.Category != null && (p.Category.Id == shelf.Id))).Take(count).ToList();
+  // The pieces this row shows, asked for as it shows them — its shelf, its count — with their photographs and sizes.
+  live var shown = Product.Include(p => p.Images).Include(p => p.Variants)
+    .Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard && (shelf == null || (p.Category != null && (p.Category.Id == shelf.Id))))
+    .OrderBy(p => p.Rank).Take(count).ToList();
   render {
     AtelierSection {
       Stack(gap: 0, pt: 16, pb: 12) {
@@ -99,7 +99,7 @@ component AtelierProductRow(string title = "New in", Category? shelf = null, int
 /// the grid above does not already show. A shelf with a picture of its own shows that.
 [AllowAnonymous]
 component AtelierShelves(string title = "The shelves") : CategoryTiles {
-  live var shelves = Category.Where(c => c.Parent == null).OrderBy(c => c.Rank).ToList();
+  live var shelves = Category.Where(c => c.Parent == null).OrderBy(c => c.Rank).Take(24).ToList();
   live var pieces = Product.Include(p => p.Images)
     .Where(p => p.Slug == "pleated-wool-blend-mini-skirt" || p.Slug == "buckle-strap-heeled-boot" || p.Slug == "top-handle-satchel").ToList();
   render {

@@ -46,8 +46,9 @@ component SwapHero(string title, Markdown words = "", Picture photo = "", Pictur
 [Block("Every piece")]
 [AllowAnonymous]
 component SwapEveryPiece() {
+  // The first two hundred by rank — a page of a catalogue is not the whole of it; the search reaches the rest.
   live var all = Product.Include(p => p.Images).Include(p => p.Variants)
-    .Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard).OrderBy(p => p.Rank).ToList();
+    .Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard).OrderBy(p => p.Rank).Take(200).ToList();
   render { Box(pt: 6, label: "Every piece") { SwapGrid(all); } }
 }
 
@@ -55,10 +56,10 @@ component SwapEveryPiece() {
 [AllowAnonymous]
 component SwapProductRow(string title = "New in", Category? shelf = null, int count = 4, string more = "See them all",
                           PageLink link = "/search") : ProductRow {
-  live var listed = Product.Include(p => p.Images).Include(p => p.Variants)
-    .Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard).OrderBy(p => p.Rank).ToList();
-  // The pieces this row shows — a computed of the read above, so the grid is handed one list, not a new one per render.
-  live var shown = listed.Where(p => shelf == null || (p.Category != null && p.Category.Id == shelf.Id)).Take(count).ToList();
+  // The pieces this row shows, asked for as it shows them — its shelf, its count — with their photographs and sizes.
+  live var shown = Product.Include(p => p.Images).Include(p => p.Variants)
+    .Where(p => p.Status == ProductStatus.Listed && !p.IsGiftCard && (shelf == null || (p.Category != null && p.Category.Id == shelf.Id)))
+    .OrderBy(p => p.Rank).Take(count).ToList();
   render {
     Stack(gap: 0, pt: 8, pb: 8) {
       SwapSectionHead(title, linkLabel: more, to: link);

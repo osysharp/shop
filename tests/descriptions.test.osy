@@ -1,0 +1,57 @@
+// A description writer from another kit, through the one seam the shop offers (Descriptions.osy): found in the app, off
+// until staff switch it on, and its draft an offer on the product editor that nobody saves by accident.
+
+using Osysharp.Shop;
+
+[Test(Floor)]
+void a_writer_in_the_app_is_off_until_staff_switch_it_on_and_then_drafts_an_offer() {
+  runas (Desk) {
+    var state = ProductWriterNow()!;
+    Assert.Equal("Description writer", state.Name);
+    Assert.False(state.On);
+    Assert.False(ProductWriterIsOn());
+    var loafer = Product.Single(p => p.Name == "Loafer");
+    Assert.Contains("is off", DraftDescription(loafer).Problem);
+
+    TurnProductWriterOn();
+    Assert.True(ProductWriterIsOn());
+    Assert.Equal("anna@shop.test", ProductWriterNow()!.AnsweredFor);
+    var draft = DraftDescription(Product.Single(p => p.Name == "Super"));
+    Assert.Equal("", draft.Problem);
+    Assert.Equal("The Super by Colnago, drafted.", draft.Offer!.Text);
+    Assert.Equal("Description writer", draft.Offer!.PreparedBy);
+    Assert.Equal(1, ProductWriterNow()!.Drafts);
+  }
+}
+
+[Test(Floor)]
+void a_draft_is_an_offer_staff_take_or_discard_and_never_the_products_own_words() {
+  runas (Desk) {
+    TurnProductWriterOn();
+    var super = Product.Single(p => p.Name == "Super");
+    var offer = DraftDescription(super).Offer!;
+    Assert.Equal(offer.Id, OfferedDescriptionOf(super)!.Id);
+    Assert.Equal("", super.Description ?? "");
+    Assert.Equal("The Super by Colnago, drafted.", TakeOfferedDescription(offer.Id));
+    Assert.Null(OfferedDescriptionOf(super));
+
+    var again = DraftDescription(super).Offer!;
+    DiscardOfferedDescription(again.Id);
+    Assert.Null(OfferedDescriptionOf(super));
+    Assert.Equal("", super.Description ?? "");
+  }
+}
+
+[Test(Floor)]
+void what_stops_the_writer_is_said_to_the_staff_member_in_its_own_words_and_switching_it_off_stops_it() {
+  runas (Desk) {
+    TurnProductWriterOn();
+    var draft = DraftDescription(Product.Single(p => p.Name == "Secret"));
+    Assert.Null(draft.Offer);
+    Assert.Equal("There is nothing to say about this one yet — add its details first.", draft.Problem);
+
+    TurnProductWriterOff();
+    Assert.False(ProductWriterIsOn());
+    Assert.Contains("is off", DraftDescription(Product.Single(p => p.Name == "Loafer")).Problem);
+  }
+}

@@ -1,0 +1,41 @@
+using Osysharp.Shop;
+
+/// Whether the test app's description writer is switched on, and who answers for it — the writer holds no state of its
+/// own, so a switch is a row.
+public entity WriterSwitch {
+  bool On;
+  [MaxLength(120)] string AnsweredFor;
+  int Drafts;
+  security { allow read, create, update, delete when IsAnonymous || IsAuthenticated; }
+}
+
+/// A writer of product descriptions written in the test app, as any kit would write one — found by the shop, never
+/// listed. It writes a sentence from the product's name and brand, and refuses a product with no name worth writing
+/// about the way a real writer refuses what it cannot answer for.
+public class TestWriter : IProductWriter {
+  public string Name() { return "Description writer"; }
+  public bool IsOn() { return WriterSwitch.Any(s => s.On); }
+  public string Write(Product product) {
+    if (product.Name == "Secret") { throw new ValidationException("There is nothing to say about this one yet — add its details first."); }
+    var row = WriterSwitch.First();
+    row.Drafts = row.Drafts + 1;
+    return product.Brand == "" ? $"The {product.Name}, drafted." : $"The {product.Name} by {product.Brand}, drafted.";
+  }
+  public ProductWriterState State() {
+    var row = WriterSwitch.FirstOrDefault();
+    return new ProductWriterState {
+      Name = "Description writer", Ready = true, On = row != null && row.On,
+      AnsweredFor = row == null ? "" : row.AnsweredFor,
+      About = "Writes a sentence from a product's name and brand.", Drafts = row == null ? 0 : row.Drafts,
+    };
+  }
+  public void TurnOn() {
+    var row = WriterSwitch.FirstOrDefault() ?? new WriterSwitch();
+    row.On = true;
+    row.AnsweredFor = Session.CurrentUser == null ? "" : Session.CurrentUser!.Email;
+  }
+  public void TurnOff() {
+    var row = WriterSwitch.FirstOrDefault();
+    if (row != null) { row.On = false; }
+  }
+}

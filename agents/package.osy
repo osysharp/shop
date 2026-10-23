@@ -1,0 +1,27 @@
+// Osysharp.Shop.Agents — the shop's agents. The first: a description writer that drafts a product's description, on
+// the desk, when staff ask for one.
+//
+//     app.Agents = new AgentsSetup { Agents = [new DescriptionWriter()] };   // the app lists it, as every agent
+//
+// ⚑ WHAT IT WRITES IS OFFERED, NEVER USED BY ITSELF. The product editor offers the draft under "Prepared by Description
+//   writer"; staff take it into the description, change it and save the product, or discard it.
+//
+// ⚑ IT HOLDS NO TOOLS AND NO ROLE. It is told the product's details, read with the asking staff member's own access.
+//
+// ⚑ OFF UNTIL STAFF SWITCH IT ON, in the desk's Settings — whoever does answers for it. One draft may cost 5 cents.
+//
+// ⚑ A BRIDGE, SO NEITHER KIT DEPENDS ON THE OTHER. An app that uses Osysharp.Shop and Osysharp.Agents gets it from
+//   `osy lock`; it lists the writer in `app.Agents` and says who uses and supervises agents.
+package Osysharp.Shop.Agents {
+  version     "1.0.0";
+  minPlatform "0.15.1";
+  summary     "the shop's agents: a description writer that drafts a product's description from its details when staff ask, offered in the product editor to change and save — never used by itself; it holds no tools, reads only what the asking staff member reads, is off until staff switch it on, and may spend 5 cents a draft.";
+  completes   Osysharp.Shop@1, Osysharp.Agents@1;
+  model "model/*.osy";
+  tests "tests";
+  use Osysharp.Shop@1;
+  use Osysharp.Agents@1;
+  use Osysharp.Llm@2;
+  use Osysharp.Identity@0;
+  use Osysharp.UserAccounts@1;
+}

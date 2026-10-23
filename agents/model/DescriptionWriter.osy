@@ -1,0 +1,149 @@
+// THE DESCRIPTION WRITER — an agent (Osysharp.Agents) that drafts a product's description when a staff member asks for
+// one on the desk: from the product's name, brand, category, price, sizes, colours, spec sheet and the words it already
+// has. What it writes is OFFERED in the product editor (Osysharp.Shop's `OfferedDescription`): the staff member takes
+// it into the description, changes it and saves the product — or discards it. Nothing it writes reaches the shop floor
+// by itself.
+//
+// ⚑ IT HOLDS NO TOOLS AND NO ROLE. Everything it writes from is in the brief, put together by the staff member's own
+//   call with their own access — so it reads nothing they could not, and changes nothing at all.
+// ⚑ IT IS OFF UNTIL STAFF SWITCH IT ON (the desk's Settings): the staff member who does answers for it (the Agents
+//   kit's sponsor), and switching it off pauses it. Each draft is one request to the app's model, held to 5 cents by
+//   the skill's own budget, with a receipt saying what it cost at the model's list price.
+namespace Osysharp.Shop.Agents;
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.Llm;
+using Osysharp.Agents;
+using Osysharp.Shop;
+
+/// What a description is drafted from — the product as the brief tells it.
+public class ProductToDescribe {
+  public Guid Product;
+  public string Facts = "";
+}
+
+/// What the writer hands back: the description, ready to be read and changed by the staff member who asked.
+public class WrittenDescription {
+  /// The product's description, in plain text, for its own page.
+  public string Description = "";
+}
+
+/// The one job the writer is given.
+public class WriteDescription : Skill<ProductToDescribe, WrittenDescription> {
+  public override string Description => "Draft a product's description for the shop's staff to read, change and save.";
+  public override string Instructions =>
+    "Write the description a shopper reads on the product's own page: what it is, what it is made of, how it fits or "
+    + "is used, and why someone would want it — in two or three short paragraphs of plain, warm words, in the language "
+    + "the product's details are written in. Use only what the brief says. Never invent a material, a measurement, a "
+    + "certification or a promise about delivery or returns; leave out what you do not know. No headings, no prices.";
+  public override string Brief(ProductToDescribe p) => p.Facts;
+  // One draft is one short answer: a few cents at most, whatever the app's own budget says.
+  public override decimal? Budget => 0.05m;
+  public override StopWhen Stop => new StopWhen { MaxTurns = 3 };
+  public override string? Check(WrittenDescription d) {
+    if (d.Description.Trim() == "") { return "Write the description itself."; }
+    if (d.Description.Length > 4000) { return "Keep the description under 4000 characters."; }
+    return null;
+  }
+}
+
+/// The agent. Its account holds no role: it reads nothing of the shop's own — what it writes from is in the brief.
+[Actor]
+public class DescriptionWriter : Osysharp.Agents.Agent {
+  public static User Principal => new User { Email = "description-writer@shop.agents", DisplayName = "Description writer" };
+  public override string Purpose =>
+    "You draft product descriptions for the staff of an online shop. A person reads every draft, changes it and "
+    + "decides whether to use it.";
+  public override List<SkillBase> Skills => [new WriteDescription()];
+}
+
+/// The shop's writer of product descriptions — the agent, as the shop's product editor asks for one.
+public class AgentDescriptionWriter : IProductWriter {
+  public string Name() { return "Description writer"; }
+
+  public bool IsOn() {
+    if (!Listed()) { return false; }
+    var seat = AgentSeat.FirstOrDefault(s => s.Agent == WriterName());
+    return seat != null && seat.Sponsor != null && !seat.Paused;
+  }
+
+  public string Write(Product product) {
+    var outcome = await Agents.Of<DescriptionWriter>().On("product:" + product.Id.ToString())
+      .Do(new WriteDescription(), new ProductToDescribe { Product = product.Id, Facts = ProductFacts(product) },
+          about: "Product: " + product.Name);
+    if (!outcome.Done) {
+      Log.Information("DescriptionWriter: the writer ended " + outcome.Status.ToString() + " — " + outcome.Problem);
+      // The kit's problem is for whoever reads the receipt (it speaks of the agent's own steps); staff are told what
+      // they can do.
+      throw new ValidationException("The description writer could not write a draft this time. Try again, or write it yourself.");
+    }
+    return outcome.Result.Description;
+  }
+
+  [SuppressWarning("cost-unbounded-read")]   // one agent's work over 30 days
+  public ProductWriterState State() {
+    var state = new ProductWriterState {
+      Name = Name(),
+      About = "When staff ask, it drafts a product's description from the product's details. The draft is offered in "
+        + "the product editor to read, change and save — nothing it writes is used by itself. Each draft is one "
+        + "request to the shop's AI model and may cost at most 5 cents.",
+    };
+    if (!Listed()) {
+      state.Ready = false;
+      state.NotReady = "Not set up — the app does not list the description writer among its agents.";
+      return state;
+    }
+    var name = WriterName();
+    var seat = AgentSeat.FirstOrDefault(s => s.Agent == name);
+    var since = DateTime.UtcNow.AddDays(-30);
+    var work = AgentTask.Where(w => w.Agent == name && w.StartedAt >= since).ToList();
+    state.On = seat != null && seat.Sponsor != null && !seat.Paused;
+    state.AnsweredFor = seat == null || seat.Sponsor == null ? "" : (seat.Sponsor.DisplayName ?? "");
+    state.Drafts = work.Count(w => w.Status == AgentTaskStatus.Done);
+    state.CostMicros = work.Sum(w => w.SpentMicros);
+    return state;
+  }
+
+  public void TurnOn() {
+    var name = Agents.Of<DescriptionWriter>().Name;
+    SponsorAgent(name, Principal.Single(p => p.Id == Session.CurrentUser!.Id));
+    ResumeAgent(name, "Turned on in the desk's Settings.");
+    UnitOfWork.Commit();
+  }
+
+  public void TurnOff() {
+    PauseAgent(Agents.Of<DescriptionWriter>().Name, "Turned off in the desk's Settings.");
+    UnitOfWork.Commit();
+  }
+}
+
+/// The writer's name among the app's agents — its class's full name.
+string WriterName() => typeof(DescriptionWriter).FullName;
+
+/// Whether the app lists the writer among its agents (`app.Agents`).
+bool Listed() => Agents.Names().Contains(WriterName());
+
+/// What the writer is told about `product`: the shop it is sold in, and everything the product says of itself — read
+/// with the asking staff member's own access.
+string ProductFacts(Product product) {
+  var shop = ShopSettings.FirstOrDefault();
+  var facts = "Shop: " + (shop == null ? "an online shop" : shop.Name) + "\n";
+  facts = facts + "Product: " + product.Name + "\n";
+  if ((product.Brand ?? "") != "") { facts = facts + "Brand: " + product.Brand + "\n"; }
+  if (product.Category != null) { facts = facts + "Category: " + product.Category!.Name + "\n"; }
+  if ((product.Summary ?? "") != "") { facts = facts + "One-line summary: " + product.Summary + "\n"; }
+  var sizes = product.Variants.Select(v => v.Size ?? "").Where(s => s != "").Distinct().ToList();
+  if (sizes.Count > 0) { facts = facts + "Sizes: " + string.Join(", ", sizes) + "\n"; }
+  var colours = product.Variants.Select(v => v.Colour ?? "").Where(c => c != "").Distinct().ToList();
+  if (colours.Count > 0) { facts = facts + "Colours: " + string.Join(", ", colours) + "\n"; }
+  var specs = product.Specs.OrderBy(s => s.Rank).ToList();
+  if (specs.Count > 0) {
+    facts = facts + "\nSpec sheet:\n";
+    foreach (var s in specs) { facts = facts + "- " + s.Name + ": " + s.Value + "\n"; }
+  }
+  if ((product.Description ?? "") != "") {
+    facts = facts + "\nIts description now, to improve on:\n" + product.Description + "\n";
+  }
+  return facts;
+}

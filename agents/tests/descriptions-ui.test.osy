@@ -1,0 +1,36 @@
+// The description writer through the screen: staff switch it on in the desk's Settings, ask for a draft on a product,
+// and take it into the description — which changes nothing until they save. `osy test --pixels` photographs the
+// settings and the offered draft.
+using Osysharp.Shop;
+using Osysharp.Shop.Agents;
+using Osysharp.Agents.Testing;
+
+[Test(Shop)]
+void staff_switch_the_writer_on_and_take_its_draft_into_the_description() {
+  ScriptTheWriter();
+  Ui.Viewport(1400, 1000);
+  Ui.Visit("/login");
+  Ui.Fill("Email", "anna@shop.test");
+  Ui.Fill("Password", "desk-pass-1");
+  Ui.Click("Sign in");
+  Ui.Visit("/staff/desk");
+  Ui.Click("Settings");
+  Assert.Visible("Off — staff do not see “Draft a description”.");
+  Ui.Click("Turn it on");
+  Assert.Visible("On — staff see “Draft a description” on every product. Anna Berg answers for it.");
+  Ui.Shot("settings-description-writer");
+
+  Ui.Click("Products");
+  Ui.Click("Edit", within: "Harbour coat");
+  Ui.Click("Draft a description");
+  Assert.Visible("Prepared by Description writer", within: "Offered description");
+  Ui.Shot("product-editor-description-offered");
+  Ui.Click("Use it");
+  Assert.Value("Description", CoatDescription());
+  Assert.Visible("Put in the description — save the product to keep it.");
+  // Nothing is saved until staff save the product.
+  runas (Anna) { Assert.Equal("A coat.", Product.Single(p => p.Slug == "harbour-coat").Description); }
+  Ui.Click("Save product");
+  Assert.Visible("Saved.");
+  runas (Anna) { Assert.Equal(CoatDescription(), Product.Single(p => p.Slug == "harbour-coat").Description); }
+}

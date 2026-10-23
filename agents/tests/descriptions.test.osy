@@ -1,0 +1,127 @@
+// THE DESCRIPTION WRITER (model/DescriptionWriter.osy) — off until staff switch it on; then a staff member asks it for a
+// product's description, it writes one from the product's details, and the product editor offers it — never saved onto
+// the product by itself. What it cost is on its receipt, at the model's price.
+//
+// No model is called: the app's one model is answered by the test (`ScriptedAnswer`) — everything else (the agent, its
+// sponsor, its budget, its receipt) is real.
+using Osysharp.Identity;
+using Osysharp.Shop;
+using Osysharp.Shop.Agents;
+using Osysharp.Llm;
+using Osysharp.Agents;
+using Osysharp.Agents.Testing;
+
+[TestFixture]
+void Shop() {
+  new ShopSettings { Name = "Vall", Currency = "SEK", CurrencySymbol = "kr", SymbolAfter = true, OrderPrefix = "VA-" };
+  var coats = new Category { Name = "Coats", Slug = "coats" };
+  var coat = new Product { Name = "Harbour coat", Slug = "harbour-coat", Brand = "Vall", Category = coats, Price = 2400m,
+                           Description = "A coat." };
+  new Variant { Product = coat, Size = "M", Colour = "Navy", Stock = 3 };
+  new Variant { Product = coat, Size = "L", Colour = "Navy", Stock = 2 };
+  new ProductSpec { Product = coat, Name = "Shell", Value = "Waxed cotton", Rank = 1 };
+  var anna = new ShopAccount { Email = "anna@shop.test", DisplayName = "Anna Berg", PasswordHash = Security.HashPassword("desk-pass-1") };
+  new RoleGrant { Member = anna, Role = ShopRole.Staff };
+  new ShopAccount { Email = "maja@example.test", DisplayName = "Maja", PasswordHash = Security.HashPassword("shop-pass-1") };
+}
+
+principal Anna => ShopAccount.Single(s => s.Email == "anna@shop.test");
+principal Maja => ShopAccount.Single(s => s.Email == "maja@example.test");
+
+/// What the writer drafts for the coat.
+string CoatDescription() => "A navy coat in waxed cotton that keeps the rain out on the walk to the harbour.\n\nCut to wear over a jumper.";
+
+/// The model answered by the test: the coat's description when the brief carries its details — and, when it does not,
+/// words that are no description at all, so a brief that lost them fails the work.
+void ScriptTheWriter() {
+  ScriptedAnswer.Stub((model, request) => {
+    var asked = Scripted.Asked(request);
+    return asked.Contains("Harbour coat") && asked.Contains("Shell: Waxed cotton") && asked.Contains("Colours: Navy")
+      ? Says.HandBack(new WrittenDescription { Description = CoatDescription() })
+      : Says.Words("Nobody told me what the product is.");
+  });
+}
+
+[Test(Shop)]
+void the_writer_is_off_until_staff_switch_it_on_and_its_draft_is_offered_never_saved() {
+  ScriptTheWriter();
+  runas (Anna) {
+    var coat = Product.Single(p => p.Slug == "harbour-coat");
+    Assert.False(ProductWriterIsOn());
+    Assert.Equal("The description writer is off. Switch it on in the desk's Settings.", DraftDescription(coat).Problem);
+    Assert.False(OfferedDescription.Any());
+
+    TurnProductWriterOn();
+    Assert.True(ProductWriterIsOn());
+    var drafted = DraftDescription(coat);
+    Assert.Equal("", drafted.Problem);
+    Assert.Equal(CoatDescription(), drafted.Offer!.Text);
+    Assert.Equal("Description writer", drafted.Offer!.PreparedBy);
+    // Offered in the editor…
+    Assert.Equal(CoatDescription(), OfferedDescriptionOf(coat)!.Text);
+    // …and the product's own words are unchanged until somebody saves them.
+    Assert.Equal("A coat.", Product.Single(p => p.Slug == "harbour-coat").Description);
+
+    // One receipt: for Anna, about the coat, at the model's price — 100 tokens in and 20 out at $1 and $5 a million.
+    var receipt = AgentTask.Single();
+    Assert.Equal(AgentTaskStatus.Done, receipt.Status);
+    Assert.Equal(Anna.Id, receipt.Requester!.Id);
+    Assert.Equal("Product: Harbour coat", receipt.About);
+    Assert.Equal(200, receipt.SpentMicros);
+    var state = ProductWriterNow()!;
+    Assert.True(state.On);
+    Assert.Equal("Anna Berg", state.AnsweredFor);
+    Assert.Equal(1, state.Drafts);
+    Assert.Equal(200, state.CostMicros);
+
+    // Taken, it is no longer on offer — and its words are the staff member's to save.
+    Assert.Equal(CoatDescription(), TakeOfferedDescription(drafted.Offer!.Id));
+    Assert.Null(OfferedDescriptionOf(coat));
+
+    // Switched off, it drafts no more.
+    TurnProductWriterOff();
+    Assert.False(ProductWriterIsOn());
+    Assert.Equal("The description writer is off. Switch it on in the desk's Settings.", DraftDescription(coat).Problem);
+    Assert.Equal(1, AgentTask.Count());
+  }
+}
+
+[Test(Shop)]
+void a_draft_the_model_could_not_write_says_what_to_do_in_plain_words_and_offers_nothing() {
+  // The model answers in words and never hands a description back.
+  ScriptedAnswer.Stub((model, request) => Says.Words("I would rather not."));
+  runas (Anna) {
+    TurnProductWriterOn();
+    var coat = Product.Single(p => p.Slug == "harbour-coat");
+    Assert.Equal("The description writer could not write a draft this time. Try again, or write it yourself.",
+                 DraftDescription(coat).Problem);
+    Assert.Null(OfferedDescriptionOf(coat));
+  }
+}
+
+[Test(Shop)]
+void a_draft_is_held_to_five_cents_whatever_the_apps_own_budget() {
+  // The first answer reads 60,000 tokens at $1 a million — 6 cents — and only the second would hand a draft back. The
+  // app's own budget (50 cents) would let it; the writer's 5 cents stops it before the second answer is asked for.
+  ScriptedAnswer.Stub((model, request) => AgentScript.Of(
+      Says.Words("Let me think about the coat.", input: 60000),
+      Says.HandBack(new WrittenDescription { Description = CoatDescription() })).Answer(model, request));
+  runas (Anna) {
+    TurnProductWriterOn();
+    var coat = Product.Single(p => p.Slug == "harbour-coat");
+    Assert.Equal("The description writer could not write a draft this time. Try again, or write it yourself.",
+                 DraftDescription(coat).Problem);
+    Assert.Null(OfferedDescriptionOf(coat));
+    Assert.NotEqual(AgentTaskStatus.Done, AgentTask.Single().Status);
+  }
+}
+
+[Test(Shop)]
+void only_staff_ask_for_a_draft_or_switch_the_writer_on() {
+  ScriptTheWriter();
+  runas (Maja) {
+    Assert.Throws(() => TurnProductWriterOn());
+    Assert.Throws(() => DraftDescription(Product.Single(p => p.Slug == "harbour-coat")));
+  }
+  runas (Anna) { Assert.False(ProductWriterIsOn()); }
+}

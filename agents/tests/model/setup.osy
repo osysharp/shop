@@ -1,0 +1,32 @@
+// The shop, its model and its agents. In a file of its own with no `namespace`, because an `app.X = …` statement's
+// value is resolved outside the file's namespace.
+using Osysharp.UserAccounts;
+using Osysharp.Shipping;
+using Osysharp.Payments;
+using Osysharp.Shop;
+using Osysharp.Shop.Agents;
+using Osysharp.Agents;
+using Osysharp.Agents.Testing;
+using Osysharp.Llm;
+
+app.Accounts = ShopAccounts("Shop Agents Kit Tests");
+
+app.Shop = new ShopSetup {
+  Payments = [ new ManualPayment { Key = "banktransfer", Label = "Bank transfer", Instructions = "IBAN SE00" } ],
+  Delivery = [ new CollectInStore { Address = "the shop" } ],
+};
+
+app.Llm = new LlmSetup {
+  Models = [
+    // $1 a million tokens in and $5 out: a scripted answer of 100 in and 20 out costs 200 millionths of a dollar.
+    new LlmModel { Name = "Small", Client = new ScriptedModel { Name = "Small" }, Model = "scripted-small",
+                   Price = new LlmPrice { Input = 1, Output = 5 }, MaxOutputTokens = 1000 },
+  ],
+  Default = "Small",
+};
+
+app.Agents = new AgentsSetup { Agents = [new DescriptionWriter()] };
+
+// The kit's questions, answered by the shop: its staff ask for drafts, switch the writer on and off, and read its work.
+policy UsesAgents       => IsShopStaff;
+policy SupervisesAgents => IsShopStaff;

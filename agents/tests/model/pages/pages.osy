@@ -1,0 +1,17 @@
+// The pages a store writes around the kit — as bare as a page can be. The desk is the shop's own page.
+using Osysharp.Shop;
+using Osysharp.Ui;
+
+[Route("/")] [AllowAnonymous] component KitHome() { render { Text("Shop agents test shop"); } }
+[Route("/login")] [AllowAnonymous] component SignInPage() { render { ShopSignIn(); } }
+
+/// The store's working shell — what the shop's desk page stands in.
+[AllowAnonymous]
+component TestStoreShell() : WorkspaceShell {
+  render {
+    Stack(gap: 4, p: 6) {
+      Row(gap: 4, label: "Staff pages") { foreach (var n in Nav.Pages()) { Link(href: n.To, label: n.Label) { Text(n.Label); } } }
+      Slot;
+    }
+  }
+}

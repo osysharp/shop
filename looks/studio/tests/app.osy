@@ -12,7 +12,7 @@ app StudioLookTests {
   use Osysharp.Shipping@0;
   use Osysharp.Seo@0;
   use Osysharp.Blocks;
-  use Osysharp.PageBuilder@0;
+  use Osysharp.PageBuilder@1;
   use Osysharp.Site.Looks@0;
   use Osysharp.Shop.Looks.Studio@0;
   use Osysharp.Workflow;

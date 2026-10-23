@@ -5,8 +5,8 @@
 // every page, the front page, the listings, a piece's page, and the blocks staff arrange. It carries NO data and NO logic
 // of its own — a store installs it beside others and staff pick it per version of the site.
 package Osysharp.Shop.Looks.Swap {
-  version     "0.3.0";
-  minPlatform "0.14.0";
+  version     "0.4.0";
+  minPlatform "0.15.0";
   summary     "a shop look — the swap sheet: white, a condensed grotesk and mono lot labels, the shelves in a column, signal red.";
   model "model/**/*.osy";
   use Osysharp.Ui;
@@ -14,7 +14,7 @@ package Osysharp.Shop.Looks.Swap {
   use Osysharp.Storage;
   use Osysharp.Shop@1;
   use Osysharp.Site.Looks@0;
-  use Osysharp.PageBuilder@0;
+  use Osysharp.PageBuilder@1;
   // The frame sends a customer to the bag, which is the store's own page.
   appPage "/bag";
   // The producer's test project: a store that wears the look, and the page the look asks it to serve.

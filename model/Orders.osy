@@ -4,8 +4,9 @@
 // ⚑ THE ORDER'S WORKFLOW TAKES THE STOCK. An order is committed first and its workflow then DECIDES (`Placed`): if
 //   every line's stock is still there it takes it and the order is `Reserved`; if not, the order is `Unavailable` and
 //   says what ran out. The workflow writes as the system, which is what lets an anonymous visitor's order take stock
-//   the visitor could never write — and `Variant.Stock`'s `[ConcurrencyCheck]` makes two orders racing for the last
-//   one meet, so the second is retried and finds it gone. `PlaceOrder` reads the outcome on the line after its commit.
+//   the visitor could never write — and it takes it with `Stock -= n` (`MoveStockAt`), one statement held to the stock's
+//   `[Min(0)]`, so of two orders racing for the last one the second is refused, retried, and finds it gone. Every take
+//   is a `StockMove`. `PlaceOrder` reads the outcome on the line after its commit.
 //
 // ⚑ THE ORDER CARRIES NO PERSONAL DATA, and that split is what lets a visitor see their own receipt. An order is a
 //   reference, amounts, a status and its lines. WHO placed it lives in `OrderContact`, which only staff read.
@@ -595,7 +596,7 @@ public workflow OrderLifecycle {
       // customer placing the order may not read a cost price.
       foreach (var l in this.Item.Lines) { l.UnitCost = l.Variant.CostPrice; }
       foreach (var l in this.Item.Lines.Where(x => !x.Variant.Unlimited)) {
-        MoveStockAt(this.Item.Location, l.Variant, -l.Quantity, l.Quantity);
+        MoveStockAt(this.Item.Location, l.Variant, -l.Quantity, l.Quantity, StockReason.Reserved, order: this.Item);
         l.Held = true;
       }
       // A counter sale is paid and handed over in the next minute: its receipt is mailed then, and the shop needs no
@@ -863,7 +864,8 @@ string GoneSentence(OrderLine line) {
 void GiveBack(Order order) {
   foreach (var line in order.Lines.Where(l => l.Held)) {
     // Back where it was taken from.
-    MoveStockAt(order.Location, line.Variant, line.Quantity, order.PaidAt == null ? -line.Quantity : 0);
+    MoveStockAt(order.Location, line.Variant, line.Quantity, order.PaidAt == null ? -line.Quantity : 0,
+                StockReason.OrderCancelled, order: order);
     line.Held = false;
     SendStockAlerts(line.Variant);
   }
@@ -1452,7 +1454,7 @@ Receipt PlaceBag(Bag bag, Placement p, ShopAccount? account) {
     Country = p.VatCountry == "" ? null : p.VatCountry,
     ReturnUrl = $"{App.BaseUrl}/paid/{link}/{choice.Key}-{{token}}",
     CancelUrl = $"{App.BaseUrl}/paid/{link}/cancelled",
-    EventsUrl = $"{App.BaseUrl}/payments/{choice.Key}/events",
+    EventsUrl = $"{App.BaseUrl}/api/rest/v1/payments/{choice.Key}/events",   // where `Payments` (Setup.osy) is served
     IdempotencyKey = order.Id.ToString(),
     SaveMethod = order.SaveMethod,
   };
@@ -1681,7 +1683,7 @@ public string PointLine(string? name, string? street, string? postCode, string? 
 /// customer and the shop are told. Called by the order's workflow, as the shop, from either way a payment arrives.
 void TakePayment(Order order, string how, string paymentRef, string savedMethod, string savedLabel) {
   // Paid: what was reserved is sold. Out of `Reserved`, and still out of `Stock`.
-  foreach (var l in order.Lines.Where(x => x.Held)) { MoveStockAt(order.Location, l.Variant, 0, -l.Quantity); }
+  foreach (var l in order.Lines.Where(x => x.Held)) { MoveStockAt(order.Location, l.Variant, 0, -l.Quantity, StockReason.Sold, order: order); }
   order.PaidWith = how;
   order.PaymentRef = paymentRef == "" ? null : paymentRef;
   order.PaidAt = DateTime.UtcNow;

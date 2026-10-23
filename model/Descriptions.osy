@@ -1,0 +1,166 @@
+// OFFERED DESCRIPTIONS — a product's description, drafted by a writer the app has and offered in the product editor.
+// Staff take it into the description field, change it and save it, or discard it. Nothing a writer drafts reaches the
+// shop floor by itself: it is an offer on the desk, never the product's own words, until somebody saves it.
+//
+// ⭐ THE WRITER IS ANOTHER KIT'S. The shop holds no model and calls none: a writer is an `IProductWriter`, found in the
+//   app like an add-on (`App.Implementations<IProductWriter>()`) — `Osysharp.Shop.Agents` is one, an agent that drafts
+//   from the product's details. With none in the app, the editor offers nothing and the settings say nothing.
+//
+// ⚑ THE WRITER READS WHAT THE ASKING STAFF MEMBER READS. `DraftDescription` runs as them and hands the writer the
+//   product they opened; what it is told about the product is read with their own access.
+
+namespace Osysharp.Shop;
+
+using Osysharp.Identity;
+
+/// A writer of product descriptions, from its own kit — found by the shop, never listed.
+/// e.g. `Osysharp.Shop.Agents`' `DescriptionWriter`, an agent. The first one the app has is the shop's writer.
+public interface IProductWriter {
+  /// What the editor says prepared a draft — "Description writer".
+  string Name();
+  /// Whether it writes now: set up, switched on and answered for. Off, the editor does not offer "Draft a description".
+  bool IsOn();
+  /// A description of `product`, as the person asking reads it. Throws a `ValidationException` saying, in words the
+  /// staff member can act on, why it could not — it is shown to them as it is.
+  string Write(Product product);
+  /// Where it stands and what it did lately — the desk's settings show it.
+  ProductWriterState State();
+  /// Switch it on: whoever does answers for it from then on.
+  void TurnOn();
+  /// Switch it off: it drafts nothing until it is switched on again. Drafts already offered stay offered.
+  void TurnOff();
+}
+
+/// A writer as the desk's settings show it.
+public class ProductWriterState {
+  /// "Description writer".
+  public string Name = "";
+  /// Whether the app has it ready to switch on. When not, `NotReady` says why, and nothing can switch it on.
+  public bool Ready = true;
+  public string NotReady = "";
+  public bool On;
+  /// Who answers for it — the staff member who switched it on.
+  public string AnsweredFor = "";
+  /// How it works, and what one draft may cost — a sentence the settings show under its name.
+  public string About = "";
+  /// The drafts it wrote in the last 30 days, and what they cost, in millionths of a US dollar.
+  public int Drafts;
+  public long CostMicros;
+}
+
+/// A description a writer drafted for a product, offered in the product editor until somebody takes it or discards
+/// it. One per product: a new draft replaces the last.
+[Unique(Product, "A product has one offered description at a time.")]
+public entity OfferedDescription {
+  [Required] Product Product;
+  [Required, MaxLength(4000)] string Text;
+  /// Who prepared it — the writer's name ("Description writer").
+  [Required, MaxLength(80)] string PreparedBy;
+  /// Who asked for it.
+  Principal? AskedBy;
+  [CreatedAt] DateTime? At;
+  security {
+    allow read, create, update, delete when IsShopStaff;
+  }
+}
+
+/// A description on offer, as the editor shows it.
+public class DescriptionOffer {
+  public Guid Id;
+  public string Text = "";
+  public string PreparedBy = "";
+}
+
+/// What happened when a draft was asked for: the offer, or the reason there is none.
+public class DescriptionDraft {
+  /// What stopped the writer, in words the staff member can act on — "" when there is an offer.
+  public string Problem = "";
+  public DescriptionOffer? Offer;
+}
+
+/// The app's writer of product descriptions — the first one it has — or null.
+public IProductWriter? ProductWriter() {
+  var writers = App.Implementations<IProductWriter>();
+  return writers.Count == 0 ? null : writers[0];
+}
+
+/// The writer as the desk's settings show it — null when the app has none.
+[Authorize(IsShopStaff)]
+public ProductWriterState? ProductWriterNow() {
+  var w = ProductWriter();
+  if (w == null) { return null; }
+  return w.State();
+}
+
+/// Whether the product editor offers "Draft a description".
+[Authorize(IsShopStaff)]
+public bool ProductWriterIsOn() {
+  var w = ProductWriter();
+  return w != null && w.IsOn();
+}
+
+/// Switch the app's writer on — the staff member doing so answers for it.
+[Authorize(IsShopStaff)]
+public void TurnProductWriterOn() {
+  var w = ProductWriter();
+  if (w == null) { throw new ValidationException("This shop has no description writer."); }
+  w.TurnOn();
+}
+
+/// Switch the app's writer off. What it already drafted stays offered.
+[Authorize(IsShopStaff)]
+public void TurnProductWriterOff() {
+  var w = ProductWriter();
+  if (w == null) { throw new ValidationException("This shop has no description writer."); }
+  w.TurnOff();
+}
+
+/// Have the writer draft a description of `product`, for whoever asks. It is offered in the product editor — never
+/// saved onto the product. Answers the offer, or what stopped it.
+[Authorize(IsShopStaff)]
+[SuppressWarning("cost-unbounded-read")]   // the one offer a product holds
+public DescriptionDraft DraftDescription(Product product) {
+  var w = ProductWriter();
+  if (w == null) { return new DescriptionDraft { Problem = "This shop has no description writer." }; }
+  if (!w.IsOn()) {
+    return new DescriptionDraft { Problem = "The " + w.Name().ToLower() + " is off. Switch it on in the desk's Settings." };
+  }
+  var text = "";
+  try { text = w.Write(product).Trim(); }
+  catch (ValidationException ex) { return new DescriptionDraft { Problem = ex.Message }; }
+  if (text == "") {
+    return new DescriptionDraft { Problem = "The " + w.Name().ToLower() + " wrote nothing this time. Try again, or write it yourself." };
+  }
+  if (text.Length > 4000) { text = text.Substring(0, 4000); }
+  foreach (var old in OfferedDescription.Where(o => o.Product == product).ToList()) { old.Delete(); }
+  var asker = Session.CurrentUser == null ? null : Principal.FirstOrDefault(p => p.Id == Session.CurrentUser!.Id);
+  var offer = new OfferedDescription { Product = product, Text = text, PreparedBy = w.Name(), AskedBy = asker };
+  UnitOfWork.Commit();
+  return new DescriptionDraft { Offer = new DescriptionOffer { Id = offer.Id, Text = offer.Text, PreparedBy = offer.PreparedBy } };
+}
+
+/// The description on offer for `product`, or null.
+[Authorize(IsShopStaff)]
+public DescriptionOffer? OfferedDescriptionOf(Product product) {
+  var o = OfferedDescription.FirstOrDefault(x => x.Product == product);
+  return o == null ? null : new DescriptionOffer { Id = o.Id, Text = o.Text, PreparedBy = o.PreparedBy };
+}
+
+/// Take offer `offerId` into the editor: it is no longer on offer, and its words are answered — for the staff member
+/// to change and save as the product's description.
+[Authorize(IsShopStaff)]
+public string TakeOfferedDescription(Guid offerId) {
+  var o = OfferedDescription.FirstOrDefault(x => x.Id == offerId);
+  if (o == null) { throw new ValidationException("That draft is gone — somebody else took it or discarded it."); }
+  var text = o.Text;
+  o.Delete();
+  UnitOfWork.Commit();
+  return text;
+}
+
+/// Discard offer `offerId`.
+[Authorize(IsShopStaff)]
+public void DiscardOfferedDescription(Guid offerId) {
+  foreach (var o in OfferedDescription.Where(x => x.Id == offerId).ToList()) { o.Delete(); }
+  UnitOfWork.Commit();
+}

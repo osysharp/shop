@@ -237,9 +237,7 @@ string ImportRow(CsvTable t, CsvRow row, bool writing, ProductImport report, Lis
     }
     changes++;
     if (writing) {
-      MoveStockAt(DefaultLocation(), v!, change, 0);
-      new StockMove { Variant = v!, Location = DefaultLocation(), Change = change, Reason = StockReason.Correction,
-                      Origin = StockOrigin.Spreadsheet, By = Session.CurrentUser };
+      MoveStockAt(DefaultLocation(), v!, change, 0, StockReason.Correction).Origin = StockOrigin.Spreadsheet;
     }
   }
   foreach (var code in soldPrices.Keys) {

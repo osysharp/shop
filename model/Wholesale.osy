@@ -169,7 +169,7 @@ public bool OfferedTo(string key, ShopAccount? account) {
 /// An order goes out on invoice terms: what it holds is sold, its invoice issued with the date it is due, and the
 /// customer and the shop told — with nothing paid yet. Called by the order's workflow, as the shop, in place of a payment.
 void GiveTerms(Order order, int days) {
-  foreach (var l in order.Lines.Where(x => x.Held)) { MoveStockAt(order.Location, l.Variant, 0, -l.Quantity); }
+  foreach (var l in order.Lines.Where(x => x.Held)) { MoveStockAt(order.Location, l.Variant, 0, -l.Quantity, StockReason.Sold, order: order); }
   order.PaymentTermsDays = days;
   order.InvoiceDueAt = DateTime.UtcNow.AddDays(days);
   IssueInvoice(order);

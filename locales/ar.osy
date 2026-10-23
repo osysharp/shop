@@ -38,11 +38,22 @@ translations ar {
   button "Choose a new password" => "اختر كلمة مرور جديدة";
 
   // ── AccountSettings ──
+  /// AccountSettings · a button's label · at most ~21 characters
+  /// shown through Button.label
+  /// also in ShopOrderHistory
+  /// also in DeskOrderAddress
+  button "Change address…" => "تغيير العنوان…";
   /// AccountSettings · a label (a field, a list item, a menu entry) · at most ~15 characters
   /// shown through Badge.label
   /// also in Osysharp.MailingLists.SubscriberState
   /// also in Osysharp.MailingLists.ConsentKind
   label "Confirmed" => "مؤكَّد";
+  /// AccountSettings · a label (a field, a list item, a menu entry) · at most ~10 characters
+  /// shown through Field.label
+  /// also in Osysharp.Shop.ProductSort
+  /// also in ShopMyDetails
+  /// also in DeskLocations
+  label "Name" => "الاسم";
 
   // ── AccountVerifyMail ──
   /// AccountVerifyMail · a button's label · at most ~26 characters
@@ -134,7 +145,8 @@ translations ar {
   // ── AddressCodeStep ──
   /// AddressCodeStep · a button's label · at most ~13 characters
   /// shown through Button.label
-  /// beside: "Code from the mail"
+  /// beside: "Confirm your email address", "The mail says what comes next — a six-digit code to type here, or a link to open. Either one confirms that the address is yours; this is not a second sign-in step.", "Code from the mail"
+  /// also in AccountSettings
   /// also in ShopAddressCodeStep
   button "Confirm" => "تأكيد";
 
@@ -454,6 +466,14 @@ translations ar {
   /// also in ShopConfirmAddress
   button "Confirm and sign in" => "تأكيد وتسجيل الدخول";
 
+  // ── ConfirmStep ──
+  /// ConfirmStep · a button's label · at most ~12 characters
+  /// shown through Button.label
+  /// also in AccountSettings
+  /// also in DeskStock
+  /// also in DeskLocations
+  button "Cancel" => "إلغاء";
+
   // ── CounterCode ──
   /// CounterCode · an error message
   /// shown through Exception
@@ -552,12 +572,6 @@ translations ar {
   /// CustomsFor · an error message
   /// shown through Exception
   error "To send outside the EU the shop needs its EORI number — add it in the settings." => "للشحن إلى خارج الاتحاد الأوروبي يحتاج المتجر إلى رقم EORI الخاص به. أضفه في الإعدادات.";
-
-  // ── DataGrid ──
-  /// DataGrid · a label (a field, a list item, a menu entry) · at most ~12 characters
-  /// shown through Field.label
-  /// also in ShopSearchPage
-  label "Search" => "بحث";
 
   // ── DeliveryChoicesFor ──
   /// DeliveryChoicesFor · a label (a field, a list item, a menu entry) · at most ~14 characters
@@ -2204,12 +2218,6 @@ translations ar {
   /// DeskStock · a button's label · at most ~13 characters
   /// shown through Button.label
   button "Adjust…" => "تعديل…";
-  /// DeskStock · a button's label · at most ~12 characters
-  /// shown through Button.label
-  /// beside: "Save"
-  /// also in DeskLocations
-  /// also in DeskReturns
-  button "Cancel" => "إلغاء";
   /// DeskStock · a button's label · at most ~11 characters
   /// shown through Button.label
   button "Move…" => "نقل…";
@@ -3045,20 +3053,6 @@ translations ar {
   /// also in Osysharp.Shop.CounterReturnStatus
   label "Refused" => "مرفوض";
 
-  // ── Osysharp.Shipping.DeliveryState ──
-  /// Osysharp.Shipping.DeliveryState · a label (a field, a list item, a menu entry) · at most ~16 characters
-  /// shown through Osysharp.Shipping.DeliveryState.InTransit
-  /// beside: "Booked", "Ready to collect", "Delivered", "Problem", "Returned"
-  /// also in Osysharp.Shop.TransferStatus
-  /// also in ShopMailPreviewKinds
-  label "On its way" => "في الطريق";
-  /// Osysharp.Shipping.DeliveryState · a label (a field, a list item, a menu entry) · at most ~14 characters
-  /// shown through Osysharp.Shipping.DeliveryState.Returned
-  /// beside: "Booked", "On its way", "Ready to collect", "Delivered", "Problem"
-  /// also in Osysharp.Shop.StockReason
-  /// also in Osysharp.Shop.GiveBackCause
-  label "Returned" => "مُرتجع";
-
   // ── Osysharp.Mail.MailStatus ──
   /// Osysharp.Mail.MailStatus · a label (a field, a list item, a menu entry) · at most ~10 characters
   /// shown through Osysharp.Mail.MailStatus.Sent
@@ -3097,8 +3091,8 @@ translations ar {
   /// shown through Osysharp.RaisedEventState.Delivered
   /// beside: "Waiting"
   /// also in Osysharp.Shipping.DeliveryState
+  /// also in Osysharp.Mail.MailDelivery
   /// also in Osysharp.Shop.OrderStatus
-  /// also in OrderProgress
   label "Delivered" => "تم التوصيل";
   /// Osysharp.RaisedEventState · a label (a field, a list item, a menu entry) · at most ~13 characters
   /// shown through Osysharp.RaisedEventState.Queued
@@ -3107,6 +3101,20 @@ translations ar {
   /// also in Osysharp.Sms.SmsStatus
   /// also in Osysharp.Shop.AgeCheckStatus
   label "Waiting" => "قيد الانتظار";
+
+  // ── Osysharp.Shipping.DeliveryState ──
+  /// Osysharp.Shipping.DeliveryState · a label (a field, a list item, a menu entry) · at most ~16 characters
+  /// shown through Osysharp.Shipping.DeliveryState.InTransit
+  /// beside: "Booked", "Ready to collect", "Delivered", "Problem", "Returned"
+  /// also in Osysharp.Shop.TransferStatus
+  /// also in ShopMailPreviewKinds
+  label "On its way" => "في الطريق";
+  /// Osysharp.Shipping.DeliveryState · a label (a field, a list item, a menu entry) · at most ~14 characters
+  /// shown through Osysharp.Shipping.DeliveryState.Returned
+  /// beside: "Booked", "On its way", "Ready to collect", "Delivered", "Problem"
+  /// also in Osysharp.Shop.StockReason
+  /// also in Osysharp.Shop.GiveBackCause
+  label "Returned" => "مُرتجع";
 
   // ── Osysharp.Shop.AgeCheckStatus ──
   /// Osysharp.Shop.AgeCheckStatus · a label (a field, a list item, a menu entry) · at most ~14 characters
@@ -3229,10 +3237,6 @@ translations ar {
   /// shown through Osysharp.Shop.GiftCardEntryKind.SaleRefunded
   /// beside: "Sold", "From the shop", "Spent", "Given back", "Adjusted", "Voided"
   label "Sale refunded" => "استُرد مبلغ البيع";
-  /// Osysharp.Shop.GiftCardEntryKind · a label (a field, a list item, a menu entry) · at most ~10 characters
-  /// shown through Osysharp.Shop.GiftCardEntryKind.Sold
-  /// beside: "From the shop", "Spent", "Given back", "Adjusted", "Voided", "Expired"
-  label "Sold" => "مباعة";
   /// Osysharp.Shop.GiftCardEntryKind · a label (a field, a list item, a menu entry) · at most ~11 characters
   /// shown through Osysharp.Shop.GiftCardEntryKind.Spent
   /// beside: "Sold", "From the shop", "Given back", "Adjusted", "Voided", "Expired"
@@ -3371,13 +3375,6 @@ translations ar {
   label "Whole units" => "وحدات كاملة";
 
   // ── Osysharp.Shop.ProductSort ──
-  /// Osysharp.Shop.ProductSort · a label (a field, a list item, a menu entry) · at most ~10 characters
-  /// shown through Osysharp.Shop.ProductSort.Name
-  /// beside: "Newest", "Price, low to high", "Price, high to low"
-  /// also in ShopMyDetails
-  /// also in DeskLocations
-  /// also in DeskProducts
-  label "Name" => "الاسم";
   /// Osysharp.Shop.ProductSort · a label (a field, a list item, a menu entry) · at most ~12 characters
   /// shown through Osysharp.Shop.ProductSort.Newest
   /// beside: "Price, low to high", "Price, high to low", "Name"
@@ -3472,6 +3469,11 @@ translations ar {
   /// shown through ManualPayment.Label
   label "Bank transfer" => "تحويل بنكي";
 
+  // ── Osysharp.Shop.StockLevel ──
+  /// Osysharp.Shop.StockLevel · validation
+  /// shown through Osysharp.Shop.StockLevel.Stock [Min]
+  validation "A location cannot hold less than nothing." => "لا يمكن أن يحتوي الموقع على أقل من لا شيء.";
+
   // ── Osysharp.Shop.StockOrigin ──
   /// Osysharp.Shop.StockOrigin · a label (a field, a list item, a menu entry) · at most ~17 characters
   /// shown through Osysharp.Shop.StockOrigin.FirstStock
@@ -3485,24 +3487,37 @@ translations ar {
   // ── Osysharp.Shop.StockReason ──
   /// Osysharp.Shop.StockReason · a label (a field, a list item, a menu entry) · at most ~41 characters
   /// shown through Osysharp.Shop.StockReason.TransferIn
-  /// beside: "Delivery in", "Count corrected", "Damaged or lost", "Returned", "Sent to another location"
+  /// beside: "Delivery in", "Count corrected", "Damaged or lost", "Returned", "Sent to another location", "Held for an order"
   label "Arrived from another location" => "وصل من موقع آخر";
   /// Osysharp.Shop.StockReason · a label (a field, a list item, a menu entry) · at most ~21 characters
   /// shown through Osysharp.Shop.StockReason.Correction
-  /// beside: "Delivery in", "Damaged or lost", "Returned", "Sent to another location", "Arrived from another location"
+  /// beside: "Delivery in", "Damaged or lost", "Returned", "Sent to another location", "Arrived from another location", "Held for an order"
   label "Count corrected" => "تصحيح الجرد";
   /// Osysharp.Shop.StockReason · a label (a field, a list item, a menu entry) · at most ~21 characters
   /// shown through Osysharp.Shop.StockReason.Damaged
-  /// beside: "Delivery in", "Count corrected", "Returned", "Sent to another location", "Arrived from another location"
+  /// beside: "Delivery in", "Count corrected", "Returned", "Sent to another location", "Arrived from another location", "Held for an order"
   label "Damaged or lost" => "تالف أو مفقود";
   /// Osysharp.Shop.StockReason · a label (a field, a list item, a menu entry) · at most ~17 characters
   /// shown through Osysharp.Shop.StockReason.Received
-  /// beside: "Count corrected", "Damaged or lost", "Returned", "Sent to another location", "Arrived from another location"
+  /// beside: "Count corrected", "Damaged or lost", "Returned", "Sent to another location", "Arrived from another location", "Held for an order"
   label "Delivery in" => "توريد وارد";
+  /// Osysharp.Shop.StockReason · a label (a field, a list item, a menu entry) · at most ~24 characters
+  /// shown through Osysharp.Shop.StockReason.Reserved
+  /// beside: "Delivery in", "Count corrected", "Damaged or lost", "Returned", "Sent to another location", "Arrived from another location"
+  label "Held for an order" => "محجوز لطلب";
+  /// Osysharp.Shop.StockReason · a label (a field, a list item, a menu entry) · at most ~23 characters
+  /// shown through Osysharp.Shop.StockReason.OrderCancelled
+  /// beside: "Delivery in", "Count corrected", "Damaged or lost", "Returned", "Sent to another location", "Arrived from another location"
+  label "Order called off" => "أُلغي الطلب";
   /// Osysharp.Shop.StockReason · a label (a field, a list item, a menu entry) · at most ~34 characters
   /// shown through Osysharp.Shop.StockReason.TransferOut
-  /// beside: "Delivery in", "Count corrected", "Damaged or lost", "Returned", "Arrived from another location"
+  /// beside: "Delivery in", "Count corrected", "Damaged or lost", "Returned", "Arrived from another location", "Held for an order"
   label "Sent to another location" => "أُرسل إلى موقع آخر";
+  /// Osysharp.Shop.StockReason · a label (a field, a list item, a menu entry) · at most ~10 characters
+  /// shown through Osysharp.Shop.StockReason.Sold
+  /// beside: "Delivery in", "Count corrected", "Damaged or lost", "Returned", "Sent to another location", "Arrived from another location"
+  /// also in Osysharp.Shop.GiftCardEntryKind
+  label "Sold" => "مباعة";
 
   // ── Osysharp.Shop.StoreCreditGrantStatus ──
   /// Osysharp.Shop.StoreCreditGrantStatus · a label (a field, a list item, a menu entry) · at most ~11 characters
@@ -3525,6 +3540,11 @@ translations ar {
   /// shown through Osysharp.Shop.TransferStatus.Received
   /// beside: "On its way", "Called off"
   label "Received" => "تم الاستلام";
+
+  // ── Osysharp.Shop.Variant ──
+  /// Osysharp.Shop.Variant · validation
+  /// shown through Osysharp.Shop.Variant.Stock [Min]
+  validation "There are not that many in stock." => "لا يتوفر هذا العدد في المخزون.";
 
   // ── Osysharp.Shop.VatClass ──
   /// Osysharp.Shop.VatClass · a label (a field, a list item, a menu entry) · at most ~16 characters
@@ -3837,6 +3857,14 @@ translations ar {
   /// shown through Exception
   error "{order.Reference} is {order.Status.Label} — only a paid order is refunded." => "حالة الطلب {order.Reference} هي {order.Status.Label}. لا يُسترد إلا مبلغ الطلب المدفوع.";
 
+  // ── RenamePasskey ──
+  /// RenamePasskey · an error message
+  /// shown through ValidationException
+  /// also in CancelMyAddressChange
+  /// also in StartStepUp
+  /// also in SaveMyDetails
+  error "Sign in first." => "سجّل الدخول أولًا.";
+
   // ── ReopenDownload ──
   /// ReopenDownload · an error message
   /// shown through Exception
@@ -3872,8 +3900,8 @@ translations ar {
   /// shown through TextLink.label
   /// beside: "Your password is changed. Sign in with it now — two-step sign-in comes next."
   /// also in VerifyEmailResult
+  /// also in CancelAddressChangeResult
   /// also in ShopConfirmAddress
-  /// also in ShopChooseNewPassword
   link "Sign in" => "تسجيل الدخول";
   /// ResetPasswordForm · text on the page
   /// shown through problem
@@ -3995,13 +4023,13 @@ translations ar {
   /// shown through ReturnWithLink()
   message "The return could not be started." => "تعذّر بدء الإرجاع.";
 
-  // ── SaveBar ──
-  /// SaveBar · a button's label · at most ~10 characters
+  // ── SaveActions ──
+  /// SaveActions · a button's label · at most ~10 characters
   /// shown through Button.label
-  /// beside: "Unsaved changes", "Discard"
+  /// beside: "Edited", "Discard"
+  /// also in SaveBar
+  /// also in AccountSettings
   /// also in DeskStock
-  /// also in DeskLocations
-  /// also in DeskCampaignEditor
   button "Save" => "حفظ";
 
   // ── SavePriceList ──
@@ -4335,6 +4363,10 @@ translations ar {
   mailSubject "Your {Name} account's address is changing" => "عنوان حسابك في {Name} قيد التغيير";
   /// ShopAddressChangedMail · text on the page
   /// shown through EmailText.text
+  /// beside: "This wasn't me — cancel the change"
+  text "If you did not do this, cancel it: the move is called off and every browser signed in to your account is signed out. Then choose a new password." => "إذا لم تفعل ذلك، فألغِه: يتوقف النقل ويُسجَّل خروج كل متصفح مسجَّل الدخول إلى حسابك. ثم اختر كلمة مرور جديدة.";
+  /// ShopAddressChangedMail · text on the page
+  /// shown through EmailText.text
   text "If you did not do this, reply to this mail straight away." => "إن لم تكن أنت من فعل ذلك، فرد على هذه الرسالة فورًا.";
   /// ShopAddressChangedMail · text on the page
   /// shown through EmailHeading.text
@@ -4342,7 +4374,6 @@ translations ar {
   /// ShopAddressChangedMail · text on the page
   /// placeholders: {address} = address (string)
   /// shown through EmailText.text
-  /// beside: "If you did not do this, reply to this mail straight away."
   text "Your account asked to sign in as {address} from now on. It moves once that address confirms it." => "طلب حسابك تسجيل الدخول باسم {address} من الآن فصاعدًا. سينتقل بمجرد أن يؤكّد ذلك العنوان.";
   /// ShopAddressChangedMail · text on the page
   /// placeholders: {address} = address (string)
@@ -5428,10 +5459,6 @@ translations ar {
   /// ShopOrderHistory · a button's label · at most ~24 characters
   /// shown through Button.label
   button "Cancel this order" => "إلغاء هذا الطلب";
-  /// ShopOrderHistory · a button's label · at most ~21 characters
-  /// shown through Button.label
-  /// also in DeskOrderAddress
-  button "Change address…" => "تغيير العنوان…";
   /// ShopOrderHistory · a button's label · at most ~31 characters
   /// placeholders: {MoneyIn} = MoneyIn(…) (string)
   /// shown through Button.label
@@ -5892,6 +5919,9 @@ translations ar {
   /// ShopSearchPage · a button's label · at most ~11 characters
   /// shown through Button.label
   button "Clear" => "مسح";
+  /// ShopSearchPage · a label (a field, a list item, a menu entry) · at most ~12 characters
+  /// shown through Field.label
+  label "Search" => "بحث";
   /// ShopSearchPage · a label (a field, a list item, a menu entry) · at most ~13 characters
   /// shown through Dropdown.label
   label "Sort by" => "ترتيب حسب";
@@ -6151,12 +6181,6 @@ translations ar {
   /// shown through Exception
   error "{order.Reference} is {order.Status.Label}, not waiting to be picked." => "حالة الطلب {order.Reference} هي {order.Status.Label}، وهو لا ينتظر التجهيز.";
 
-  // ── StartStepUp ──
-  /// StartStepUp · an error message
-  /// shown through ValidationException
-  /// also in SaveMyDetails
-  error "Sign in first." => "سجّل الدخول أولًا.";
-
   // ── StatusDetail ──
   /// StatusDetail · text on the page
   /// placeholders: {order.Tracking} = order.Tracking (string)
@@ -6377,6 +6401,8 @@ translations ar {
   /// __SiteBlocks.Site · text on the page
   text "Border danger" => "حد الخطر";
   /// __SiteBlocks.Site · text on the page
+  text "Chrome current" => "الصف الحالي";
+  /// __SiteBlocks.Site · text on the page
   text "Danger" => "خطر";
   /// __SiteBlocks.Site · text on the page
   text "Elevated" => "مرتفع";
@@ -6384,6 +6410,8 @@ translations ar {
   text "Muted" => "باهت";
   /// __SiteBlocks.Site · text on the page
   text "On bg" => "على الخلفية";
+  /// __SiteBlocks.Site · text on the page
+  text "On chrome current" => "على الصف الحالي";
   /// __SiteBlocks.Site · text on the page
   text "On image" => "على الصورة";
   /// __SiteBlocks.Site · text on the page

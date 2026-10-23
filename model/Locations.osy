@@ -8,8 +8,13 @@
 //   nothing to migrate — and every `new Variant { Stock = 5 }`, data file and spreadsheet still means "5 in the shop".
 //
 // ⚑ EVERY MOVE OF STOCK GOES THROUGH `MoveStockAt`, which writes the location's level AND the variant's totals in one
-//   step — so the totals are always the sum, and `Variant.Stock`'s `[ConcurrencyCheck]` makes two orders racing for the
-//   last one meet at whichever location they both take from.
+//   step — so the totals are always the sum — and records the move as a `StockMove` (who, when, why). Each number moves
+//   by `-=`/`+=`: one statement relative to the row as the database holds it, refused when it would take a level or a
+//   total below nothing (`[Min(0)]`). So two orders racing for the last one cannot both have it — the second is
+//   refused, retried, and finds it gone — while two orders for a shirt there are two of both land
+//   (osy docs entity-atomic-updates). The default location's share is the total less the others', a floor no `[Min]`
+//   can state, so a move there in a shop with other locations also bumps `Variant.DefaultTurn`, whose
+//   `[ConcurrencyCheck]` makes two such moves meet.
 //
 // ⚑ AN ORDER IS PICKED FROM ONE LOCATION (`Order.Location`, chosen by its workflow as the shop). A collection: the
 //   counter it is collected at. A delivery: the first location in the desk's order that ships and holds EVERY line. When
@@ -59,9 +64,8 @@ public entity StockLocation {
 public entity StockLevel {
   [Required] StockLocation Location;
   [Required] Variant Variant;
-  [ConcurrencyCheck] int Stock = 0;
-  int Reserved = 0;
-  invariant Stock >= 0 && Reserved >= 0 message "A location cannot hold less than nothing.";
+  [Min(0, "A location cannot hold less than nothing.")] int Stock = 0;
+  [Min(0, "A location cannot hold less than nothing.")] int Reserved = 0;
   security {
     allow read when IsAnonymous || IsAuthenticated;
     allow create, update, delete when IsShopStaff;
@@ -180,17 +184,33 @@ public int Buyable(Variant variant) {
   return selling.Count == 0 ? 0 : selling.Max(s => s.Stock[variant.Id]);
 }
 
-/// Moves stock at `location` (null: the default): `stock` onto (or, negative, off) its shelf and `held` into (or out of)
-/// what it holds for orders — and the variant's totals with it. The ONE writer of stock; callers check first.
+/// The same move, with no reason given: it is recorded as a count correction.
 public void MoveStockAt(StockLocation? location, Variant variant, int stock, int held) {
+  MoveStockAt(location, variant, stock, held, StockReason.Correction);
+}
+
+/// Moves stock at `location` (null: the default): `stock` onto (or, negative, off) its shelf and `held` into (or out of)
+/// what it holds for orders — and the variant's totals with it — and records why, as the person or workflow doing it.
+/// The ONE writer of stock. Callers check first, for the sentence; the commit is what decides (see the top of this file).
+public StockMove MoveStockAt(StockLocation? location, Variant variant, int stock, int held, StockReason reason,
+                             Order? order = null, StockTransfer? transfer = null, string? note = null) {
+  var at = location;
   if (!IsDefaultLocation(location)) {
     var level = StockLevel.FirstOrDefault(s => s.Location == location && s.Variant == variant);
     if (level == null) { level = new StockLevel { Location = location!, Variant = variant }; }
-    level.Stock = level.Stock + stock;
-    level.Reserved = level.Reserved + held;
+    level.Stock += stock;
+    level.Reserved += held;
+  } else {
+    // The default's row, which the move is recorded at. A shop with none has no other location either — adding one
+    // makes the default first (AddLocation) — so only a shop that has one asks whether it has others.
+    at = DefaultLocation();
+    if (at != null && StockLocation.Any(l => !l.IsDefault)) { variant.DefaultTurn += 1; }
   }
-  variant.Stock = variant.Stock + stock;
-  variant.Reserved = variant.Reserved + held;
+  variant.Stock += stock;
+  variant.Reserved += held;
+  return new StockMove { Variant = variant, Location = at,
+                         Change = stock, Held = held, Reason = reason, Order = order, Transfer = transfer,
+                         Note = note, By = Session.CurrentUser };
 }
 
 // ── which location an order is picked from ──────────────────────────────────────────────────────────────────────
@@ -383,9 +403,7 @@ public int AdjustStockAt(StockLocation? location, Variant variant, int change, S
     throw new Exception(StockLocation.Any() ? $"{LocationName(location)} has only {have}. You cannot take away {-change}."
                                             : $"There are only {have} — you cannot take away {-change}.");
   }
-  MoveStockAt(location, variant, change, 0);
-  new StockMove { Variant = variant, Location = IsDefaultLocation(location) ? DefaultLocation() : location, Change = change,
-                  Reason = reason, Note = note.Trim() == "" ? null : note.Trim(), By = Session.CurrentUser };
+  MoveStockAt(location, variant, change, 0, reason, note: note.Trim() == "" ? null : note.Trim());
   SendStockAlerts(variant);
   UnitOfWork.Commit();
   return have + change;
@@ -405,11 +423,9 @@ public StockTransfer SendTransfer(Variant variant, StockLocation from, StockLoca
   if (!to.Active) { throw new Exception($"{to.Name} is not in use."); }
   var have = StockAt(from, variant);
   if (have < quantity) { throw new Exception($"{from.Name} has only {have} of {VariantName(variant)}."); }
-  MoveStockAt(from, variant, -quantity, 0);
   var t = new StockTransfer { Variant = variant, From = from, To = to, Quantity = quantity, SentAt = DateTime.UtcNow,
                               SentBy = Session.CurrentUser, Note = note.Trim() == "" ? null : note.Trim() };
-  new StockMove { Variant = variant, Location = from, Change = -quantity, Reason = StockReason.TransferOut,
-                  Transfer = t, By = Session.CurrentUser };
+  MoveStockAt(from, variant, -quantity, 0, StockReason.TransferOut, transfer: t);
   UnitOfWork.Commit();
   return t;
 }
@@ -418,12 +434,10 @@ public StockTransfer SendTransfer(Variant variant, StockLocation from, StockLoca
 [Authorize(IsShopStaff)]
 public void ReceiveTransfer(StockTransfer transfer) {
   if (transfer.Status != TransferStatus.InTransit) { throw new Exception($"That transfer is {transfer.Status.Label.ToLower()}."); }
-  MoveStockAt(transfer.To, transfer.Variant, transfer.Quantity, 0);
+  MoveStockAt(transfer.To, transfer.Variant, transfer.Quantity, 0, StockReason.TransferIn, transfer: transfer);
   transfer.Status = TransferStatus.Received;
   transfer.ReceivedAt = DateTime.UtcNow;
   transfer.ReceivedBy = Session.CurrentUser;
-  new StockMove { Variant = transfer.Variant, Location = transfer.To, Change = transfer.Quantity, Reason = StockReason.TransferIn,
-                  Transfer = transfer, By = Session.CurrentUser };
   SendStockAlerts(transfer.Variant);
   UnitOfWork.Commit();
 }
@@ -432,12 +446,10 @@ public void ReceiveTransfer(StockTransfer transfer) {
 [Authorize(IsShopStaff)]
 public void CancelTransfer(StockTransfer transfer) {
   if (transfer.Status != TransferStatus.InTransit) { throw new Exception($"That transfer is {transfer.Status.Label.ToLower()}."); }
-  MoveStockAt(transfer.From, transfer.Variant, transfer.Quantity, 0);
+  MoveStockAt(transfer.From, transfer.Variant, transfer.Quantity, 0, StockReason.TransferIn, transfer: transfer);
   transfer.Status = TransferStatus.Cancelled;
   transfer.ReceivedAt = DateTime.UtcNow;
   transfer.ReceivedBy = Session.CurrentUser;
-  new StockMove { Variant = transfer.Variant, Location = transfer.From, Change = transfer.Quantity, Reason = StockReason.TransferIn,
-                  Transfer = transfer, By = Session.CurrentUser };
   SendStockAlerts(transfer.Variant);
   UnitOfWork.Commit();
 }

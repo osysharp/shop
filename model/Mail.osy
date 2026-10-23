@@ -242,9 +242,10 @@ public class ShopMails {
   public virtual RenderedEmail ConfirmAddress(ShopAccount account, string address, string code, string link, bool isChange) {
     return ShopConfirmAddressMail(account, address, code, link, isChange);
   }
-  /// The account asked to move to `address` — to the OLD address, which is how the owner finds out if it was not them.
-  public virtual RenderedEmail AddressChanged(ShopAccount account, string address, bool toTheOldAddress) {
-    return ShopAddressChangedMail(account, address, toTheOldAddress);
+  /// The account asked to move to `address` — to the OLD address, which is how the owner finds out if it was not them;
+  /// `cancelLink` calls the move off (and signs every browser out). "" when there is none to offer.
+  public virtual RenderedEmail AddressChanged(ShopAccount account, string address, bool toTheOldAddress, string cancelLink = "") {
+    return ShopAddressChangedMail(account, address, toTheOldAddress, cancelLink);
   }
   /// Store credit the shop gave (StoreCredit.osy).
   public virtual RenderedEmail StoreCredit(ShopAccount account, decimal amount, string reason) {

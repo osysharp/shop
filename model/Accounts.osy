@@ -122,6 +122,12 @@ public class ShopAccountMails : AccountMails {
     if (ShopSettings.Any()) { return App.Setting<ShopSetup>().Mails.AccountExists(address, signInLink, resetLink); }
     return base.AccountExists(address, signInLink, resetLink);
   }
+  public override RenderedEmail AddressChangeRequested(User account, string newAddress, string cancelLink) {
+    if (account is ShopAccount a && ShopSettings.Any()) {
+      return App.Setting<ShopSetup>().Mails.AddressChanged(a, newAddress, toTheOldAddress: true, cancelLink: cancelLink);
+    }
+    return base.AddressChangeRequested(account, newAddress, cancelLink);
+  }
   public override RenderedEmail AddressChangeRequested(User account, string newAddress) {
     if (account is ShopAccount a && ShopSettings.Any()) { return App.Setting<ShopSetup>().Mails.AddressChanged(a, newAddress, toTheOldAddress: true); }
     return base.AddressChangeRequested(account, newAddress);

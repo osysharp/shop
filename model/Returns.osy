@@ -733,10 +733,7 @@ void SettleReturn(ReturnRequest ret, bool restock, bool asCredit, StockLocation?
   if (restock) {
     // Only goods go back on a shelf.
     foreach (var l in lines.Where(x => x.Line.Kind == LineKind.Goods && !x.Line.Variant.Unlimited)) {
-      MoveStockAt(restockAt, l.Line.Variant, l.Quantity, 0);
-      new StockMove { Variant = l.Line.Variant, Location = IsDefaultLocation(restockAt) ? DefaultLocation() : restockAt,
-                      Change = l.Quantity, Reason = StockReason.Returned,
-                      Order = order, By = Session.CurrentUser };
+      MoveStockAt(restockAt, l.Line.Variant, l.Quantity, 0, StockReason.Returned, order: order);
       SendStockAlerts(l.Line.Variant);
     }
   }

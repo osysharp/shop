@@ -37,6 +37,19 @@ translations sv {
   /// also in ShopPasswordResetMail
   button "Choose a new password" => "Välj ett nytt lösenord";
 
+  // ── AccountSettings ──
+  /// AccountSettings · a button's label · at most ~21 characters
+  /// shown through Button.label
+  /// also in ShopOrderHistory
+  /// also in DeskOrderAddress
+  button "Change address…" => "Ändra adress…";
+  /// AccountSettings · a label (a field, a list item, a menu entry) · at most ~10 characters
+  /// shown through Field.label
+  /// also in Osysharp.Shop.ProductSort
+  /// also in ShopMyDetails
+  /// also in DeskLocations
+  label "Name" => "Namn";
+
   // ── AccountVerifyMail ──
   /// AccountVerifyMail · a button's label · at most ~26 characters
   /// shown through EmailButton.label
@@ -127,7 +140,8 @@ translations sv {
   // ── AddressCodeStep ──
   /// AddressCodeStep · a button's label · at most ~13 characters
   /// shown through Button.label
-  /// beside: "Code from the mail"
+  /// beside: "Confirm your email address", "The mail says what comes next — a six-digit code to type here, or a link to open. Either one confirms that the address is yours; this is not a second sign-in step.", "Code from the mail"
+  /// also in AccountSettings
   /// also in ShopAddressCodeStep
   button "Confirm" => "Bekräfta";
 
@@ -447,6 +461,14 @@ translations sv {
   /// also in ShopConfirmAddress
   button "Confirm and sign in" => "Bekräfta och logga in";
 
+  // ── ConfirmStep ──
+  /// ConfirmStep · a button's label · at most ~12 characters
+  /// shown through Button.label
+  /// also in AccountSettings
+  /// also in DeskStock
+  /// also in DeskLocations
+  button "Cancel" => "Avbryt";
+
   // ── CounterCode ──
   /// CounterCode · an error message
   /// shown through Exception
@@ -545,12 +567,6 @@ translations sv {
   /// CustomsFor · an error message
   /// shown through Exception
   error "To send outside the EU the shop needs its EORI number — add it in the settings." => "För att skicka utanför EU behöver butiken sitt EORI-nummer. Lägg till det i inställningarna.";
-
-  // ── DataGrid ──
-  /// DataGrid · a label (a field, a list item, a menu entry) · at most ~12 characters
-  /// shown through Field.label
-  /// also in ShopSearchPage
-  label "Search" => "Sök";
 
   // ── DeliveryChoicesFor ──
   /// DeliveryChoicesFor · a label (a field, a list item, a menu entry) · at most ~14 characters
@@ -2197,12 +2213,6 @@ translations sv {
   /// DeskStock · a button's label · at most ~13 characters
   /// shown through Button.label
   button "Adjust…" => "Justera…";
-  /// DeskStock · a button's label · at most ~12 characters
-  /// shown through Button.label
-  /// beside: "Save"
-  /// also in DeskLocations
-  /// also in DeskReturns
-  button "Cancel" => "Avbryt";
   /// DeskStock · a button's label · at most ~11 characters
   /// shown through Button.label
   button "Move…" => "Flytta…";
@@ -3031,20 +3041,6 @@ translations sv {
   /// also in Osysharp.Shop.CounterReturnStatus
   label "Refused" => "Nekad";
 
-  // ── Osysharp.Shipping.DeliveryState ──
-  /// Osysharp.Shipping.DeliveryState · a label (a field, a list item, a menu entry) · at most ~16 characters
-  /// shown through Osysharp.Shipping.DeliveryState.InTransit
-  /// beside: "Booked", "Ready to collect", "Delivered", "Problem", "Returned"
-  /// also in Osysharp.Shop.TransferStatus
-  /// also in ShopMailPreviewKinds
-  label "On its way" => "På väg";
-  /// Osysharp.Shipping.DeliveryState · a label (a field, a list item, a menu entry) · at most ~14 characters
-  /// shown through Osysharp.Shipping.DeliveryState.Returned
-  /// beside: "Booked", "On its way", "Ready to collect", "Delivered", "Problem"
-  /// also in Osysharp.Shop.StockReason
-  /// also in Osysharp.Shop.GiveBackCause
-  label "Returned" => "Returnerad";
-
   // ── Osysharp.Mail.MailStatus ──
   /// Osysharp.Mail.MailStatus · a label (a field, a list item, a menu entry) · at most ~10 characters
   /// shown through Osysharp.Mail.MailStatus.Sent
@@ -3083,8 +3079,8 @@ translations sv {
   /// shown through Osysharp.RaisedEventState.Delivered
   /// beside: "Waiting"
   /// also in Osysharp.Shipping.DeliveryState
+  /// also in Osysharp.Mail.MailDelivery
   /// also in Osysharp.Shop.OrderStatus
-  /// also in OrderProgress
   label "Delivered" => "Levererad";
   /// Osysharp.RaisedEventState · a label (a field, a list item, a menu entry) · at most ~13 characters
   /// shown through Osysharp.RaisedEventState.Queued
@@ -3093,6 +3089,20 @@ translations sv {
   /// also in Osysharp.Sms.SmsStatus
   /// also in Osysharp.Shop.AgeCheckStatus
   label "Waiting" => "Väntar";
+
+  // ── Osysharp.Shipping.DeliveryState ──
+  /// Osysharp.Shipping.DeliveryState · a label (a field, a list item, a menu entry) · at most ~16 characters
+  /// shown through Osysharp.Shipping.DeliveryState.InTransit
+  /// beside: "Booked", "Ready to collect", "Delivered", "Problem", "Returned"
+  /// also in Osysharp.Shop.TransferStatus
+  /// also in ShopMailPreviewKinds
+  label "On its way" => "På väg";
+  /// Osysharp.Shipping.DeliveryState · a label (a field, a list item, a menu entry) · at most ~14 characters
+  /// shown through Osysharp.Shipping.DeliveryState.Returned
+  /// beside: "Booked", "On its way", "Ready to collect", "Delivered", "Problem"
+  /// also in Osysharp.Shop.StockReason
+  /// also in Osysharp.Shop.GiveBackCause
+  label "Returned" => "Returnerad";
 
   // ── Osysharp.Shop.AgeCheckStatus ──
   /// Osysharp.Shop.AgeCheckStatus · a label (a field, a list item, a menu entry) · at most ~14 characters
@@ -3215,10 +3225,6 @@ translations sv {
   /// shown through Osysharp.Shop.GiftCardEntryKind.SaleRefunded
   /// beside: "Sold", "From the shop", "Spent", "Given back", "Adjusted", "Voided"
   label "Sale refunded" => "Köpet återbetalat";
-  /// Osysharp.Shop.GiftCardEntryKind · a label (a field, a list item, a menu entry) · at most ~10 characters
-  /// shown through Osysharp.Shop.GiftCardEntryKind.Sold
-  /// beside: "From the shop", "Spent", "Given back", "Adjusted", "Voided", "Expired"
-  label "Sold" => "Sålt";
   /// Osysharp.Shop.GiftCardEntryKind · a label (a field, a list item, a menu entry) · at most ~11 characters
   /// shown through Osysharp.Shop.GiftCardEntryKind.Spent
   /// beside: "Sold", "From the shop", "Given back", "Adjusted", "Voided", "Expired"
@@ -3357,13 +3363,6 @@ translations sv {
   label "Whole units" => "Hela enheter";
 
   // ── Osysharp.Shop.ProductSort ──
-  /// Osysharp.Shop.ProductSort · a label (a field, a list item, a menu entry) · at most ~10 characters
-  /// shown through Osysharp.Shop.ProductSort.Name
-  /// beside: "Newest", "Price, low to high", "Price, high to low"
-  /// also in ShopMyDetails
-  /// also in DeskLocations
-  /// also in DeskProducts
-  label "Name" => "Namn";
   /// Osysharp.Shop.ProductSort · a label (a field, a list item, a menu entry) · at most ~12 characters
   /// shown through Osysharp.Shop.ProductSort.Newest
   /// beside: "Price, low to high", "Price, high to low", "Name"
@@ -3458,6 +3457,11 @@ translations sv {
   /// shown through ManualPayment.Label
   label "Bank transfer" => "Banköverföring";
 
+  // ── Osysharp.Shop.StockLevel ──
+  /// Osysharp.Shop.StockLevel · validation
+  /// shown through Osysharp.Shop.StockLevel.Stock [Min]
+  validation "A location cannot hold less than nothing." => "Ett lager kan inte ha mindre än noll.";
+
   // ── Osysharp.Shop.StockOrigin ──
   /// Osysharp.Shop.StockOrigin · a label (a field, a list item, a menu entry) · at most ~17 characters
   /// shown through Osysharp.Shop.StockOrigin.FirstStock
@@ -3471,24 +3475,37 @@ translations sv {
   // ── Osysharp.Shop.StockReason ──
   /// Osysharp.Shop.StockReason · a label (a field, a list item, a menu entry) · at most ~41 characters
   /// shown through Osysharp.Shop.StockReason.TransferIn
-  /// beside: "Delivery in", "Count corrected", "Damaged or lost", "Returned", "Sent to another location"
+  /// beside: "Delivery in", "Count corrected", "Damaged or lost", "Returned", "Sent to another location", "Held for an order"
   label "Arrived from another location" => "Kommit från en annan plats";
   /// Osysharp.Shop.StockReason · a label (a field, a list item, a menu entry) · at most ~21 characters
   /// shown through Osysharp.Shop.StockReason.Correction
-  /// beside: "Delivery in", "Damaged or lost", "Returned", "Sent to another location", "Arrived from another location"
+  /// beside: "Delivery in", "Damaged or lost", "Returned", "Sent to another location", "Arrived from another location", "Held for an order"
   label "Count corrected" => "Antal rättat";
   /// Osysharp.Shop.StockReason · a label (a field, a list item, a menu entry) · at most ~21 characters
   /// shown through Osysharp.Shop.StockReason.Damaged
-  /// beside: "Delivery in", "Count corrected", "Returned", "Sent to another location", "Arrived from another location"
+  /// beside: "Delivery in", "Count corrected", "Returned", "Sent to another location", "Arrived from another location", "Held for an order"
   label "Damaged or lost" => "Skadad eller borttappad";
   /// Osysharp.Shop.StockReason · a label (a field, a list item, a menu entry) · at most ~17 characters
   /// shown through Osysharp.Shop.StockReason.Received
-  /// beside: "Count corrected", "Damaged or lost", "Returned", "Sent to another location", "Arrived from another location"
+  /// beside: "Count corrected", "Damaged or lost", "Returned", "Sent to another location", "Arrived from another location", "Held for an order"
   label "Delivery in" => "Inleverans";
+  /// Osysharp.Shop.StockReason · a label (a field, a list item, a menu entry) · at most ~24 characters
+  /// shown through Osysharp.Shop.StockReason.Reserved
+  /// beside: "Delivery in", "Count corrected", "Damaged or lost", "Returned", "Sent to another location", "Arrived from another location"
+  label "Held for an order" => "Reserverad för en order";
+  /// Osysharp.Shop.StockReason · a label (a field, a list item, a menu entry) · at most ~23 characters
+  /// shown through Osysharp.Shop.StockReason.OrderCancelled
+  /// beside: "Delivery in", "Count corrected", "Damaged or lost", "Returned", "Sent to another location", "Arrived from another location"
+  label "Order called off" => "Order avbruten";
   /// Osysharp.Shop.StockReason · a label (a field, a list item, a menu entry) · at most ~34 characters
   /// shown through Osysharp.Shop.StockReason.TransferOut
-  /// beside: "Delivery in", "Count corrected", "Damaged or lost", "Returned", "Arrived from another location"
+  /// beside: "Delivery in", "Count corrected", "Damaged or lost", "Returned", "Arrived from another location", "Held for an order"
   label "Sent to another location" => "Skickat till en annan plats";
+  /// Osysharp.Shop.StockReason · a label (a field, a list item, a menu entry) · at most ~10 characters
+  /// shown through Osysharp.Shop.StockReason.Sold
+  /// beside: "Delivery in", "Count corrected", "Damaged or lost", "Returned", "Sent to another location", "Arrived from another location"
+  /// also in Osysharp.Shop.GiftCardEntryKind
+  label "Sold" => "Sålt";
 
   // ── Osysharp.Shop.StoreCreditGrantStatus ──
   /// Osysharp.Shop.StoreCreditGrantStatus · a label (a field, a list item, a menu entry) · at most ~11 characters
@@ -3511,6 +3528,11 @@ translations sv {
   /// shown through Osysharp.Shop.TransferStatus.Received
   /// beside: "On its way", "Called off"
   label "Received" => "Mottagen";
+
+  // ── Osysharp.Shop.Variant ──
+  /// Osysharp.Shop.Variant · validation
+  /// shown through Osysharp.Shop.Variant.Stock [Min]
+  validation "There are not that many in stock." => "Så många finns inte i lager.";
 
   // ── Osysharp.Shop.VatClass ──
   /// Osysharp.Shop.VatClass · a label (a field, a list item, a menu entry) · at most ~16 characters
@@ -3823,6 +3845,14 @@ translations sv {
   /// shown through Exception
   error "{order.Reference} is {order.Status.Label} — only a paid order is refunded." => "{order.Reference} är {order.Status.Label}. Bara en betald order återbetalas.";
 
+  // ── RenamePasskey ──
+  /// RenamePasskey · an error message
+  /// shown through ValidationException
+  /// also in CancelMyAddressChange
+  /// also in StartStepUp
+  /// also in SaveMyDetails
+  error "Sign in first." => "Logga in först.";
+
   // ── ReopenDownload ──
   /// ReopenDownload · an error message
   /// shown through Exception
@@ -3858,8 +3888,8 @@ translations sv {
   /// shown through TextLink.label
   /// beside: "Your password is changed. Sign in with it now — two-step sign-in comes next."
   /// also in VerifyEmailResult
+  /// also in CancelAddressChangeResult
   /// also in ShopConfirmAddress
-  /// also in ShopChooseNewPassword
   link "Sign in" => "Logga in";
   /// ResetPasswordForm · text on the page
   /// shown through problem
@@ -3981,13 +4011,13 @@ translations sv {
   /// shown through ReturnWithLink()
   message "The return could not be started." => "Returen kunde inte påbörjas.";
 
-  // ── SaveBar ──
-  /// SaveBar · a button's label · at most ~10 characters
+  // ── SaveActions ──
+  /// SaveActions · a button's label · at most ~10 characters
   /// shown through Button.label
-  /// beside: "Unsaved changes", "Discard"
+  /// beside: "Edited", "Discard"
+  /// also in SaveBar
+  /// also in AccountSettings
   /// also in DeskStock
-  /// also in DeskLocations
-  /// also in DeskCampaignEditor
   button "Save" => "Spara";
 
   // ── SavePriceList ──
@@ -4321,6 +4351,10 @@ translations sv {
   mailSubject "Your {Name} account's address is changing" => "Adressen till ditt konto hos {Name} håller på att ändras";
   /// ShopAddressChangedMail · text on the page
   /// shown through EmailText.text
+  /// beside: "This wasn't me — cancel the change"
+  text "If you did not do this, cancel it: the move is called off and every browser signed in to your account is signed out. Then choose a new password." => "Om det inte var du, avbryt den: flytten stoppas och alla webbläsare som är inloggade på ditt konto loggas ut. Välj sedan ett nytt lösenord.";
+  /// ShopAddressChangedMail · text on the page
+  /// shown through EmailText.text
   text "If you did not do this, reply to this mail straight away." => "Om det inte var du som gjorde det, svara på det här mejlet direkt.";
   /// ShopAddressChangedMail · text on the page
   /// shown through EmailHeading.text
@@ -4328,7 +4362,6 @@ translations sv {
   /// ShopAddressChangedMail · text on the page
   /// placeholders: {address} = address (string)
   /// shown through EmailText.text
-  /// beside: "If you did not do this, reply to this mail straight away."
   text "Your account asked to sign in as {address} from now on. It moves once that address confirms it." => "Ditt konto har bett om att logga in som {address} från och med nu. Det flyttas när den adressen har bekräftat det.";
   /// ShopAddressChangedMail · text on the page
   /// placeholders: {address} = address (string)
@@ -5414,10 +5447,6 @@ translations sv {
   /// ShopOrderHistory · a button's label · at most ~24 characters
   /// shown through Button.label
   button "Cancel this order" => "Avbeställ ordern";
-  /// ShopOrderHistory · a button's label · at most ~21 characters
-  /// shown through Button.label
-  /// also in DeskOrderAddress
-  button "Change address…" => "Ändra adress…";
   /// ShopOrderHistory · a button's label · at most ~31 characters
   /// placeholders: {MoneyIn} = MoneyIn(…) (string)
   /// shown through Button.label
@@ -5878,6 +5907,9 @@ translations sv {
   /// ShopSearchPage · a button's label · at most ~11 characters
   /// shown through Button.label
   button "Clear" => "Rensa";
+  /// ShopSearchPage · a label (a field, a list item, a menu entry) · at most ~12 characters
+  /// shown through Field.label
+  label "Search" => "Sök";
   /// ShopSearchPage · a label (a field, a list item, a menu entry) · at most ~13 characters
   /// shown through Dropdown.label
   label "Sort by" => "Sortera efter";
@@ -6137,12 +6169,6 @@ translations sv {
   /// shown through Exception
   error "{order.Reference} is {order.Status.Label}, not waiting to be picked." => "{order.Reference} är {order.Status.Label} och väntar inte på att plockas.";
 
-  // ── StartStepUp ──
-  /// StartStepUp · an error message
-  /// shown through ValidationException
-  /// also in SaveMyDetails
-  error "Sign in first." => "Logga in först.";
-
   // ── StatusDetail ──
   /// StatusDetail · text on the page
   /// placeholders: {order.Tracking} = order.Tracking (string)
@@ -6363,6 +6389,8 @@ translations sv {
   /// __SiteBlocks.Site · text on the page
   text "Border danger" => "Kant, varning";
   /// __SiteBlocks.Site · text on the page
+  text "Chrome current" => "Aktuell rad";
+  /// __SiteBlocks.Site · text on the page
   text "Danger" => "Fara";
   /// __SiteBlocks.Site · text on the page
   text "Elevated" => "Upphöjd";
@@ -6370,6 +6398,8 @@ translations sv {
   text "Muted" => "Dämpad";
   /// __SiteBlocks.Site · text on the page
   text "On bg" => "På bakgrunden";
+  /// __SiteBlocks.Site · text on the page
+  text "On chrome current" => "På aktuell rad";
   /// __SiteBlocks.Site · text on the page
   text "On image" => "På bild";
   /// __SiteBlocks.Site · text on the page

@@ -47,11 +47,14 @@ void one_more_order_paid_and_sent_stays_within_its_budget() {
     var mark = Cost.Mark();
     PayAndSend(next);
     Said("Paid and sent", mark);
+    // Read HERE, before the check below, as the placed test does: whether the add-on heard is the test's own reading.
+    var statements = Cost.StatementsSince(mark);
+    var roundTrips = Cost.RoundTripsSince(mark);
     Assert.True(AddOnHeard.Any(h => h.What == "sent " + next));
     // Paying and sending costs about 95 statements: the setup kept, reads sent once a unit of work, and a workflow leaving
     // or arming a state reading its slots and their clocks once. The bound leaves 5% over that.
-    Assert.AtMost(100, Cost.StatementsSince(mark));
-    Assert.AtMost(80, Cost.RoundTripsSince(mark));
+    Assert.AtMost(100, statements);
+    Assert.AtMost(80, roundTrips);
   }
 }
 

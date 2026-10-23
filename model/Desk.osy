@@ -245,6 +245,15 @@ public enum StockReason {
   [Label("Returned")] Returned,
   [Label("Sent to another location")] TransferOut,
   [Label("Arrived from another location")] TransferIn,
+  // The moves an ORDER makes, recorded by `MoveStockAt` like every other — so the shelf can be explained by what sold.
+  [Label("Held for an order")] Reserved,
+  [Label("Sold")] Sold,
+  [Label("Order called off")] OrderCancelled,
+}
+
+/// The reasons staff give when they count stock themselves — the rest are written by the moves that make them.
+public StockReason[] CountReasons() {
+  return [StockReason.Received, StockReason.Correction, StockReason.Damaged, StockReason.Returned];
 }
 
 /// Where stock came from when no person counted it in. ⚠ Appended, never inserted.
@@ -256,16 +265,23 @@ public enum StockOrigin {
 /// One change to a variant's stock, and why — so the number on the shelf can be explained later. FACTS, never a
 /// sentence the shop writes: the order a return came from, the transfer it moved with, where stock came
 /// from — said in the reader's language when it is read (`StockMoveNote`).
+///
+/// ⚑ `MoveStockAt` WRITES ONE FOR EVERY MOVE — a delivery, a count, an order holding, selling or giving back its goods, a
+///   return, a transfer — in the same commit as the move. So `Variant.Stock` is the running total of `Change` (and
+///   `Variant.Reserved` of `Held`), and who took how much, when and why is a row, never a guess.
 public entity StockMove {
   [Required] Variant Variant;
   /// Where it changed — null for a shop without locations (its one place).
   StockLocation? Location;
+  /// Onto (or, negative, off) the shelf.
   int Change;
+  /// Into (or, negative, out of) what is held for orders not paid yet.
+  int Held = 0;
   [Required] StockReason Reason;
   /// What staff wrote about it, as they wrote it ("Delivery 7").
   [MaxLength(200)] string? Note;
-  /// The order goods came back from (`Returned`), the transfer it moved with (`TransferOut`/`TransferIn`), and where
-  /// stock nobody counted in came from.
+  /// The order it moved for (`Reserved`, `Sold`, `OrderCancelled`) or came back from (`Returned`), the transfer it moved
+  /// with (`TransferOut`/`TransferIn`), and where stock nobody counted in came from.
   Order? Order;
   StockTransfer? Transfer;
   StockOrigin? Origin;
@@ -279,7 +295,7 @@ public string StockMoveNote(StockMove m) {
   if (m.Note != null && m.Note != "") { return m.Note!; }
   if (m.Origin == StockOrigin.FirstStock) { return "First stock"; }
   if (m.Origin == StockOrigin.Spreadsheet) { return "Imported from a spreadsheet"; }
-  if (m.Order != null) { return $"Return on {m.Order!.Reference}"; }
+  if (m.Order != null) { return m.Reason == StockReason.Returned ? $"Return on {m.Order!.Reference}" : $"Order {m.Order!.Reference}"; }
   if (m.Transfer != null) {
     var t = StockTransfer.Include(x => x.From).Include(x => x.To).Single(x => x.Id == m.Transfer!.Id);
     if (m.Reason == StockReason.TransferOut) { return $"To {t.To.Name}"; }

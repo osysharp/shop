@@ -38,6 +38,7 @@ Each of these is its own app on this one package: the design is the app's, the s
 | **Wholesale** | price lists (`PriceList`): a price of its own per variant, per sold currency where it matters (`PriceListPrice`), else a percentage off the retail price; minimum quantities and a minimum order; invoice terms. Staff make an account wholesale with its VAT number checked against the register (`MakeWholesale`, `ShopSetup.VatNumbers`); its bag is priced on its list, and an invoice (`ShopSetup.OnlyForWholesale`) is offered to it alone. The desk's Wholesale tab keeps the lists, the accounts and the invoices to be paid (`MarkInvoicePaid`) |
 | **The counter** | a till for a tablet on the shop's counter (`ShopCounter`, for a `ShopRole.Counter` clerk or staff): scan a barcode or search into a sale at the clerk's counter, with what that location has on the shelf; a customer brought in by a code mailed to their account (their store credit, their trade prices); a gift card or discount code; paid by card on the shop's own terminal (recorded), Swish's QR code or a Stripe reader (`ShopSetup.CounterPayments`, `ICounterPayment`); handed over the moment it is paid, with a receipt printed or mailed; goods taken back over the counter the way they were paid. A counter sale is an ORDER — priced again by its workflow, invoiced, in the VAT report and the books like the web's (below) |
 | **Figures** | top sellers, most viewed, slow movers, totals over a period |
+| **Drafted descriptions** | with a writer in the app (`IProductWriter` — `Osysharp.Shop.Agents`' description writer, an agent), "Draft a description" on a product offers a draft under "Prepared by …" (`DraftDescription`, `OfferedDescription`); staff take it into the description and save, or discard it — it is never saved by itself. The writer is off until staff switch it on in the desk's Settings, which show who answers for it and what its drafts cost |
 | **Clearance** | mark a product down by a percentage until a date; a sale shelf |
 | **Mail** | designed templates in your theme (`Osysharp.EmailTemplates`) — confirmations, dispatch, refunds, returns, resets — sent as HTML with a plain-text twin through Resend, or held in an outbox the desk can read and preview until a key is set |
 | **Your words** | the confirmation, "on its way" and the refund each have a part staff rewrite on the desk in the Markdown editor, beside a live preview on a real order — with the mail's own `{placeholders}`, an unknown one refused at publish, and a reset to the default. Kept PER LANGUAGE: a customer gets the words written in the language they shopped in, else the template's own in that language, and the desk says which languages have the shop's words |
@@ -326,7 +327,11 @@ evidence of where they live; a file in a bag that is collected at the counter is
 location keeps whatever the others do not — its share is the totals less theirs, and it has no `StockLevel` rows — so
 adding a second location moves nothing, and a data file's or a spreadsheet's `Stock` still means "in the shop" (the
 difference is counted at the default, which can never go below nothing). Every move of stock goes through
-`MoveStockAt`, which writes the location and the totals together; "mail me when it is back" follows the totals.
+`MoveStockAt`, which writes the location and the totals together and records the move as a `StockMove` — a
+delivery, a count, an order holding, selling or giving back its goods, a return, a transfer — so `Variant.Stock` is the
+running total of those rows, each saying who, when and why. Every number moves by `-=`/`+=`, one statement held to its
+`[Min(0)]`: two orders for the last one cannot both have it, and two for a shirt there are two of both land. "Mail me
+when it is back" follows the totals.
 
 **One order, one location, one parcel.** A collection is picked at the counter it is collected at (with two or more
 counters, each is its own delivery choice, `collect@<code>`); a parcel from the first location in the desk's order that
@@ -451,6 +456,9 @@ Z report are a cash register's job.
   not be ordered (`Refuses`), a product's rating, what to forget of an erased customer. **The shop finds every add-on
   in the app — its `use` line is the whole of installing one** (`use Osysharp.Shop.Discounts@0 { without DiscountCodes; }`
   leaves one out). Write your own the same way, in your app or a kit of your own.
+- **A writer of descriptions.** Implement `IProductWriter` (`Name`, `IsOn`, `Write`, `State`, `TurnOn`, `TurnOff`) in
+  a kit of your own, and the product editor offers its drafts and the desk's Settings switch it on and off. The shop
+  takes the first one the app has. `Osysharp.Shop.Agents` is one: an agent that drafts from the product's details.
 - **Another country's e-ID.** Age verification is a seam like payment and delivery: derive from `AgeVerifier`,
   set `Key` and `Label`, and override `Offered`, `Start` (answer a handle the shop keeps encrypted, and an app link),
   `Frame` (a QR code's text for a second, or ""), `Collect` (answer `Verified` with the date of birth, `Waiting` or

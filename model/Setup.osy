@@ -23,6 +23,9 @@
 //       Endpoints = [ new Endpoint(ShopPaymentEvents) { Method = HttpMethod.Post, Path = "/{provider}/events",
 //                                                       Raw = true, Headers = ["Stripe-Signature"] } ] }
 //   `Headers` names every header the listed providers' webhooks need (each provider's `EventHeaders`).
+//   ⚠ Declare it EXACTLY so — `Route = "payments"`, no `Version` — because the shop hands each provider the address it
+//   is served at, `{App.BaseUrl}/api/rest/v1/payments/{provider}/events` (every API is served at /api/rest/v{major}/{route}/…).
+//   The shop registered `/payments/{provider}/events` until 2026-10-21, which nothing serves: a provider's callback got a 404.
 
 namespace Osysharp.Shop;
 
@@ -515,7 +518,7 @@ public PaymentOutcome CheckPayment(OrderLink link, string token) {
                               Message = check.Message == "" ? "The payment has not gone through." : check.Message };
 }
 
-/// The endpoint every payment provider posts its events to (`/payments/{provider}/events`). The provider verifies its
+/// The endpoint every payment provider posts its events to (`/api/rest/v1/payments/{provider}/events`). The provider verifies its
 /// own event — a signature, or asking its API — so nothing past `HandleEvent` runs for a request it did not send.
 [AllowAnonymous]
 public string ShopPaymentEvents(string provider) {

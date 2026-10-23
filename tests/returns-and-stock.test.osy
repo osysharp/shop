@@ -158,3 +158,34 @@ void a_sold_out_product_waits_for_any_of_its_sizes() {
     Assert.Equal(1, ShopMail.Count(m => m.To == "fan@example.test" && m.Subject.Contains("Loafer (39)")));
   }
 }
+
+// Every move of stock is a row (`MoveStockAt` writes one each time): the order holding its goods, the payment selling
+// them, the return bringing one back — each naming the order — and the shelf is the running total of those rows.
+[Test(Floor)]
+void every_move_of_stock_is_a_stock_move_and_the_shelf_is_their_running_total() {
+  var reference = "";
+  runas (Maja) { reference = Buy("v-moves", "Loafer", "38", 2); }
+  runas (Desk) {
+    var order = Order.Single(o => o.Reference == reference);
+    var held = StockMove.Single(m => m.Order == order && m.Reason == StockReason.Reserved);
+    Assert.Equal(-2, held.Change);
+    Assert.Equal(2, held.Held);
+    Assert.Equal($"Order {reference}", StockMoveNote(held));
+    PayAndSend(reference);
+    var sold = StockMove.Single(m => m.Order == order && m.Reason == StockReason.Sold);
+    Assert.Equal(0, sold.Change);
+    Assert.Equal(-2, sold.Held);
+  }
+  runas (Maja) { ReturnItem(OrderLine.Single(l => l.Order.Reference == reference), 1, "Too small"); }
+  runas (Desk) {
+    var ret = ReturnRequest.Single();
+    ReceiveReturn(ret, true);
+    Workflow.Settle(ret);
+    var v = Pick("Loafer", "38");
+    var moves = StockMove.Where(m => m.Variant == v).ToList();
+    Assert.Equal(3, moves.Count);
+    Assert.Equal(1, v.Stock);                              // 2 to start, 2 sold, 1 back
+    Assert.Equal(2 + moves.Sum(m => m.Change), v.Stock);   // the shelf is the running total of its moves
+    Assert.Equal(moves.Sum(m => m.Held), v.Reserved);
+  }
+}

@@ -416,7 +416,7 @@ public component ShopAccountExistsMail(string address, string signIn, string res
 /// not them (`toTheOldAddress`); nothing moves until the new address confirms it. With `toTheOldAddress` false: the new
 /// address, once the account moved there.
 [Email]
-public component ShopAddressChangedMail(ShopAccount account, string address, bool toTheOldAddress) {
+public component ShopAddressChangedMail(ShopAccount account, string address, bool toTheOldAddress, string cancelLink = "") {
   language => account.Language;
   subject => toTheOldAddress ? $"Your {TheShop().Name} account's address is changing" : $"Welcome to your {TheShop().Name} account at this address";
   render {
@@ -424,7 +424,12 @@ public component ShopAddressChangedMail(ShopAccount account, string address, boo
       EmailHeading(toTheOldAddress ? "Your account's address is changing" : "Welcome to this address");
       if (toTheOldAddress) {
         EmailText($"Your account asked to sign in as {address} from now on. It moves once that address confirms it.");
-        EmailText("If you did not do this, reply to this mail straight away.");
+        if (cancelLink != "") {
+          EmailText("If you did not do this, cancel it: the move is called off and every browser signed in to your account is signed out. Then choose a new password.");
+          EmailButton("This wasn't me — cancel the change", cancelLink);
+        } else {
+          EmailText("If you did not do this, reply to this mail straight away.");
+        }
       } else {
         EmailText($"Your account now signs in as {address}.");
       }

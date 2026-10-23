@@ -210,13 +210,14 @@ public List<TimelineEntry> OrderTimeline(Order order) {
   return all.OrderBy(e => e.At).ToList();
 }
 
-/// The order's moves through its workflow, oldest first — empty when its history has been reaped.
+/// The order's moves through its workflow, oldest first — empty when it has no run to read: its history reaped (kept only
+/// so long, `app.Workflow`), or the order written before its workflow ran. That is the one fault caught here — any other
+/// is a real failure, and goes up to the caller.
 List<WorkflowAuditEntry> StatusMoves(Order order) {
   try {
     return OrderLifecycle.For(order).Audit.Where(a => a.Kind == AuditKind.Transitioned).ToList();
   }
-  catch (Exception ex) {
-    Log.Information($"No workflow history for {order.Reference}: {ex.Message}");
+  catch (NotFoundException) {
     return [];
   }
 }
@@ -674,7 +675,7 @@ public PaymentRequest PaymentRequestFor(Order order) {
     Country = vatCountry,
     ReturnUrl = $"{App.BaseUrl}/paid/{link}/{order.PaymentMethod}-{{token}}",
     CancelUrl = $"{App.BaseUrl}/paid/{link}/cancelled",
-    EventsUrl = $"{App.BaseUrl}/payments/{order.PaymentMethod}/events",
+    EventsUrl = $"{App.BaseUrl}/api/rest/v1/payments/{order.PaymentMethod}/events",   // where `Payments` (Setup.osy) is served
     IdempotencyKey = order.Id.ToString(),
   };
 }

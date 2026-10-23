@@ -144,8 +144,8 @@ public entity ProductSpec {
 /// What a customer actually buys: a product in one size and/or one colour, with its own stock.
 ///
 /// ⚑ STOCK IS ONLY EVER TAKEN BY AN ORDER'S WORKFLOW (see Orders.osy), which writes as the system. A visitor cannot
-///   write it, and `[ConcurrencyCheck]` makes two orders racing for the last one meet: one wins, the other is retried
-///   and sees it gone.
+///   write it. Every move is `Stock -= n` / `+= n` through `MoveStockAt` — one statement held to `[Min(0)]`, so two
+///   orders racing for the last one cannot both have it — and is recorded as a `StockMove`.
 public entity Variant {
   [Required] Product Product;
   [MaxLength(40)] string? Size;
@@ -160,10 +160,14 @@ public entity Variant {
   decimal? CostPrice;
   /// A service or a digital good — a plan, a licence: never out of stock, nothing held or counted.
   bool Unlimited = false;
-  [ConcurrencyCheck] int Stock = 0;
+  /// On the shelf, across every location — the running total of its `StockMove`s.
+  [Min(0, "There are not that many in stock.")] int Stock = 0;
   /// Units held by orders that are not paid yet — taken from `Stock`, and back in it if the order lapses. Written by
   /// the order's workflow alone, like `Stock`.
-  int Reserved = 0;
+  [Min(0)] int Reserved = 0;
+  /// Moved with every change at the DEFAULT location of a shop that has others too (Locations.osy): that location's
+  /// share is the total less theirs, a floor no `[Min]` can state, so two changes there at once must meet. Never read.
+  [ConcurrencyCheck] int DefaultTurn = 0;
   /// Overrides the product's price for this variant — a larger size that costs more.
   decimal? Price;
   /// Its own prices in the currencies the shop SELLS in (Currencies.osy) — the price list. Without one in a currency,

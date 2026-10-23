@@ -291,7 +291,9 @@ void nobody_lists_gift_cards_and_a_buyer_never_reads_a_balance() {
     Assert.Equal("Anna", mine.To);
     Assert.Contains("Sent", mine.State);
     var row = GiftCard.Single();
-    Assert.Null(row.Balance);                                        // masked
+    // Withheld: a masked decimal reads as 0m, never the 50 on the card — and IsMasked says the 0 is the mask.
+    Assert.True(Security.IsMasked(row.Balance));
+    Assert.Equal(0m, row.Balance);
     Assert.Null(row.CodeHash);
     Assert.Null(row.SealedCode);
     Assert.Equal(0, GiftCardEntry.Count());

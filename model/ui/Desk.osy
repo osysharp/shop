@@ -750,7 +750,7 @@ public component DeskStock() {
         Stack(gap: 4) {
           if (locations.Count > 0) { Dropdown("Where", value: at, options: locations) { l => Text(l.Name); } }
           NumberField("Change by", value: change, min: -999, max: 999);
-          Dropdown("Why", value: reason);
+          Dropdown("Why", value: reason, options: CountReasons());
           Field("Note (optional)", value: note, placeholder: "Delivery 14 from the supplier");
           if (problem != "") { Alert(problem, tone: Tone.Danger); }
           Row(gap: 3, justify: Justify.End) {
@@ -1534,6 +1534,7 @@ component DeskShopSettings() {
         }
       }
       DeskExchangeRates();
+      DeskProductWriterSettings();
       SectionLabel("Money");
       DecimalField("VAT included in prices", value: shop.VatPercent, unit: "%", hint: "The standard rate.");
       DecimalField("Reduced VAT rate", value: shop.VatReducedPercent, unit: "%", hint: "For products classed Reduced — 12 in Sweden.");
@@ -1882,6 +1883,27 @@ public component DeskProductEditor(Product product) {
     catch (Exception ex) { failed = true; note = ex.Message; }
   }
   action AddPhoto(UploadedFile f) { AddProductPhoto(product, f.Path, ""); }
+  // A description drafted by the app's writer (Descriptions.osy), when it has one and it is on: offered here, taken
+  // into the field to change and save, or discarded — never saved onto the product by itself.
+  bool writerOn = false;
+  DescriptionOffer? offer = null;
+  bool drafting = false;
+  string draftProblem = "";
+  on mount { writerOn = ProductWriterIsOn(); offer = OfferedDescriptionOf(product); }
+  action Draft() {
+    drafting = true; draftProblem = "";
+    try {
+      var d = DraftDescription(product);
+      if (d.Offer != null) { offer = d.Offer; } else { draftProblem = d.Problem; }
+    }
+    catch (Exception ex) { draftProblem = ex.Message; }
+    drafting = false;
+  }
+  action UseOffer() {
+    try { description = TakeOfferedDescription(offer!.Id); offer = null; failed = false; note = "Put in the description — save the product to keep it."; }
+    catch (Exception ex) { offer = null; draftProblem = ex.Message; }
+  }
+  action DiscardOffer() { DiscardOfferedDescription(offer!.Id); offer = null; }
   action Earlier(ProductImage i) { MovePhoto(i, -1); }
   action Later(ProductImage i) { MovePhoto(i, 1); }
   action Remove(ProductImage i) { RemovePhoto(i); }
@@ -1900,6 +1922,25 @@ public component DeskProductEditor(Product product) {
         Dropdown("Status", value: status);
         Field("Summary", value: summary, hint: "One line, shown on the product's card.");
         TextAreaField("Description", value: description, rows: 6);
+        if (writerOn) {
+          Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+            Button(drafting ? "Drafting a description…" : "Draft a description", onPress: Draft, size: Size.Sm,
+                   tone: Tone.Ghost, disabled: drafting);
+            if (draftProblem != "") { Text(draftProblem, fontSize: FontSize.Caption, color: Colors.Danger, minW: "0"); }
+          }
+        }
+        if (offer != null) {
+          Stack(gap: 2, p: 3, borderW: 1, border: Colors.Border, rounded: Radius.Md, label: "Offered description") {
+            Text("Prepared by " + offer!.PreparedBy, fontSize: FontSize.Label, fontWeight: FontWeight.Semibold);
+            foreach (var para in offer!.Text.Split("\n\n").Where(x => x.Trim() != "").ToList()) { Text(para.Trim()); }
+            Text("Read it before you use it — nothing changes until you save the product.", fontSize: FontSize.Caption,
+                 color: Colors.TextMuted);
+            Row(gap: 2) {
+              Button("Use it", onPress: UseOffer, size: Size.Sm, tone: Tone.Primary);
+              Button("Discard", onPress: DiscardOffer, size: Size.Sm);
+            }
+          }
+        }
         // Only needed for a parcel leaving the EU — the carrier declares it with the booking.
         SectionLabel("For customs, outside the EU");
         Box(display: Display.Grid, cols: "repeat(auto-fit, minmax(140px, 1fr))", gap: 3) {
@@ -1976,6 +2017,49 @@ public component DeskProductEditor(Product product) {
             Button("Save", onPress: SaveDetail, tone: Tone.Primary);
           }
         }
+      }
+    }
+  }
+}
+
+/// The app's description writer (Descriptions.osy) on the desk's settings: on or off, who answers for it, and what it
+/// drafted in the last 30 days and what that cost. Nothing when the app has no writer.
+[Composable]
+[Authorize(IsShopStaff)]
+component DeskProductWriterSettings() {
+  ProductWriterState? now = null;
+  string problem = "";
+  on mount { Load(); }
+  action Load() {
+    try { now = ProductWriterNow(); } catch (Exception ex) { problem = ex.Message; }
+  }
+  action TurnOn() {
+    try { TurnProductWriterOn(); problem = ""; } catch (Exception ex) { problem = ex.Message; }
+    Load();
+  }
+  action TurnOff() {
+    try { TurnProductWriterOff(); problem = ""; } catch (Exception ex) { problem = ex.Message; }
+    Load();
+  }
+  render {
+    if (now != null) {
+      Stack(gap: 2, label: now!.Name) {
+        SectionLabel(now!.Name);
+        if (now!.About != "") { Text(now!.About, color: Colors.TextSecondary, fontSize: FontSize.Label); }
+        if (!now!.Ready) {
+          Text(now!.NotReady, color: Colors.TextMuted, fontSize: FontSize.Label);
+        } else {
+          if (now!.On) {
+            Text("On — staff see “Draft a description” on every product. " + now!.AnsweredFor + " answers for it.");
+            Row { Button("Turn it off", onPress: TurnOff, size: Size.Sm); }
+          } else {
+            Text("Off — staff do not see “Draft a description”.");
+            Row { Button("Turn it on", onPress: TurnOn, size: Size.Sm, tone: Tone.Primary); }
+          }
+          Text($"Last 30 days: {now!.Drafts} drafts, ${(now!.CostMicros / 1000000m).ToString("0.00")} at the model's list price.",
+               color: Colors.TextMuted, fontSize: FontSize.Label);
+        }
+        if (problem != "") { Text(problem, color: Colors.Danger, fontSize: FontSize.Label); }
       }
     }
   }

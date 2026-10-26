@@ -74,3 +74,61 @@ server's.
 `model/BankIdAgeCheck.osy`, over `Osysharp.BankId`. `tests/` is the producer's project, every call to BankID stubbed —
 the personal identity number rules among them.
 
+## Examples
+
+Taken from this package's own tests, which compile and run on every release.
+
+```osy
+using Osysharp.Http;
+using Osysharp.Shop;
+using Osysharp.Shop.AgeCheck.BankId;
+
+[Test]
+void twelve_digits_as_bankid_gives_them_are_a_date() {
+  Assert.Equal(Day(1990, 1, 1), BirthDateOfPersonalNumber("199001012385", Day(2026, 9, 29)));
+  Assert.Equal(Day(2000, 1, 1), BirthDateOfPersonalNumber("200001019876", Day(2026, 9, 29)));
+  Assert.Equal(Day(1990, 1, 1), BirthDateOfPersonalNumber("19900101-2385", Day(2026, 9, 29)));
+}
+```
+
+From [`tests/bankid-age.test.osy`](tests/bankid-age.test.osy).
+
+```osy
+using Osysharp.Http;
+using Osysharp.Shop;
+using Osysharp.Shop.AgeCheck.BankId;
+
+[Test]
+void ten_digits_take_their_century_from_the_separator() {
+  // `-` under 100 years old; `+` 100 or older. The same six digits, a century apart.
+  Assert.Equal(Day(2012, 12, 12), BirthDateOfPersonalNumber("121212-1212", Day(2026, 9, 29)));
+  Assert.Equal(Day(1912, 12, 12), BirthDateOfPersonalNumber("121212+1212", Day(2026, 9, 29)));
+  // A date later this century than today is last century's.
+  Assert.Equal(Day(1990, 1, 1), BirthDateOfPersonalNumber("900101-2385", Day(2026, 9, 29)));
+}
+```
+
+From [`tests/bankid-age.test.osy`](tests/bankid-age.test.osy).
+
+```osy
+using Osysharp.Http;
+using Osysharp.Shop;
+using Osysharp.Shop.AgeCheck.BankId;
+
+[Test]
+void a_coordination_number_carries_the_day_plus_sixty() {
+  Assert.Equal(Day(1990, 1, 1), BirthDateOfPersonalNumber("199001611236", Day(2026, 9, 29)));
+}
+```
+
+From [`tests/bankid-age.test.osy`](tests/bankid-age.test.osy).
+
+## Learn more
+
+- [Osysharp.Shop.AgeCheck.BankId in the package catalogue](https://osysharp.com/packages/#osysharp-shop-agecheck-bankid)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE).

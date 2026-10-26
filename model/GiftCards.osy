@@ -364,7 +364,7 @@ void AnswerCheck(GiftCardCheck check) {
 
 /// A day as the shop writes it — "3 October 2027" — in its own time zone.
 string LocalDay(DateTime instant) {
-  return DateOnly.FromDateTime(instant.InZone(TheShop().TimeZone)).ToString("d MMMM yyyy");
+  return DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(instant, TheShop().TimeZone)).ToString("d MMMM yyyy");
 }
 
 /// A code as typed, normalised: case, spaces and dashes do not matter.
@@ -643,9 +643,9 @@ GiftCard NewGiftCard(decimal amount, GiftCardEntryKind how, string? note, Order?
   var shop = TheShop();
   var code = NewCardCode();
   var normal = NormalCardCode(code);
-  var today = DateOnly.FromDateTime(DateTime.UtcNow.InZone(shop.TimeZone));
+  var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, shop.TimeZone));
   // Valid to the end of the day, the shop's months from today.
-  var expires = shop.TimeZone.Resolve(today.AddMonths(Math.Max(shop.GiftCardMonths, 12)).AddDays(1), TimeOnly.MinValue);
+  var expires = TimeZoneInfo.ConvertTimeToUtc((today.AddMonths(Math.Max(shop.GiftCardMonths, 12)).AddDays(1)).ToDateTime(TimeOnly.MinValue), shop.TimeZone);
   // In the currency of the order it comes from (sold with it, or given back to it) — booked at its invoice's rate.
   var invoice = order == null ? null : Invoice.FirstOrDefault(i => i.Order == order);
   var card = new GiftCard {
@@ -653,7 +653,7 @@ GiftCard NewGiftCard(decimal amount, GiftCardEntryKind how, string? note, Order?
     Currency = order == null ? null : order.Currency, Rate = order == null ? 1m : invoice != null ? invoice.Rate : order.Rate,
     IssuedAt = DateTime.UtcNow, ExpiresAt = expires, SoldWith = order, Line = line, Buyer = buyer,
     FromName = fromName, ToName = toName, SendTo = sendTo.Trim().ToLower(), Message = message,
-    SendAt = sendOn == null || sendOn!.Value <= today ? null : shop.TimeZone.Resolve(sendOn!.Value, new TimeOnly(8, 0)),
+    SendAt = sendOn == null || sendOn!.Value <= today ? null : TimeZoneInfo.ConvertTimeToUtc(sendOn!.Value.ToDateTime(new TimeOnly(8, 0)), shop.TimeZone),
     SealedCode = Crypto.Encrypt(code), IssuedBy = by, Reason = reason,
   };
   PostGiftCard(card, amount, how, note, order, ret, by, cause, ontoNewCard);
@@ -1211,7 +1211,7 @@ public string AddGiftCardToBag(Variant variant, decimal amount, string fromName,
   var email = toEmail.Trim().ToLower();
   if (email != "" && !email.Contains("@")) { return "Write the recipient's email address, or leave it empty to have it mailed to you."; }
   if (message.Trim().Length > 500) { return "Keep the message to 500 characters."; }
-  var today = DateOnly.FromDateTime(DateTime.UtcNow.InZone(shop.TimeZone));
+  var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, shop.TimeZone));
   if (sendOn != null && sendOn!.Value < today) { return "Choose today or a day to come."; }
   if (sendOn != null && sendOn!.Value > today.AddYears(1)) { return "Choose a day within a year."; }
   var bag = BagFor(true)!;

@@ -1,7 +1,7 @@
 package Osysharp.Shop {
-  version "1.4.0";
+  version "1.5.0";
   // Osysharp.UserAccounts 1.3's "cancel the change" link reaches the shop's address mail, and needs 0.15.1's slot.
-  minPlatform "0.15.1";
+  minPlatform "0.17.0";
   // A product capability: other kits meet it through a bridge that `completes` it, never by using it.
   role        vertical;
   summary     "an online shop's backend — catalogue, bag, orders, pluggable payment and delivery providers, returns, mail and the staff desk — with its customers and staff signing in through Osysharp.UserAccounts.";

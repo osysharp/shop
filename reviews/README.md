@@ -53,3 +53,91 @@ create only their own review of a product they bought (`HasBought`), and nothing
 `ReviewLifecycle` — Waiting, Published, Hidden — whose `Approve` and `Hide` only staff may raise and whose `Revise`
 only the author may. `ProductReviews` is an ordinary `IShopAddOn`, found by the shop: `Rating(product)` answers the aggregate for the
 structured data and `CustomerErased(account)` removes the customer's reviews.
+
+## Examples
+
+Taken from this package's own tests, which compile and run on every release.
+
+```osy
+using Osysharp.Identity;
+using Osysharp.Shop.Reviews;
+using Osysharp.Shop;
+
+[Test(Reviewed)]
+void the_average_reads_the_same_however_many_reviews_a_product_has() {
+  var tea = Called("tea");
+  var beans = Called("beans");
+  ReviewSummaryOf(Called("cake"));   // the first read sets up what every later one reuses — not what this compares
+  var mark = Cost.Mark();
+  var two = ReviewSummaryOf(tea);
+  var twoRows = Cost.RowsReadSince(mark);
+  mark = Cost.Mark();
+  var thirty = ReviewSummaryOf(beans);
+  var thirtyRows = Cost.RowsReadSince(mark);
+  Log.Information("The average: " + twoRows + " rows read for two reviews, " + thirtyRows + " for thirty");
+  Assert.Equal(2, two.Count);
+  Assert.Equal(5m, two.Average);
+  Assert.Equal(30, thirty.Count);
+  Assert.Equal(3m, thirty.Average);   // ratings 2,3,4,5,1 six times over: 90 / 30
+  Assert.Equal(twoRows, thirtyRows);
+}
+```
+
+From [`tests/cost.test.osy`](tests/cost.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.Shop.Reviews;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Shop)]
+void a_buyer_writes_a_review_that_waits_until_staff_publish_it() {
+  MajaBoughtBeans();
+  runas (Maja) {
+    var mine = WriteReview(Beans(), 5, "Bright and sweet", "Like blackcurrant jam on toast.");
+    Assert.Equal(ReviewState.Waiting, mine.State);
+    Assert.Equal("Maja B.", mine.ShownAs);                             // signed by the workflow, never typed
+    Assert.Equal("Bright and sweet", MyReview(Beans()).Title);        // she sees her own while it waits
+  }
+  Assert.Equal(0, PublishedReviews(Beans()).Count);                  // nobody else does yet
+  Assert.Equal(0, ProductReview.Count());
+  Assert.Equal(0, ReviewSummaryOf(Beans()).Count);
+  runas (Desk) { ApproveReview(ProductReview.Single()); }
+  var shown = PublishedReviews(Beans());
+  Assert.Equal(1, shown.Count);
+  Assert.Equal("Like blackcurrant jam on toast.", shown[0].Text);
+  Assert.Equal(5m, ReviewSummaryOf(Beans()).Average);
+  Assert.NotNull(shown[0].PublishedAt);
+}
+```
+
+From [`tests/reviews.test.osy`](tests/reviews.test.osy).
+
+```osy
+using Osysharp.Shop.Reviews;
+using Osysharp.Shop;
+using Osysharp.Ui;
+
+[Test(Shop)]
+void the_kit_announces_its_reviews_section_to_staff_only() {
+  runas (Desk) {
+    var link = AnnouncedSettings().Single(l => l.To == "/settings/reviews");
+    Assert.Equal("Reviews", link.Label);
+    Assert.Equal("Shop", link.Group);
+  }
+  runas (Maja) { Assert.False(AnnouncedSettings().Any(l => l.To == "/settings/reviews")); }
+}
+```
+
+From [`tests/settings.test.osy`](tests/settings.test.osy).
+
+## Learn more
+
+- [Osysharp.Shop.Reviews in the package catalogue](https://osysharp.com/packages/#osysharp-shop-reviews)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE).

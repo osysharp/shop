@@ -116,7 +116,7 @@ void a_code_once_per_customer_is_refused_to_a_guest_who_used_it_when_the_order_i
 void a_week_long_code_applies_from_the_start_of_its_first_day_to_the_end_of_its_last_in_the_shops_time() {
   // 15 % off, once per customer, 3–9 October — the owner's own example.
   runas (Desk) {
-    TheShop().TimeZone = Zone.Of("Europe/Stockholm");
+    TheShop().TimeZone = TimeZoneInfo.FindSystemTimeZoneById("Europe/Stockholm");
     UnitOfWork.Commit();
     var d = CreateCode("OCTOBER15", "October week", DiscountKind.Percent, 15m, 0m,
                        new DateOnly(2026, 10, 3), new DateOnly(2026, 10, 9), null, 1);

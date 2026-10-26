@@ -265,8 +265,8 @@ public DiscountCode CreateCode(string code, string label, DiscountKind kind, dec
   var zone = TheShop().TimeZone;
   var d = new DiscountCode { CodeHash = hash, Code = normal, Label = label.Trim() == "" ? normal : label.Trim(), Kind = kind,
                              Value = value, MinSpend = minSpend,
-                             StartsAt = startsOn == null ? null : zone.Resolve(startsOn.Value, TimeOnly.MinValue),
-                             EndsAt = endsOn == null ? null : zone.Resolve(endsOn.Value.AddDays(1), TimeOnly.MinValue),
+                             StartsAt = startsOn == null ? null : TimeZoneInfo.ConvertTimeToUtc(startsOn.Value.ToDateTime(TimeOnly.MinValue), zone),
+                             EndsAt = endsOn == null ? null : TimeZoneInfo.ConvertTimeToUtc(endsOn.Value.AddDays(1).ToDateTime(TimeOnly.MinValue), zone),
                              FirstDay = startsOn, LastDay = endsOn,
                              MaxUses = maxUses == 0 ? null : maxUses, MaxPerCustomer = maxPerCustomer == 0 ? null : maxPerCustomer };
   UnitOfWork.Commit();
@@ -282,7 +282,7 @@ public string GiveCode(string email, DiscountKind kind, decimal value, int days,
   if (days < 1) { throw new Exception("Make it valid for at least a day."); }
   if (reason.Trim() == "") { throw new Exception("Say why — it is kept with the code, for whoever reads it next."); }
   var shop = TheShop();
-  var today = DateOnly.FromDateTime(DateTime.UtcNow.InZone(shop.TimeZone));
+  var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, shop.TimeZone));
   var code = "GIFT-" + Security.RandomHex(4).ToUpper();
   var made = CreateCode(code, $"A gift from {shop.Name}", kind, value, 0m, today, today.AddDays(days - 1), 1, 1);
   made.ForEmail = to;

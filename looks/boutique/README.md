@@ -31,3 +31,35 @@ Vall fashion catalogue's photographs (`/_osy/files/public/products/…`); staff 
 - Worn by the Vall fashion store, whose tests walk the store in every look at a phone's width and a wide screen's (`osy test --pixels`).
 - `osy docs ui-looks` — looks, contracts, and switching a version's look.
 - `osy docs ui-building-a-look` — building a look of your own, from an empty kit.
+
+## Examples
+
+Taken from this package's own tests, which compile and run on every release.
+
+```osy
+using Osysharp.Shop;
+
+[Test(Window)]
+void the_looks_check_out_opens_the_stores_checkout_page() {
+  runas (new Visitor { Id = "v-boutique" }) {
+    Assert.Equal("", AddToBag(Variant.Single(), 1));
+    Ui.Visit("/");
+    Ui.Click("Bag, 1 item(s)");                       // the shell's bag button: its words, and how many
+    Ui.Click("Check out");
+    Assert.OnPage("/checkout");
+    Assert.Visible("Checkout — shoes made to last");
+  }
+}
+```
+
+From [`tests/checkout.test.osy`](tests/checkout.test.osy).
+
+## Learn more
+
+- [Osysharp.Shop.Looks.Boutique in the package catalogue](https://osysharp.com/packages/#osysharp-shop-looks-boutique)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE). Third-party components keep their own terms: see [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).

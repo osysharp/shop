@@ -32,3 +32,30 @@ Second Round catalogue's pieces and photographs (`/_osy/files/public/products/�
 - Worn by the Second Round thrift store, whose tests walk the shop in every look at a phone's width and a wide screen's (`osy test --pixels`).
 - `osy docs ui-looks` — looks, contracts, and switching a version's look.
 - `osy docs ui-building-a-look` — building a look of your own, from an empty kit.
+
+## Examples
+
+Taken from this package's own tests, which compile and run on every release.
+
+```osy
+[Test]
+void the_looks_bag_button_opens_the_stores_bag_page() {
+  Ui.Visit("/");
+  Assert.Visible("Packets swapped each spring");
+  Ui.Click("Bag");
+  Assert.OnPage("/bag");
+  Assert.Visible("Your bag — packets swapped each spring");
+}
+```
+
+From [`tests/bag.test.osy`](tests/bag.test.osy).
+
+## Learn more
+
+- [Osysharp.Shop.Looks.Swap in the package catalogue](https://osysharp.com/packages/#osysharp-shop-looks-swap)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE). Third-party components keep their own terms: see [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).

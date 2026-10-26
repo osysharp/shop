@@ -32,3 +32,109 @@ Vall fashion catalogue's photographs (`/_osy/files/public/products/…`); staff 
 - Worn by the Vall fashion store, whose tests walk the store in every look at a phone's width and a wide screen's (`osy test --pixels`).
 - `osy docs ui-looks` — looks, contracts, and switching a version's look.
 - `osy docs ui-building-a-look` — building a look of your own, from an empty kit.
+
+## Examples
+
+Taken from this package's own tests, which compile and run on every release, and from its reference page, whose examples are compiled when the site is built.
+
+```osy
+[Test]
+void the_looks_bag_button_opens_the_stores_bag_page() {
+  Ui.Visit("/");
+  Assert.Visible("Decks, pressed in small runs");
+  Ui.Click("Bag");
+  Assert.OnPage("/bag");
+  Assert.Visible("Your bag — decks, pressed in small runs");
+}
+```
+
+From [`tests/bag.test.osy`](tests/bag.test.osy).
+
+```osy
+app Linen {
+  use Osysharp.Ui;
+  use Osysharp.Storage;
+  use Osysharp.Blocks;
+  use Osysharp.Shop@1 { egress "api.resend.com"; secret "ResendApiKey"; }
+  use Osysharp.PageBuilder@1;
+  use Osysharp.Site.Looks@0;
+  model "model/**/*.osy";
+}
+
+using Osysharp.Shop;
+using Osysharp.Shop.Looks;
+
+app.Look = Linen;
+
+[Layout]
+[AllowAnonymous]
+component Shop() { render { ShopFrame { Outlet(retain: 8); } } }
+
+[Route("/")]
+[Layout(Shop)]
+[AllowAnonymous]
+component Home() { render { FrontPage(); } }
+
+[Route("/shop")]
+[Layout(Shop)]
+[AllowAnonymous]
+component Catalogue() { render { ShopSearchPage(); } }
+
+[Route("/p/{slug}")]
+[Layout(Shop)]
+[AllowAnonymous]
+component Piece(string slug) {
+  live var product = Product.Include(p => p.Images).Include(p => p.Variants).SingleOrDefault(p => p.Slug == slug);
+  render { ProductPage(product, note: "Free returns within 30 days."); }
+}
+
+[Route("/account")]
+[Layout(Shop)]
+component AccountPage() { render { ShopSection { ShopAccountPanel(); } } }
+```
+
+From [the reference page](https://osysharp.com/reference/ui/building-a-look/).
+
+```osy
+namespace MyStore.Looks.Linen;
+
+/// Undyed linen, ink-blue words, one rust accent for the thing to press.
+look Linen {
+  Label = "Linen";
+  Theme = LinenTheme;
+}
+
+theme LinenTheme {
+  Colors {
+    Bg            = "#F6F2EA";
+    OnBg          = "#1D2A3A";
+    Surface       = "#EDE6DA";
+    OnSurface     = "#1D2A3A";
+    Border        = "#D9D0C1";
+    TextMuted     = "#6B6A66";
+    TextSecondary = "#3E4652";
+    Primary       = Palette.From("#A2472B");
+    OnPrimary     = "#FFFFFF";
+    OnImage       = "#FFFFFF";
+  }
+  Font {
+    Display = "\"Fraunces\", Georgia, serif";
+    Sans    = "\"Hanken Grotesk\", system-ui, sans-serif";
+  }
+  FontSize { Mega = "clamp(48px, 7vw, 112px)"; Title = "26px"; Body = "15px"; }
+  Radius { Card = "6px"; Md = "6px"; }
+}
+```
+
+From [the reference page](https://osysharp.com/reference/ui/building-a-look/).
+
+## Learn more
+
+- [The Osysharp.Shop.Looks.Drop reference](https://osysharp.com/reference/ui/building-a-look/)
+- [Osysharp.Shop.Looks.Drop in the package catalogue](https://osysharp.com/packages/#osysharp-shop-looks-drop)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE). Third-party components keep their own terms: see [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).

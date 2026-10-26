@@ -66,3 +66,106 @@ From code: `Verifications(from, to)`, `VatReport(from, to)`, `SieText(from, to)`
 
 The books read the shop's invoices and credit notes, never its orders: an order changes, a document does not, so an
 export of a period comes out the same whenever it is made.
+
+## Examples
+
+Taken from this package's own tests, which compile and run on every release.
+
+```osy
+using Osysharp.Identity;
+using Osysharp.Shop.Bookkeeping;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Books)]
+void a_days_sales_are_one_balanced_verification_per_rate() {
+  var lamp = Sold("v-1", "Lamp");
+  var book = Sold("v-2", "Book");
+  runas (Desk) {
+    foreach (var r in new List<string> { lamp, book }) {
+      var o = Order.Single(x => x.Reference == r);
+      MarkPaid(o, "");
+      Workflow.Settle(o);
+    }
+    var day = Verifications(Today(), Today()).Single();
+    Assert.Equal(0m, day.Postings.Sum(p => p.Amount));                          // balanced
+    Assert.Equal(1474m, day.Postings.Single(p => p.Account == "1930").Amount);  // paid by hand → the bank
+    Assert.Equal(-1000m, day.Postings.Single(p => p.Account == "3001").Amount); // 1250 incl. 25 %
+    Assert.Equal(-250m, day.Postings.Single(p => p.Account == "2611").Amount);
+    Assert.Equal(-200m, day.Postings.Single(p => p.Account == "3002").Amount);  // 224 incl. 12 %
+    Assert.Equal(-24m, day.Postings.Single(p => p.Account == "2621").Amount);
+  }
+}
+```
+
+From [`tests/books.test.osy`](tests/books.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.Shop.Bookkeeping;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Books)]
+void the_verifications_read_the_same_however_many_sales_the_period_has() {
+  runas (Desk) { Verifications(Today(), Today()); }   // sets up what every later read reuses — not what this compares
+  Sales("a", 2);
+  var two = 0;
+  runas (Desk) {
+    var mark = Cost.Mark();
+    Verifications(Today(), Today());
+    two = Cost.StatementsSince(mark);
+  }
+  Sales("b", 4);
+  runas (Desk) {
+    var mark = Cost.Mark();
+    var day = Verifications(Today(), Today()).Single();
+    var six = Cost.StatementsSince(mark);
+    Log.Information("Verifications: " + two + " statements for two sales, " + six + " for six");
+    Assert.Equal(0m, day.Postings.Sum(p => p.Amount));   // still balanced
+    Assert.Equal(two, six);
+  }
+}
+```
+
+From [`tests/cost.test.osy`](tests/cost.test.osy).
+
+```osy
+using Osysharp.Shop.Bookkeeping;
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Books)]
+void a_card_on_the_counters_terminal_is_a_sale_that_waits_in_clearing() {
+  var reference = "";
+  runas (Desk) {
+    var bag = StartCounterSale(null);
+    AddToCounterSale(bag, Variant.Single(v => v.Product.Name == "Lamp"), 1);
+    var order = PlaceCounterSale(bag, CounterCardKey(), false, "", null);
+    CardPaidAtCounter(order, "");
+    reference = order.Reference;
+  }
+  runas (Desk) {
+    var o = Order.Single(x => x.Reference == reference);
+    Workflow.Settle(o);
+    Assert.Equal(OrderStatus.Delivered, o.Status);
+    var sold = Verifications(Today(), Today()).Single();
+    Assert.Equal(0m, sold.Postings.Sum(p => p.Amount));
+    Assert.Equal(o.Total, sold.Postings.Single(p => p.Account == "1580").Amount);   // with the card acquirer
+    Assert.False(sold.Postings.Any(p => p.Account == "1930"));                     // not in the bank yet
+    Assert.Equal(-o.Vat, sold.Postings.Where(p => p.Account.StartsWith("26")).Sum(p => p.Amount));
+  }
+}
+```
+
+From [`tests/counter.test.osy`](tests/counter.test.osy).
+
+## Learn more
+
+- [Osysharp.Shop.Bookkeeping in the package catalogue](https://osysharp.com/packages/#osysharp-shop-bookkeeping)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE).

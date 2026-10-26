@@ -24,6 +24,10 @@ void Catalogue() {
   Plan("free", "Free", false, 0m, 0m, [("unit.storage-gb", 1)]);
   Plan("addon.ha", "High availability", true, 50m, 500m, [("feature.ha", null)]);
   Plan("addon.storage", "10 GB more storage", true, 20m, 200m, [("unit.storage-gb", 10)]);
+  // The tests app tells "the other system" at hooks.example.test of every period drawn (model/shop.osy). A test calls
+  // no other machine unless it says so, so the notice is answered here for every test; one about the notice stubs it
+  // again to see what was sent, or to answer otherwise.
+  Http.Post.Stub((url, body) => new HttpResponse { StatusCode = 200, Body = "" });
 }
 
 void Plan(string key, string name, bool addOn, decimal fourWeeks, decimal yearly, List<(string, int?)> grants) {

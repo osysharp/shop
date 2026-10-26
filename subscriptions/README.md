@@ -64,3 +64,98 @@ leave it out, `use Osysharp.Shop.Subscriptions@0 { without SubscriptionsDeskPage
 your own, `SubscriptionsDesk()`.
 
 Plans are priced per interval. Metered usage and prepaid top-ups are not part of the kit.
+
+## Examples
+
+Taken from this package's own tests, which compile and run on every release.
+
+```osy
+using Osysharp.Identity;
+using Osysharp.Shop.Subscriptions;
+using Osysharp.Shop;
+
+[Test(Catalogue)]
+void what_a_customer_may_use_reads_the_same_however_many_items_they_hold() {
+  runas (Ops) {
+    var one = NewCustomer("one@example.test");
+    var three = NewCustomer("three@example.test");
+    Subscribe(one, "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    Subscribe(three, "pro", ["addon.ha", "addon.storage"], BillingInterval.EveryFourWeeks, "banktransfer", "");
+    EntitlementsOf(Customer());   // the first read sets up what every later one reuses — not what this compares
+    var mark = Cost.Mark();
+    var few = EntitlementsOf(one);
+    var oneCost = Cost.StatementsSince(mark);
+    mark = Cost.Mark();
+    var many = EntitlementsOf(three);
+    var threeCost = Cost.StatementsSince(mark);
+    Log.Information("EntitlementsOf: " + oneCost + " statements for one item, " + threeCost + " for three");
+    Assert.Equal(10, few.Single(e => e.Key == "unit.storage-gb").Limit);
+    Assert.Equal(20, many.Single(e => e.Key == "unit.storage-gb").Limit);    // 10 + 10
+    Assert.True(many.Any(e => e.Key == "feature.ha"));
+    Assert.Equal(oneCost, threeCost);
+  }
+}
+```
+
+From [`tests/cost.test.osy`](tests/cost.test.osy).
+
+```osy
+using Osysharp.Http;
+using Osysharp.Shop;
+using Osysharp.Shop.Subscriptions;
+using Osysharp.Workflow;
+
+[Test(Catalogue)]
+void a_renewal_waits_while_its_currency_cannot_be_charged_and_says_why() {
+  Http.Post.Stub((url, body) => new HttpResponse { StatusCode = 200, Body = "" });
+  SellsInKronor(11.3205m);
+  var sub = MajaSubscribesInKronor("v-sek-stale");
+  runas (Ops) {
+    // A month on and no rate since: nothing is charged — never in euros instead.
+    TestClock.Advance(TimeSpan.FromDays(29));
+    Workflow.Settle(sub);
+    Assert.Equal(1, sub.Charges.Count());
+    Assert.Contains("The rate for SEK is out of date", sub.RenewalWaits);
+    // A stale rate is not the shop stopping the currency: nothing moves (only an explicit stop does).
+    Assert.Null(sub.MovesOn);
+    Assert.Equal(0, ShopMail.Count(m => m.Subject.Contains("charged in EUR")));
+    Assert.Equal(SubscriptionStatus.Active, sub.Status);
+    // A fresh rate the next day: renewed, in kronor.
+    TestClock.Advance(TimeSpan.FromDays(1));
+    SellsInKronor(11.3205m);
+    Workflow.Settle(sub);
+    Assert.Equal("", sub.RenewalWaits);
+    Assert.Equal("SEK", sub.Charges.Single(c => c.At > sub.StartedAt && c.Kind == ChargeKind.Renewal).Order!.Currency);
+  }
+}
+```
+
+From [`tests/currencies.test.osy`](tests/currencies.test.osy).
+
+```osy
+using Osysharp.Shop;
+using Osysharp.Shop.Subscriptions;
+using Osysharp.Workflow;
+
+[Test(Catalogue)]
+void a_customer_cannot_pause_anyone_elses_subscription() {
+  Subscription? sub = null;
+  runas (Ops) { sub = Subscribe(ShopAccount.Single(s => s.Email == "olle@example.test"), "pro", [], BillingInterval.EveryFourWeeks, "banktransfer", ""); }
+  runas (Maja) { Assert.Throws<Exception>(() => PauseSubscription(sub!)); }
+  // Asked as staff: a call is refused before its body runs when its caller cannot read the row it is handed, and
+  // nobody is signed in here (no page was visited).
+  runas (Ops) { Assert.Equal(SubscriptionStatus.Active, StatusOf(sub!)); }
+}
+```
+
+From [`tests/desk-ui.test.osy`](tests/desk-ui.test.osy).
+
+## Learn more
+
+- [Osysharp.Shop.Subscriptions in the package catalogue](https://osysharp.com/packages/#osysharp-shop-subscriptions)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE).

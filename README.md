@@ -482,3 +482,82 @@ It depends on `Osysharp.Payments.Stripe`, `Osysharp.Payments.Klarna`, `Osysharp.
 returning, store credit, gift cards, downloads, the desk and the account pages), with Stripe, Klarna and Resend
 stubbed. It does not ship with the package.
 
+## Examples
+
+Taken from this package's own tests, which compile and run on every release.
+
+```osy
+using Osysharp.UserAccounts;
+using Osysharp.Mail;
+using Osysharp.Shop;
+
+[Test(Floor)]
+[runas(Maja)]
+void a_customer_changes_their_password_with_the_current_one() {
+  Assert.Throws<Exception>(() => ChangePassword("maja@example.test", "wrong", "a-new-pass-1"));
+  Assert.NotEqual("", ChangePassword("maja@example.test", "maja-pass-1", "a-new-pass-1"));
+  Assert.NotEqual("", SignIn("maja@example.test", "a-new-pass-1").Ticket);
+  Assert.Equal("", SignIn("maja@example.test", "maja-pass-1").Ticket);
+}
+```
+
+From [`tests/account-changes.test.osy`](tests/account-changes.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.Mail;
+using Osysharp.Shop;
+
+[Test(Floor)]
+void a_visitor_signs_up_as_a_customer_and_signs_in_again() {
+  Assert.NotEqual("", SignUp("New@Example.test ", "long-enough-1", "Nils").Ticket);
+  Assert.NotEqual("", SignIn("new@example.test", "long-enough-1").Ticket);   // one account, however the address was typed
+  runas (Desk) {
+    // The shop's own kind of account, with the customer role and nothing more.
+    var nils = ShopAccount.Single(a => a.Email == "new@example.test");
+    Assert.Equal("Nils", nils.DisplayName);
+    Assert.True(RoleGrant.Any(g => g.Member == nils && g.Role == ShopRole.Customer));
+    Assert.False(RoleGrant.Any(g => g.Member == nils && g.Role == ShopRole.Staff));
+  }
+}
+```
+
+From [`tests/accounts.test.osy`](tests/accounts.test.osy).
+
+```osy
+using Osysharp.Shop;
+using Osysharp.Workflow;
+
+[Test(Floor)]
+void an_add_on_takes_its_share_off_and_the_order_keeps_the_line() {
+  runas (new Visitor { Id = "v-promo-1" }) {
+    Bag("v-promo-1", "Loafer", "38", 2);
+    Assert.Equal(24m, BagAdjustments("SE").Single().Amount);
+    var receipt = PlaceOrder("Maja Berg", "maja@example.test", "", "courier", "banktransfer",
+                             "Storgatan 1", "11122", "Stockholm", "SE");
+    Assert.Equal(24m, receipt.Discount);
+    Assert.Equal(240m - 24m + 50m, receipt.Total);
+    runas (Desk) {
+      var order = Order.Single(o => o.Reference == receipt.Reference);
+      var line = order.Adjustments.Single();
+      Assert.Equal("promo", line.Source);
+      Assert.Equal("PROMO10 — 10% off", line.Label);
+      Assert.Equal("promo10", line.Reference);
+      Assert.True(ShopMail.Any(m => m.Subject.StartsWith("Your order") && m.Text.Contains("PROMO10 — 10% off")));
+    }
+  }
+}
+```
+
+From [`tests/addons.test.osy`](tests/addons.test.osy).
+
+## Learn more
+
+- [Osysharp.Shop in the package catalogue](https://osysharp.com/packages/#osysharp-shop)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE).

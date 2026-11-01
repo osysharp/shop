@@ -1,0 +1,26 @@
+// A product's cover and whether it is sold out, read off the product itself — computed members over its photographs
+// and its variants (these once compiled and then failed on every read).
+
+using Osysharp.Shop;
+
+[Test(Floor)]
+void a_products_cover_and_stock_read_off_the_product() {
+  runas (Desk) {
+    var loafer = Product.Single(p => p.Slug == "loafer");
+    Assert.Equal("", loafer.Cover);                    // no photograph yet
+    Assert.False(loafer.SoldOut);
+    Assert.False(loafer.OnHold);
+
+    new ProductImage { Product = loafer, Path = "public/products/loafer-2.png", Rank = 2 };
+    new ProductImage { Product = loafer, Path = "public/products/loafer-1.png", Rank = 1 };
+    Pick("Loafer", "38").Stock = 0;
+    Pick("Loafer", "39").Stock = 0;
+    UnitOfWork.Commit();
+  }
+  runas (Maja) {
+    var loafer = Product.Single(p => p.Slug == "loafer");
+    Assert.Equal("public/products/loafer-1.png", loafer.Cover);   // the first by Rank
+    Assert.True(loafer.SoldOut);
+    Assert.False(Product.Single(p => p.Slug == "chelsea").SoldOut);
+  }
+}

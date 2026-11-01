@@ -94,10 +94,16 @@ public entity Product {
   [ForeignKey(Product)] Variant[] Variants;
   [ForeignKey(Product)] ProductSpec[] Specs;
 
-  // ⚠ What a page shows about a product — its cover, whether it is sold, reserved or available — is read off its
-  //   loaded `Images` and `Variants` (`bike.Variants.All(v => v.Stock == 0)`), not off computed properties: a computed
-  //   member over a child COLLECTION compiles and then cannot be read yet. The server-side
-  //   answers are the functions at the foot of this file.
+  /// The cover photograph — the first by `Rank` — as a path in the file store, or "" when it has none.
+  string Cover => Images.OrderBy(i => i.Rank).Select(i => i.Path).FirstOrDefault() ?? "";
+  /// Nothing left to buy right now, though some may only be held by an unpaid order (`SoldOut(variants)` below).
+  bool SoldOut => Variants.All(v => !v.Unlimited && v.Stock == 0);
+  /// An unpaid order is holding some of it — "reserved" rather than "sold" (`OnHold(variants)` below).
+  bool OnHold => Variants.Any(v => v.Reserved > 0);
+
+  // A page that has the product's `Images` and `Variants` loaded already can ask them directly
+  // (`CoverPhoto(bike.Images)`, `SoldOut(bike.Variants)` — the functions at the foot of this file), without a read
+  // of its own per product.
 
   security {
     // Anyone sees a listed or archived product; a draft is the desk's alone — staff by a rule of their own, so a

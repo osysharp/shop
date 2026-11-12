@@ -29,10 +29,14 @@ theme SwapTheme {
     // inside a look that stays as it is.
     Elevated = Colors.Bg;
     Sunken   = Colors.Muted;
-    Danger   = "#B42318";   // errors and refusals, set for this look's light ground
-    Success  = "#1E6B45";   // done, paid, in stock, set for this look's light ground
-    Warning  = "#8A5300";   // a caution that is not yet a refusal, set for this look's light ground
+    Danger   = Palette.From("#B42318");   // errors and refusals, set for this look's light ground
+    Success  = Palette.From("#1E6B45");   // done, paid, in stock, set for this look's light ground
+    Warning  = Palette.From("#8A5300");   // a caution that is not yet a refusal, set for this look's light ground
     Waiting  = "#55587F";   // pending — held, not yet paid, set for this look's light ground
+    Info     = Palette.From("#2B62B0");   // running, in progress — neither the accent nor a verdict, set for this look's light ground
+    // A waiting pill: this look's own muted ground and its Waiting as the words (the floor's pair is moded).
+    WaitingTint = Colors.Muted;
+    WaitingInk  = Colors.Waiting;
   }
   Font {
     Display = "\"IBM Plex Sans Condensed\", system-ui, sans-serif"; Sans = "\"IBM Plex Sans Condensed\", system-ui, sans-serif";

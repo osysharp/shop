@@ -56,6 +56,7 @@ app Linen {
   use Osysharp.Storage;
   use Osysharp.Blocks;
   use Osysharp.Shop@1 { egress "api.resend.com"; secret "ResendApiKey"; }
+  use Osysharp.Resend@0 { egress "api.resend.com"; }
   use Osysharp.PageBuilder@1;
   use Osysharp.Site.Looks@0;
   model "model/**/*.osy";

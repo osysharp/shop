@@ -38,10 +38,14 @@ theme DropTheme {
     // inside a look that stays as it is.
     Elevated = Colors.Surface;
     Sunken   = Colors.Muted;
-    Danger   = "#FF6B5E";   // errors and refusals, set for this look's dark ground
-    Success  = "#4CC38A";   // done, paid, in stock, set for this look's dark ground
-    Warning  = "#F5B738";   // a caution that is not yet a refusal, set for this look's dark ground
+    Danger   = Palette.From("#FF6B5E");   // errors and refusals, set for this look's dark ground
+    Success  = Palette.From("#4CC38A");   // done, paid, in stock, set for this look's dark ground
+    Warning  = Palette.From("#F5B738");   // a caution that is not yet a refusal, set for this look's dark ground
     Waiting  = "#A5A8D0";   // pending — held, not yet paid, set for this look's dark ground
+    Info     = Palette.From("#6AA3F0");   // running, in progress — neither the accent nor a verdict, set for this look's dark ground
+    // A waiting pill: this look's own muted ground and its Waiting as the words (the floor's pair is moded).
+    WaitingTint = Colors.Muted;
+    WaitingInk  = Colors.Waiting;
   }
   Font {
     Display = "\"Anton\", \"Arial Narrow\", sans-serif";

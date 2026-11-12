@@ -4,8 +4,8 @@
 // It draws the general site contract (`Osysharp.Site.Looks`) and the shop's (`Osysharp.Shop.Looks`). It carries NO data
 // and NO logic of its own — a store installs it beside others and staff pick it per version of the site.
 package Osysharp.Shop.Looks.Index {
-  version     "0.4.0";
-  minPlatform "0.15.0";
+  version     "0.5.0";
+  minPlatform "0.19.0";
   summary     "a shop look — the index: grey, black Geist, mono prices, the shelf tree always in view, an acid-lime accent.";
   model "model/**/*.osy";
   use Osysharp.Ui;

@@ -29,10 +29,15 @@ theme KioskTheme {
     // inside a look that stays as it is.
     Elevated = Colors.Surface;
     Sunken   = Colors.Muted;
-    Danger   = "#B42318";   // errors and refusals, set for this look's light ground
-    Success  = Colors.Primary;   // done, paid, in stock — this look's accent is already its green
-    Warning  = "#8A5300";   // a caution that is not yet a refusal, set for this look's light ground
+    Danger   = Palette.From("#B42318");   // errors and refusals, set for this look's light ground
+    Success  = Palette.From("#0E9F6E");   // done, paid, in stock — this look's accent is already its green
+    Warning  = Palette.From("#8A5300");   // a caution that is not yet a refusal, set for this look's light ground
     Waiting  = "#55587F";   // pending — held, not yet paid, set for this look's light ground
+    Info     = Palette.From("#2B62B0");   // running, in progress — neither the accent nor a verdict, set for this look's light ground
+    // A waiting pill: this look's own muted ground and its Waiting as the words (the floor's pair is moded).
+    WaitingTint = Colors.Muted;
+    WaitingInk  = Colors.Waiting;
+    DefaultInk  = "#625F70";   // a plain pill's words: this look's TextMuted, taken dark enough to read on Muted (4.5:1)
   }
   Font {
     Display = "\"Familjen Grotesk\", system-ui, sans-serif"; Sans = "\"Familjen Grotesk\", system-ui, sans-serif";

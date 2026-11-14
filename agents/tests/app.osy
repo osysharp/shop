@@ -3,10 +3,11 @@
 app ShopAgentsKitTests {
   model "model/**/*.osy";
   tests "**/*.test.osy";
-  use Osysharp.Shop.Agents@1;
+  use Osysharp.Shop.Agents@2;
   use Osysharp.Shop@1 { egress "api.resend.com"; secret "ResendApiKey"; }
-  use Osysharp.Agents@1;
-  use Osysharp.Agents.Testing@1;
+  use Osysharp.Resend@0 { egress "api.resend.com"; }
+  use Osysharp.Agents@2;
+  use Osysharp.Agents.Testing@2;
   use Osysharp.Llm@2;
   use Osysharp.Identity@0;
   use Osysharp.UserAccounts@1;

@@ -13,14 +13,14 @@
 // ⚑ A BRIDGE, SO NEITHER KIT DEPENDS ON THE OTHER. An app that uses Osysharp.Shop and Osysharp.Agents gets it from
 //   `osy lock`; it lists the writer in `app.Agents` and says who uses and supervises agents.
 package Osysharp.Shop.Agents {
-  version     "1.0.0";
-  minPlatform "0.15.1";
+  version     "2.0.0";
+  minPlatform "0.19.0";
   summary     "the shop's agents: a description writer that drafts a product's description from its details when staff ask, offered in the product editor to change and save — never used by itself; it holds no tools, reads only what the asking staff member reads, is off until staff switch it on, and may spend 5 cents a draft.";
-  completes   Osysharp.Shop@1, Osysharp.Agents@1;
+  completes   Osysharp.Shop@1, Osysharp.Agents@2;
   model "model/*.osy";
   tests "tests";
   use Osysharp.Shop@1;
-  use Osysharp.Agents@1;
+  use Osysharp.Agents@2;
   use Osysharp.Llm@2;
   use Osysharp.Identity@0;
   use Osysharp.UserAccounts@1;

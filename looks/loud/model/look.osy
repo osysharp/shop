@@ -30,6 +30,8 @@ theme LoudTheme {
     Elevated = Colors.Surface;
     Sunken   = Colors.Muted;
     Danger   = Palette.From("#A3001B");   // errors and refusals, set for this look's light ground
+    BorderDanger = Colors.Danger;          // an invalid field's outline: this look's danger, not the floor's moded red
+    SettingSwitchKnob = "#FFFFFF";       // a setting switch's knob: white on this look's tracks
     Success  = Palette.From("#0B5D2E");   // done, paid, in stock, set for this look's light ground
     Warning  = Palette.From("#6E3A00");   // a caution that is not yet a refusal, set for this look's light ground
     Waiting  = "#3D3F6E";   // pending — held, not yet paid, set for this look's light ground

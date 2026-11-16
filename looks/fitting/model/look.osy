@@ -30,6 +30,8 @@ theme FittingTheme {
     Elevated = Colors.Surface;
     Sunken   = Colors.Muted;
     Danger   = Palette.From("#FF6B5E");   // errors and refusals, set for this look's dark ground
+    BorderDanger = Colors.Danger;          // an invalid field's outline: this look's danger, not the floor's moded red
+    SettingSwitchKnob = "#FFFFFF";       // a setting switch's knob: white on this look's tracks
     Success  = Palette.From("#4CC38A");   // done, paid, in stock, set for this look's dark ground
     Warning  = Palette.From("#F5B738");   // a caution that is not yet a refusal, set for this look's dark ground
     Waiting  = "#A5A8D0";   // pending — held, not yet paid, set for this look's dark ground

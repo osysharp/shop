@@ -30,6 +30,8 @@ theme SwapTheme {
     Elevated = Colors.Bg;
     Sunken   = Colors.Muted;
     Danger   = Palette.From("#B42318");   // errors and refusals, set for this look's light ground
+    BorderDanger = Colors.Danger;          // an invalid field's outline: this look's danger, not the floor's moded red
+    SettingSwitchKnob = "#FFFFFF";       // a setting switch's knob: white on this look's tracks
     Success  = Palette.From("#1E6B45");   // done, paid, in stock, set for this look's light ground
     Warning  = Palette.From("#8A5300");   // a caution that is not yet a refusal, set for this look's light ground
     Waiting  = "#55587F";   // pending — held, not yet paid, set for this look's light ground

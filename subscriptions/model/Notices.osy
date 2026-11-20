@@ -24,7 +24,7 @@ public class SubscriptionSetup {
   public string NoticeSecret = "";
   /// How long before a higher price applies its subscribers must hear of it — EU consumer law expects notice before
   /// a price rise, and the chance to cancel first. An organisation's policy may set the least notice its apps give.
-  [OrgPolicy(OrgPolicyMode.Range)] public int PriceNoticeDays = 30;
+  [OrgPolicy(OrgPolicyMode.Range, Name = "Price rise notice (days)")] public int PriceNoticeDays = 30;
 }
 
 // ⚠ Appended, never inserted: an enum is stored by position.

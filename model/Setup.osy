@@ -108,8 +108,8 @@ public class ShopSetup {
   /// The month (1–12) and day the shop's FISCAL year ends — 12/31 when it is the calendar year. An invoiced buyer kept
   /// for the books counts from it (`BooksKeepUntil`): Bokföringslagen keeps an accounting record for seven years from the
   /// end of the calendar year in which its fiscal year ended. An organisation's policy may set it.
-  [OrgPolicy(OrgPolicyMode.Default)] public int FiscalYearEndMonth = 12;
-  [OrgPolicy(OrgPolicyMode.Default)] public int FiscalYearEndDay = 31;
+  [OrgPolicy(OrgPolicyMode.Default, Name = "Shop fiscal year end (month)")] public int FiscalYearEndMonth = 12;
+  [OrgPolicy(OrgPolicyMode.Default, Name = "Shop fiscal year end (day)")] public int FiscalYearEndDay = 31;
 }
 
 /// The desk's say over a provider the app lists: whether it is offered, and where it comes in the list. The app

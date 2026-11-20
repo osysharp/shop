@@ -142,3 +142,22 @@ decimal Checkout2(string visitId) {
   Bag(visitId, "Loafer", "39", 1);
   return Checkout(visitId).Total;
 }
+
+// A visitor's view is counted by the kit alone — no visitor makes or changes a count row themselves.
+[Test(Floor)]
+void a_visitor_cannot_make_or_change_a_view_count() {
+  var loafer = Product.Single(p => p.Name == "Loafer");
+  ViewedProduct(loafer); ViewedProduct(loafer); ViewedProduct(loafer);
+  Assert.Denied(() => { new ProductDayViews { Product = loafer, Day = DateTime.UtcNow.Date, Count = 1000 }; UnitOfWork.Commit(); });
+  UnitOfWork.Discard();
+  runas (Desk) { Assert.Equal(3, ProductDayViews.Where(v => v.Product == loafer).Sum(v => v.Count)); }
+}
+
+// …and one row a day holds the count: `ViewedProduct`'s update selects through its read mark (`allow read via`), not
+// the visitor's read (staff only), so it finds today's row, where three views once made three rows.
+[Test(Floor)]
+void a_visitors_views_of_one_day_are_one_row() {
+  var loafer = Product.Single(p => p.Name == "Loafer");
+  ViewedProduct(loafer); ViewedProduct(loafer); ViewedProduct(loafer);
+  runas (Desk) { Assert.Equal(1, ProductDayViews.Count(v => v.Product == loafer)); }
+}

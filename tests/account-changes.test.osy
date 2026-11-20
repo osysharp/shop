@@ -18,13 +18,15 @@ void a_customer_changes_their_password_with_the_current_one() {
 [Test(Floor)]
 void a_customer_moves_to_a_new_address_once_it_confirms() {
   runas (Maja) {
-    Assert.Throws<Exception>(() => ChangeEmail("maja@example.test", "maja-pass-1", "olle@example.test"));   // taken
+    // A taken address is answered as a free one (it never says who has an account), is mailed nothing, and never moves her.
+    Assert.Equal("", ChangeEmail("maja@example.test", "maja-pass-1", "olle@example.test"));
     Assert.Equal("", ChangeEmail("maja@example.test", "maja-pass-1", "Maja@New.test"));
   }
   Assert.Equal("", SignIn("maja@new.test", "maja-pass-1").Ticket);   // not yet
   string token = "";
   runas (AuthBootstrap) {
-    Assert.Equal(1, OutgoingMail.Count(m => m.To == "maja@example.test" && m.Subject == "Your Kit Test Shop account's address is changing"));
+    Assert.Equal(0, OutgoingMail.Count(m => m.To == "olle@example.test" && m.Subject.StartsWith("Confirm")));
+    Assert.Equal(2, OutgoingMail.Count(m => m.To == "maja@example.test" && m.Subject == "Your Kit Test Shop account's address is changing"));
     var confirm = OutgoingMail.Single(m => m.To == "maja@new.test");
     Assert.Equal("Confirm your new address at Kit Test Shop", confirm.Subject);
     var text = confirm.Text ?? "";

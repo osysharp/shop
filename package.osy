@@ -1,7 +1,7 @@
 package Osysharp.Shop {
-  version "1.7.0";
+  version "1.8.0";
   // Osysharp.UserAccounts 1.3's "cancel the change" link reaches the shop's address mail, and needs 0.15.1's slot.
-  minPlatform "0.17.0";
+  minPlatform "0.22.0";
   // A product capability: other kits meet it through a bridge that `completes` it, never by using it.
   role        vertical;
   summary     "an online shop's backend — catalogue, bag, orders, pluggable payment and delivery providers, returns, mail and the staff desk — with its customers and staff signing in through Osysharp.UserAccounts.";
@@ -29,7 +29,9 @@ package Osysharp.Shop {
   // Staff write a mail's own words in Markdown, on the desk, and they are kept as data (model/mail/Words.osy).
   use Osysharp.Markdown;
   use Osysharp.MarkdownEditor@1;
-  use Osysharp.Resend@0 { egress "api.resend.com"; }
+  // The shop's mail goes through Resend, which reaches api.resend.com. A package cannot grant that; the APP that uses
+  // the shop grants it: `use Osysharp.Resend@0 { egress "api.resend.com"; }`.
+  use Osysharp.Resend@0;
   // Newsletters and the bag reminder go to readers of the app's mailing lists — consent, unsubscribe, suppression.
   use Osysharp.MailingLists@0;
   // The shop's blocks (model/ui/Blocks.osy) — what staff place in a store's regions at the page desk.

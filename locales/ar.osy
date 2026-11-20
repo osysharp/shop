@@ -10,6 +10,22 @@ translations ar {
   /// also in SettleReturn
   error "That return has nothing in it." => "هذا الإرجاع فارغ.";
 
+  // ── AccountDoorCodeMail ──
+  /// AccountDoorCodeMail · text on the page
+  /// shown through EmailHeading.text
+  /// beside: "The code works for fifteen minutes. If you did not ask, ignore this mail — nothing changes."
+  /// also in AccountVerifyMail
+  /// also in ShopConfirmAddressMail
+  text "Confirm your address" => "أكّد عنوانك";
+  /// AccountDoorCodeMail · text on the page
+  /// placeholders: {code} = code (string)
+  /// shown through EmailText.text
+  /// beside: "Confirm your address", "The code works for fifteen minutes. If you did not ask, ignore this mail — nothing changes."
+  /// also in AccountVerifyMail
+  /// also in AccountStepUpMail
+  /// also in ShopConfirmAddressMail
+  text "Type this code where you were asked for it: {code}" => "اكتب هذا الرمز حيث طُلب منك: {code}";
+
   // ── AccountExistsMail ──
   /// AccountExistsMail · a button's label · at most ~13 characters
   /// shown through EmailButton.label
@@ -47,6 +63,7 @@ translations ar {
   /// shown through Badge.label
   /// also in Osysharp.MailingLists.SubscriberState
   /// also in Osysharp.MailingLists.ConsentKind
+  /// also in Osysharp.Shop.CounterCustomerStatus
   label "Confirmed" => "مؤكَّد";
   /// AccountSettings · a label (a field, a list item, a menu entry) · at most ~10 characters
   /// shown through Field.label
@@ -70,19 +87,7 @@ translations ar {
   /// shown through EmailHeading.text
   /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask, ignore this mail — nothing changes."
   /// also in ShopConfirmAddressMail
-  text "Confirm your address" => "أكّد عنوانك";
-  /// AccountVerifyMail · text on the page
-  /// shown through EmailHeading.text
-  /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask, ignore this mail — nothing changes."
-  /// also in ShopConfirmAddressMail
   text "Confirm your new address" => "أكّد عنوانك الجديد";
-  /// AccountVerifyMail · text on the page
-  /// placeholders: {code} = code (string)
-  /// shown through EmailText.text
-  /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask, ignore this mail — nothing changes."
-  /// also in AccountStepUpMail
-  /// also in ShopConfirmAddressMail
-  text "Type this code where you were asked for it: {code}" => "اكتب هذا الرمز حيث طُلب منك: {code}";
 
   // ── AddLocation ──
   /// AddLocation · an error message
@@ -400,10 +405,6 @@ translations ar {
   /// CheckoutGiftCard · a button's label · at most ~28 characters
   /// shown through Button.label
   button "Pay with a gift card" => "ادفع ببطاقة هدية";
-  /// CheckoutGiftCard · a button's label · at most ~12 characters
-  /// shown through Button.label
-  /// beside: "220px"
-  button "Use it" => "استخدمها";
   /// CheckoutGiftCard · a label (a field, a list item, a menu entry) · at most ~20 characters
   /// shown through Field.label
   /// also in ShopGiftCardBalance
@@ -469,9 +470,9 @@ translations ar {
   // ── ConfirmStep ──
   /// ConfirmStep · a button's label · at most ~12 characters
   /// shown through Button.label
+  /// also in SettingNumber
   /// also in AccountSettings
   /// also in DeskStock
-  /// also in DeskLocations
   button "Cancel" => "إلغاء";
 
   // ── CounterCode ──
@@ -586,9 +587,9 @@ translations ar {
   /// shown through Alert.message
   message " No ID to ask for. The carrier makes its own check at the door." => " لا حاجة لطلب الهوية. تتحقق شركة الشحن بنفسها عند الباب.";
   /// DeskAgeLine · message
-  /// placeholders: {ToString} = order.AgeVerifiedAt.Value.ToString(…) (DateTime)
+  /// placeholders: {order.AgeVerifiedAt} = order.AgeVerifiedAt.Value.ToString(…) (DateTime)
   /// shown through Alert.message
-  message " on {ToString}." => " بتاريخ {ToString}.";
+  message " on {order.AgeVerifiedAt}." => " بتاريخ {order.AgeVerifiedAt}.";
   /// DeskAgeLine · message
   /// placeholders: {order.AgeChecked} = order.AgeChecked (int) — {order.AgeChecked} is a count: give one text per plural form
   /// shown through Alert.message
@@ -684,8 +685,8 @@ translations ar {
   /// DeskCampaigns · text on the page
   text "No newsletters yet." => "لا نشرات بعد.";
   /// DeskCampaigns · text on the page
-  /// placeholders: {c.State} = c.State (string), {ToString} = c.CreatedAt.ToString(…) (DateTime)
-  text "{c.State} · started {ToString}" => "{c.State} · بدأت {ToString}";
+  /// placeholders: {c.State} = c.State (string), {c.CreatedAt} = c.CreatedAt.ToString(…) (DateTime)
+  text "{c.State} · started {c.CreatedAt}" => "{c.State} · بدأت {c.CreatedAt}";
 
   // ── DeskCustomers ──
   /// DeskCustomers · a button's label · at most ~26 characters
@@ -700,6 +701,9 @@ translations ar {
   /// DeskCustomers · a button's label · at most ~26 characters
   /// shown through Button.label
   button "Give store credit…" => "منح رصيد في المتجر…";
+  /// DeskCustomers · a button's label · at most ~12 characters
+  /// shown through Button.label
+  button "Orders" => "الطلبات";
   /// DeskCustomers · a label (a field, a list item, a menu entry) · at most ~12 characters
   /// shown through DecimalField.label
   /// beside: "Reason — they are mailed it", "Give it"
@@ -909,9 +913,9 @@ translations ar {
   /// placeholders: {f.Views} = f.Views (int), {f.Conversion} = f.Conversion (decimal) — {f.Views} is a count: give one text per plural form
   text "{f.Views} views · {f.Conversion}% bought" => { zero: "{f.Views} مشاهدة · {f.Conversion}% اشتروا", one: "{f.Views} مشاهدة · {f.Conversion}% اشتروا", two: "{f.Views} مشاهدة · {f.Conversion}% اشتروا", few: "{f.Views} مشاهدات · {f.Conversion}% اشتروا", many: "{f.Views} مشاهدة · {f.Conversion}% اشتروا", other: "{f.Views} مشاهدة · {f.Conversion}% اشتروا" };
   /// DeskFigures · text on the page
-  /// placeholders: {s.Product.Name} = s.Product.Name (string), {s.Percent} = s.Percent (int), {ToString} = s.EndsAt.ToString(…) (DateTime) — {s.Percent} is a count: give one text per plural form
+  /// placeholders: {s.Product.Name} = s.Product.Name (string), {s.Percent} = s.Percent (int), {s.EndsAt} = s.EndsAt.ToString(…) (DateTime) — {s.Percent} is a count: give one text per plural form
   /// beside: "End sale"
-  text "{s.Product.Name} · {s.Percent}% off until {ToString}" => { zero: "{s.Product.Name} · خصم {s.Percent}% حتى {ToString}", one: "{s.Product.Name} · خصم {s.Percent}% حتى {ToString}", two: "{s.Product.Name} · خصم {s.Percent}% حتى {ToString}", few: "{s.Product.Name} · خصم {s.Percent}% حتى {ToString}", many: "{s.Product.Name} · خصم {s.Percent}% حتى {ToString}", other: "{s.Product.Name} · خصم {s.Percent}% حتى {ToString}" };
+  text "{s.Product.Name} · {s.Percent}% off until {s.EndsAt}" => { zero: "{s.Product.Name} · خصم {s.Percent}% حتى {s.EndsAt}", one: "{s.Product.Name} · خصم {s.Percent}% حتى {s.EndsAt}", two: "{s.Product.Name} · خصم {s.Percent}% حتى {s.EndsAt}", few: "{s.Product.Name} · خصم {s.Percent}% حتى {s.EndsAt}", many: "{s.Product.Name} · خصم {s.Percent}% حتى {s.EndsAt}", other: "{s.Product.Name} · خصم {s.Percent}% حتى {s.EndsAt}" };
   /// DeskFigures · text on the page
   /// placeholders: {totals.Returns} = totals.Returns (int), {Money} = Money(…) (string) — {totals.Returns} is a count: give one text per plural form
   /// shown through Metric.text
@@ -1179,9 +1183,6 @@ translations ar {
   /// shown through Checkbox.label
   /// beside: "repeat(auto-fit, minmax(180px, 1fr))", "Sends parcels from here", "Cancel"
   label "Customers collect orders here" => "يستلم العملاء الطلبات من هنا";
-  /// DeskLocations · a label (a field, a list item, a menu entry) · at most ~13 characters
-  /// shown through Badge.label
-  label "Default" => "افتراضي";
   /// DeskLocations · a label (a field, a list item, a menu entry) · at most ~12 characters
   /// shown through Checkbox.label
   label "In use" => "مستخدم";
@@ -1346,6 +1347,10 @@ translations ar {
   /// DeskOrderActions · a button's label · at most ~15 characters
   /// shown through Button.label
   button "Delivered" => "تم التوصيل";
+  /// DeskOrderActions · a button's label · at most ~13 characters
+  /// shown through Button.label
+  /// also in DeskProductEditor
+  button "Details" => "البيانات";
   /// DeskOrderActions · a button's label · at most ~11 characters
   /// shown through Button.label
   button "Label" => "الملصق";
@@ -1450,9 +1455,9 @@ translations ar {
   /// shown through Dialog.subtitle
   subtitle "The reservation ends and its goods go back on sale." => "ينتهي الحجز وتعود سلعه إلى البيع.";
   /// DeskOrderActions · a subtitle
-  /// placeholders: {StatusText} = StatusText(…) (string), {ToString} = order.PlacedAt.ToString(…) (DateTime), {value} = … (string)
+  /// placeholders: {StatusText} = StatusText(…) (string), {order.PlacedAt} = order.PlacedAt.ToString(…) (DateTime), {value} = … (string)
   /// shown through Dialog.subtitle
-  subtitle "{StatusText} · placed {ToString} · {value}" => "{StatusText} · بتاريخ {ToString} · {value}";
+  subtitle "{StatusText} · placed {order.PlacedAt} · {value}" => "{StatusText} · بتاريخ {order.PlacedAt} · {value}";
   /// DeskOrderActions · a subtitle
   /// placeholders: {value} = … (string)
   /// shown through Dialog.subtitle
@@ -1594,8 +1599,8 @@ translations ar {
   /// DeskOutbox · text on the page
   text "Sent and waiting" => "المُرسلة والمنتظرة";
   /// DeskOutbox · text on the page
-  /// placeholders: {m.To} = m.To (string), {ToString} = m.CreatedAt.ToString(…) (DateTime), {m.Status.Label} = m.Status.Label (string)
-  text "to {m.To} · {ToString} · {m.Status.Label}" => "إلى {m.To} · {ToString} · {m.Status.Label}";
+  /// placeholders: {m.To} = m.To (string), {m.CreatedAt} = m.CreatedAt.ToString(…) (DateTime), {m.Status.Label} = m.Status.Label (string)
+  text "to {m.To} · {m.CreatedAt} · {m.Status.Label}" => "إلى {m.To} · {m.CreatedAt} · {m.Status.Label}";
 
   // ── DeskPayLink ──
   /// DeskPayLink · a control's name for screen readers
@@ -1652,27 +1657,40 @@ translations ar {
   /// shown through Dialog.subtitle
   subtitle "The carrier comes to the shop for the day's parcels." => "تأتي شركة الشحن إلى المتجر لاستلام طرود اليوم.";
   /// DeskPickups · text on the page
-  /// placeholders: {ToString} = p.Date.ToString(…) (DateOnly), {p.Reference} = p.Reference (string)
+  /// placeholders: {p.Date} = p.Date.ToString(…) (DateOnly), {p.Reference} = p.Reference (string)
   /// shown through done
-  text "Booked for {ToString} — reference {p.Reference}." => "حُجز لـ {ToString}، المرجع {p.Reference}.";
+  text "Booked for {p.Date} — reference {p.Reference}." => "حُجز لـ {p.Date}، المرجع {p.Reference}.";
   /// DeskPickups · text on the page
   /// shown through problem
   text "Choose the carrier and the day." => "اختر شركة الشحن واليوم.";
   /// DeskPickups · text on the page
-  /// placeholders: {value} = … (string), {ToString} = p.Date.ToString(…) (DateOnly), {p.Parcels} = p.Parcels (int), {p.Reference} = p.Reference (string) — {p.Parcels} is a count: give one text per plural form
-  text "{value} comes {ToString} for {p.Parcels} parcel(s) · {p.Reference}" => { zero: "يأتي {value} {ToString} لاستلام {p.Parcels} طرد · {p.Reference}", one: "يأتي {value} {ToString} لاستلام {p.Parcels} طرد · {p.Reference}", two: "يأتي {value} {ToString} لاستلام {p.Parcels} طرد · {p.Reference}", few: "يأتي {value} {ToString} لاستلام {p.Parcels} طرود · {p.Reference}", many: "يأتي {value} {ToString} لاستلام {p.Parcels} طردًا · {p.Reference}", other: "يأتي {value} {ToString} لاستلام {p.Parcels} طرد · {p.Reference}" };
+  /// placeholders: {value} = … (string), {p.Date} = p.Date.ToString(…) (DateOnly), {p.Parcels} = p.Parcels (int), {p.Reference} = p.Reference (string) — {p.Parcels} is a count: give one text per plural form
+  text "{value} comes {p.Date} for {p.Parcels} parcel(s) · {p.Reference}" => { zero: "يأتي {value} {p.Date} لاستلام {p.Parcels} طرد · {p.Reference}", one: "يأتي {value} {p.Date} لاستلام {p.Parcels} طرد · {p.Reference}", two: "يأتي {value} {p.Date} لاستلام {p.Parcels} طرد · {p.Reference}", few: "يأتي {value} {p.Date} لاستلام {p.Parcels} طرود · {p.Reference}", many: "يأتي {value} {p.Date} لاستلام {p.Parcels} طردًا · {p.Reference}", other: "يأتي {value} {p.Date} لاستلام {p.Parcels} طرد · {p.Reference}" };
   /// DeskPickups · a title
   /// shown through Dialog.title
   title "Book a pickup" => "احجز استلامًا";
 
   // ── DeskProductEditor ──
+  /// DeskProductEditor · a control's name for screen readers
+  accessibleName "Offered description" => "الوصف المقترح";
   /// DeskProductEditor · a button's label · at most ~14 characters
   /// shown through Button.label
   /// beside: "90px", "120px", "90px", "110px"
   button "Add size" => "أضف مقاسًا";
+  /// DeskProductEditor · a button's label · at most ~27 characters
+  /// shown through Button.label
+  button "Draft a description" => "مسودة وصف";
+  /// DeskProductEditor · a button's label · at most ~33 characters
+  /// shown through Button.label
+  button "Drafting a description…" => "جارٍ كتابة المسودة…";
   /// DeskProductEditor · a button's label · at most ~18 characters
   /// shown through Button.label
   button "Save product" => "حفظ المنتج";
+  /// DeskProductEditor · a button's label · at most ~12 characters
+  /// shown through Button.label
+  /// beside: "Discard"
+  /// also in CheckoutGiftCard
+  button "Use it" => "استخدمها";
   /// DeskProductEditor · a hint under a field
   /// shown through Field.hint
   /// beside: "The product", "Name", "Brand", "Category"
@@ -1756,6 +1774,9 @@ translations ar {
   /// shown through Field.label
   /// beside: "Tariff number (HS)", "Made in"
   label "What customs calls it" => "الوصف الجمركي";
+  /// DeskProductEditor · note
+  /// shown through note
+  note "Put in the description — save the product to keep it." => "أدخل الوصف — احفظ المنتج للاحتفاظ به.";
   /// DeskProductEditor · placeholder text inside an empty field · at most ~8 characters
   /// shown through Field.placeholder
   /// beside: "Tariff number (HS)", "What customs calls it"
@@ -1785,6 +1806,13 @@ translations ar {
   /// beside: "repeat(auto-fill, minmax(120px, 1fr))", "image/*"
   text "Photographs" => "الصور";
   /// DeskProductEditor · text on the page
+  /// placeholders: {offer.PreparedBy} = offer.PreparedBy (string)
+  /// beside: "Read it before you use it — nothing changes until you save the product.", "Use it"
+  text "Prepared by {offer.PreparedBy}" => "أعدّه {offer.PreparedBy}";
+  /// DeskProductEditor · text on the page
+  /// beside: "Use it"
+  text "Read it before you use it — nothing changes until you save the product." => "اقرأه قبل استخدامه — لا يتغيّر شيء حتى تحفظ المنتج.";
+  /// DeskProductEditor · text on the page
   /// shown through SectionLabel.text
   /// beside: "90px"
   text "Sizes and stock" => "المقاسات والمخزون";
@@ -1803,6 +1831,24 @@ translations ar {
   /// DeskProductEditor · a title
   /// shown through Dialog.title
   title "One size" => "مقاس واحد";
+
+  // ── DeskProductWriterSettings ──
+  /// DeskProductWriterSettings · a button's label · at most ~17 characters
+  /// shown through Button.label
+  button "Turn it off" => "إيقاف";
+  /// DeskProductWriterSettings · a button's label · at most ~16 characters
+  /// shown through Button.label
+  button "Turn it on" => "تشغيل";
+  /// DeskProductWriterSettings · text on the page
+  /// placeholders: {now.Drafts} = now.Drafts (int), {value} = ….ToString(…) (decimal) — {now.Drafts} is a count: give one text per plural form
+  text "Last 30 days: {now.Drafts} drafts, ${value} at the model's list price." => { zero: "آخر 30 يومًا: {now.Drafts} مسودة، ${value} بسعر القائمة للنموذج.", one: "آخر 30 يومًا: {now.Drafts} مسودة، ${value} بسعر القائمة للنموذج.", two: "آخر 30 يومًا: {now.Drafts} مسودة، ${value} بسعر القائمة للنموذج.", few: "آخر 30 يومًا: {now.Drafts} مسودة، ${value} بسعر القائمة للنموذج.", many: "آخر 30 يومًا: {now.Drafts} مسودة، ${value} بسعر القائمة للنموذج.", other: "آخر 30 يومًا: {now.Drafts} مسودة، ${value} بسعر القائمة للنموذج." };
+  /// DeskProductWriterSettings · text on the page
+  /// beside: "Turn it on"
+  text "Off — staff do not see “Draft a description”." => "متوقف — لا يرى الموظفون «مسودة وصف».";
+  /// DeskProductWriterSettings · text on the page
+  /// placeholders: {now.AnsweredFor} = now.AnsweredFor (string)
+  /// beside: "Turn it off"
+  text "On — staff see “Draft a description” on every product. {now.AnsweredFor} answers for it." => "يعمل — يرى الموظفون «مسودة وصف» على كل منتج. {now.AnsweredFor} مسؤول عنه.";
 
   // ── DeskProducts ──
   /// DeskProducts · a control's name for screen readers
@@ -2294,8 +2340,8 @@ translations ar {
   /// shown through SectionLabel.text
   text "On the way" => "في الطريق";
   /// DeskTransfers · text on the page
-  /// placeholders: {t.From.Name} = t.From.Name (string), {t.To.Name} = t.To.Name (string), {ToString} = t.SentAt.ToString(…) (DateTime), {value} = … (string)
-  text "{t.From.Name} to {t.To.Name}, sent {ToString}{value}" => "من {t.From.Name} إلى {t.To.Name}، أُرسل {ToString}{value}";
+  /// placeholders: {t.From.Name} = t.From.Name (string), {t.To.Name} = t.To.Name (string), {t.SentAt} = t.SentAt.ToString(…) (DateTime), {value} = … (string)
+  text "{t.From.Name} to {t.To.Name}, sent {t.SentAt}{value}" => "من {t.From.Name} إلى {t.To.Name}، أُرسل {t.SentAt}{value}";
 
   // ── DeskWholesale ──
   /// DeskWholesale · a control's name for screen readers
@@ -2410,8 +2456,8 @@ translations ar {
   /// shown through SectionLabel.text
   text "Wholesale accounts" => "حسابات الجملة";
   /// DeskWholesale · text on the page
-  /// placeholders: {value} = … (string), {ToString} = o.InvoiceDueAt.Value.ToString(…) (DateTime)
-  text "{value} · due {ToString}" => "{value} · تستحق في {ToString}";
+  /// placeholders: {value} = … (string), {o.InvoiceDueAt} = o.InvoiceDueAt.Value.ToString(…) (DateTime)
+  text "{value} · due {o.InvoiceDueAt}" => "{value} · تستحق في {o.InvoiceDueAt}";
   /// DeskWholesale · a title
   /// shown through Dialog.title
   title "A new price list" => "قائمة أسعار جديدة";
@@ -2430,9 +2476,9 @@ translations ar {
 
   // ── DistanceText ──
   /// DistanceText · text on the page
-  /// placeholders: {ToString} = Convert.ToString(…) (int), {ToString2} = Convert.ToString(…) (int) — {ToString} is a count: give one text per plural form
+  /// placeholders: {Convert} = Convert.ToString(…) (int), {Convert2} = Convert.ToString(…) (int) — {Convert} is a count: give one text per plural form
   /// shown through DistanceText()
-  text "{ToString}.{ToString2} km" => { zero: "{ToString}.{ToString2} كم", one: "{ToString}.{ToString2} كم", two: "{ToString}.{ToString2} كم", few: "{ToString}.{ToString2} كم", many: "{ToString}.{ToString2} كم", other: "{ToString}.{ToString2} كم" };
+  text "{Convert}.{Convert2} km" => { zero: "{Convert}.{Convert2} كم", one: "{Convert}.{Convert2} كم", two: "{Convert}.{Convert2} كم", few: "{Convert}.{Convert2} كم", many: "{Convert}.{Convert2} كم", other: "{Convert}.{Convert2} كم" };
   /// DistanceText · text on the page
   /// placeholders: {m} = m (int) — {m} is a count: give one text per plural form
   /// shown through DistanceText()
@@ -2458,6 +2504,27 @@ translations ar {
   /// DownloadProblem · text on the page
   /// shown through DownloadProblem()
   text "This download has been closed: the order was refunded or called off." => "أُغلق هذا التنزيل: فقد استُرد مبلغ الطلب أو أُلغي.";
+
+  // ── DraftDescription ──
+  /// DraftDescription · text on the page
+  /// placeholders: {ToLower} = ….ToLower(…) (string)
+  /// shown through DescriptionDraft.Problem
+  text "The {ToLower} is off. Switch it on in the desk's Settings." => "{ToLower} متوقف. شغّله من الإعدادات في المكتب.";
+  /// DraftDescription · text on the page
+  /// placeholders: {ToLower} = ….ToLower(…) (string)
+  /// shown through DescriptionDraft.Problem
+  text "The {ToLower} wrote nothing this time. Try again, or write it yourself." => "لم يكتب {ToLower} شيئًا هذه المرة. حاول مرة أخرى، أو اكتبه بنفسك.";
+  /// DraftDescription · text on the page
+  /// shown through DescriptionDraft.Problem
+  text "This shop has no description writer." => "ليس لهذا المتجر كاتب أوصاف.";
+
+  // ── Drawer ──
+  /// Drawer · a button's label · at most ~11 characters
+  /// shown through Drawer.closeLabel
+  /// also in StorefrontBagPanel
+  /// also in StorefrontMenuDrawer
+  /// also in DeskOrderActions
+  button "Close" => "إغلاق";
 
   // ── DurationField ──
   /// DurationField · a button's label · at most ~10 characters
@@ -2633,9 +2700,9 @@ translations ar {
   /// shown through ImportRow()
   message "Stock \"{Get}\" is not a whole number." => "المخزون \"{Get}\" ليس عددًا صحيحًا.";
   /// ImportRow · message
-  /// placeholders: {value} = … (int) — {value} is a count: give one text per plural form
+  /// placeholders: {stock} = … (int) — {stock} is a count: give one text per plural form
   /// shown through ImportRow()
-  message "Stock {value} is less than the other locations hold. Move it with a transfer, or count it at each location on the desk." => { zero: "المخزون {value} أقل مما تحتفظ به المواقع الأخرى. انقله عبر عملية نقل، أو اجرده في كل موقع من المكتب.", one: "المخزون {value} أقل مما تحتفظ به المواقع الأخرى. انقله عبر عملية نقل، أو اجرده في كل موقع من المكتب.", two: "المخزون {value} أقل مما تحتفظ به المواقع الأخرى. انقله عبر عملية نقل، أو اجرده في كل موقع من المكتب.", few: "المخزون {value} أقل مما تحتفظ به المواقع الأخرى. انقله عبر عملية نقل، أو اجرده في كل موقع من المكتب.", many: "المخزون {value} أقل مما تحتفظ به المواقع الأخرى. انقله عبر عملية نقل، أو اجرده في كل موقع من المكتب.", other: "المخزون {value} أقل مما تحتفظ به المواقع الأخرى. انقله عبر عملية نقل، أو اجرده في كل موقع من المكتب." };
+  message "Stock {stock} is less than the other locations hold. Move it with a transfer, or count it at each location on the desk." => { zero: "المخزون {stock} أقل مما تحتفظ به المواقع الأخرى. انقله عبر عملية نقل، أو اجرده في كل موقع من المكتب.", one: "المخزون {stock} أقل مما تحتفظ به المواقع الأخرى. انقله عبر عملية نقل، أو اجرده في كل موقع من المكتب.", two: "المخزون {stock} أقل مما تحتفظ به المواقع الأخرى. انقله عبر عملية نقل، أو اجرده في كل موقع من المكتب.", few: "المخزون {stock} أقل مما تحتفظ به المواقع الأخرى. انقله عبر عملية نقل، أو اجرده في كل موقع من المكتب.", many: "المخزون {stock} أقل مما تحتفظ به المواقع الأخرى. انقله عبر عملية نقل، أو اجرده في كل موقع من المكتب.", other: "المخزون {stock} أقل مما تحتفظ به المواقع الأخرى. انقله عبر عملية نقل، أو اجرده في كل موقع من المكتب." };
   /// ImportRow · message
   /// placeholders: {categoryName} = categoryName (string)
   /// shown through ImportRow()
@@ -3564,6 +3631,13 @@ translations ar {
   /// beside: "Reduced rate", "Lower rate", "No VAT"
   label "Standard rate" => "النسبة العادية";
 
+  // ── Osysharp.Ui.SettingFrom ──
+  /// Osysharp.Ui.SettingFrom · a label (a field, a list item, a menu entry) · at most ~13 characters
+  /// shown through Osysharp.Ui.SettingFrom.Default
+  /// beside: "Inherited", "Set here", "Locked"
+  /// also in DeskLocations
+  label "Default" => "افتراضي";
+
   // ── PackingSlipPdf ──
   /// PackingSlipPdf · a title
   /// placeholders: {order.Reference} = order.Reference (string), {shop.Name} = shop.Name (string)
@@ -4027,9 +4101,9 @@ translations ar {
   /// SaveActions · a button's label · at most ~10 characters
   /// shown through Button.label
   /// beside: "Edited", "Discard"
+  /// also in SettingNumber
   /// also in SaveBar
   /// also in AccountSettings
-  /// also in DeskStock
   button "Save" => "حفظ";
 
   // ── SavePriceList ──
@@ -4236,6 +4310,21 @@ translations ar {
   /// shown through Exception
   error "{code} is the shop's own currency — set the price itself." => "{code} هي عملة المتجر نفسه. حدّد السعر الأساسي مباشرة.";
 
+  // ── SettingReasonBox ──
+  /// SettingReasonBox · a label (a field, a list item, a menu entry) · at most ~9 characters
+  /// shown through Field.label
+  /// also in SettingsReview
+  /// also in ShopCounter
+  /// also in DeskOrderActions
+  label "Why" => "السبب";
+
+  // ── SettingSwitch ──
+  /// SettingSwitch · text on the page
+  /// shown through SettingSwitch.offWord
+  /// also in ShopPayByLink
+  /// also in ShopOrderByLink
+  text "Off" => "خصم";
+
   // ── SettleCounterReturn ──
   /// SettleCounterReturn · an error message
   /// shown through Exception
@@ -4296,43 +4385,40 @@ translations ar {
   text "Somebody — hopefully you — tried to open a {shop.Name} account with this address. It already has one, so nothing new was made." => "حاول شخص ما، ونأمل أن تكون أنت، فتح حساب في {shop.Name} بهذا العنوان. وللعنوان حساب بالفعل، فلم يُنشأ حساب جديد.";
 
   // ── ShopAccountPanel ──
-  /// ShopAccountPanel · a button's label · at most ~13 characters
-  /// shown through Tab.label
-  /// beside: "Orders", "Store credit", "Downloads", "Gift cards"
-  /// also in DeskOrderActions
-  /// also in DeskProductEditor
-  button "Details" => "البيانات";
-  /// ShopAccountPanel · a button's label · at most ~15 characters
-  /// shown through Tab.label
-  /// beside: "Orders", "Store credit", "Gift cards", "Details"
-  button "Downloads" => "التنزيلات";
-  /// ShopAccountPanel · a button's label · at most ~16 characters
-  /// shown through Tab.label
-  /// beside: "Orders", "Store credit", "Downloads", "Details"
-  /// also in ShopDesk
-  button "Gift cards" => "بطاقات الهدية";
-  /// ShopAccountPanel · a button's label · at most ~12 characters
-  /// shown through Tab.label
-  /// beside: "Store credit", "Downloads", "Gift cards", "Details"
-  /// also in ShopDesk
-  /// also in DeskCustomers
-  button "Orders" => "الطلبات";
   /// ShopAccountPanel · a button's label · at most ~14 characters
   /// shown through Button.label
   /// beside: "Your account"
   button "Sign out" => "تسجيل الخروج";
-  /// ShopAccountPanel · a button's label · at most ~13 characters
+  /// ShopAccountPanel · a tab's label · at most ~13 characters
   /// shown through Tab.label
   /// beside: "Orders", "Store credit", "Downloads", "Gift cards"
-  button "Sign-in" => "الدخول";
-  /// ShopAccountPanel · a button's label · at most ~18 characters
+  tab "Details" => "البيانات";
+  /// ShopAccountPanel · a tab's label · at most ~15 characters
+  /// shown through Tab.label
+  /// beside: "Orders", "Store credit", "Gift cards", "Details"
+  tab "Downloads" => "التنزيلات";
+  /// ShopAccountPanel · a tab's label · at most ~16 characters
+  /// shown through Tab.label
+  /// beside: "Orders", "Store credit", "Downloads", "Details"
+  /// also in ShopDesk
+  tab "Gift cards" => "بطاقات الهدية";
+  /// ShopAccountPanel · a tab's label · at most ~12 characters
+  /// shown through Tab.label
+  /// beside: "Store credit", "Downloads", "Gift cards", "Details"
+  /// also in ShopDesk
+  tab "Orders" => "الطلبات";
+  /// ShopAccountPanel · a tab's label · at most ~13 characters
+  /// shown through Tab.label
+  /// beside: "Orders", "Store credit", "Downloads", "Gift cards"
+  tab "Sign-in" => "الدخول";
+  /// ShopAccountPanel · a tab's label · at most ~18 characters
   /// shown through Tab.label
   /// beside: "Orders", "Downloads", "Gift cards", "Details"
-  button "Store credit" => "رصيد المتجر";
-  /// ShopAccountPanel · a button's label · at most ~15 characters
+  tab "Store credit" => "رصيد المتجر";
+  /// ShopAccountPanel · a tab's label · at most ~15 characters
   /// shown through Tab.label
   /// beside: "Orders", "Store credit", "Downloads", "Gift cards"
-  button "Your data" => "بياناتك";
+  tab "Your data" => "بياناتك";
 
   // ── ShopAddress ──
   /// ShopAddress · a control's name for screen readers
@@ -4625,15 +4711,6 @@ translations ar {
   /// also in DeskProductEditor
   /// also in CheckoutGiftCard
   button "Remove" => "إزالة";
-  /// ShopCounter · a button's label · at most ~13 characters
-  /// shown through Tab.label
-  /// beside: "Sale", "Today"
-  /// also in ShopDesk
-  button "Returns" => "مرتجعات";
-  /// ShopCounter · a button's label · at most ~10 characters
-  /// shown through Tab.label
-  /// beside: "Returns", "Today"
-  button "Sale" => "بيع";
   /// ShopCounter · a button's label · at most ~33 characters
   /// shown through Button.label
   /// beside: "Their code"
@@ -4658,10 +4735,6 @@ translations ar {
   /// shown through Button.label
   /// beside: "Customer", "Gift card or code", "Total", "Email the receipt to"
   button "Take {Money}" => "استلم {Money}";
-  /// ShopCounter · a button's label · at most ~11 characters
-  /// shown through Tab.label
-  /// beside: "Sale", "Returns"
-  button "Today" => "اليوم";
   /// ShopCounter · a button's label · at most ~15 characters
   /// shown through Button.label
   button "Try again" => "حاول مجددًا";
@@ -4706,13 +4779,6 @@ translations ar {
   /// ShopCounter · a label (a field, a list item, a menu entry) · at most ~16 characters
   /// shown through Field.label
   label "Their code" => "رمزه";
-  /// ShopCounter · a label (a field, a list item, a menu entry) · at most ~9 characters
-  /// shown through Field.label
-  /// beside: "How many", "Take it back"
-  /// also in DeskOrderActions
-  /// also in DeskStock
-  /// also in DeskGiftCards
-  label "Why" => "السبب";
   /// ShopCounter · message
   /// placeholders: {Money} = Money(…) (string), {value} = … (string)
   /// shown through Alert.message
@@ -4737,6 +4803,19 @@ translations ar {
   /// ShopCounter · placeholder text inside an empty field · at most ~31 characters
   /// shown through Field.placeholder
   placeholder "Six letters and digits" => "ستة حروف وأرقام";
+  /// ShopCounter · a tab's label · at most ~13 characters
+  /// shown through Tab.label
+  /// beside: "Sale", "Today"
+  /// also in ShopDesk
+  tab "Returns" => "مرتجعات";
+  /// ShopCounter · a tab's label · at most ~10 characters
+  /// shown through Tab.label
+  /// beside: "Returns", "Today"
+  tab "Sale" => "بيع";
+  /// ShopCounter · a tab's label · at most ~11 characters
+  /// shown through Tab.label
+  /// beside: "Sale", "Returns"
+  tab "Today" => "اليوم";
   /// ShopCounter · text on the page
   /// placeholders: {ask.PriceList} = ask.PriceList (string)
   text "Buys on {ask.PriceList}" => "يشتري وفق {ask.PriceList}";
@@ -4845,42 +4924,42 @@ translations ar {
   title "Counter" => "الكاشير";
 
   // ── ShopDesk ──
-  /// ShopDesk · a button's label · at most ~15 characters
+  /// ShopDesk · a tab's label · at most ~15 characters
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Products", "Stock"
-  button "Customers" => "العملاء";
-  /// ShopDesk · a button's label · at most ~13 characters
+  tab "Customers" => "العملاء";
+  /// ShopDesk · a tab's label · at most ~13 characters
   /// shown through Tab.label
   /// beside: "Orders", "Products", "Stock", "Returns"
-  button "Figures" => "الأرقام";
-  /// ShopDesk · a button's label · at most ~10 characters
+  tab "Figures" => "الأرقام";
+  /// ShopDesk · a tab's label · at most ~10 characters
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Products", "Stock"
-  button "Mail" => "البريد";
-  /// ShopDesk · a button's label · at most ~17 characters
+  tab "Mail" => "البريد";
+  /// ShopDesk · a tab's label · at most ~17 characters
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Products", "Stock"
-  button "Newsletters" => "النشرات";
-  /// ShopDesk · a button's label · at most ~14 characters
+  tab "Newsletters" => "النشرات";
+  /// ShopDesk · a tab's label · at most ~14 characters
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Stock", "Returns"
-  button "Products" => "المنتجات";
-  /// ShopDesk · a button's label · at most ~14 characters
+  tab "Products" => "المنتجات";
+  /// ShopDesk · a tab's label · at most ~14 characters
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Products", "Stock"
-  button "Settings" => "الإعدادات";
-  /// ShopDesk · a button's label · at most ~11 characters
+  tab "Settings" => "الإعدادات";
+  /// ShopDesk · a tab's label · at most ~11 characters
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Products", "Returns"
-  button "Stock" => "المخزون";
-  /// ShopDesk · a button's label · at most ~17 characters
+  tab "Stock" => "المخزون";
+  /// ShopDesk · a tab's label · at most ~17 characters
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Products", "Stock"
-  button "Subscribers" => "المشتركون";
-  /// ShopDesk · a button's label · at most ~15 characters
+  tab "Subscribers" => "المشتركون";
+  /// ShopDesk · a tab's label · at most ~15 characters
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Products", "Stock"
-  button "Wholesale" => "البيع بالجملة";
+  tab "Wholesale" => "البيع بالجملة";
 
   // ── ShopDeskPage (/staff/desk) ──
   /// ShopDeskPage · /staff/desk · text on the page
@@ -4938,9 +5017,9 @@ translations ar {
   /// beside: "Your downloads are ready", "See your order"
   text "Thank you — order {order.Reference} is paid. Here is what you bought to download." => "شكرًا لك، تم دفع الطلب {order.Reference}. إليك ما اشتريته للتنزيل.";
   /// ShopDownloadsMail · text on the page
-  /// placeholders: {DigitalConsentWords} = DigitalConsentWords(…) (string), {ToString} = order.DigitalConsentAt.Value.ToString(…) (DateTime)
+  /// placeholders: {DigitalConsentWords} = DigitalConsentWords(…) (string), {order.DigitalConsentAt} = order.DigitalConsentAt.Value.ToString(…) (DateTime)
   /// shown through EmailNote.text
-  text "You asked to have them at once: “{DigitalConsentWords}” ({ToString} UTC)." => "طلبت استلامها فورًا: “{DigitalConsentWords}” ({ToString} UTC).";
+  text "You asked to have them at once: “{DigitalConsentWords}” ({order.DigitalConsentAt} UTC)." => "طلبت استلامها فورًا: “{DigitalConsentWords}” ({order.DigitalConsentAt} UTC).";
   /// ShopDownloadsMail · text on the page
   /// shown through EmailHeading.text
   /// beside: "See your order"
@@ -5059,10 +5138,10 @@ translations ar {
   /// beside: "A code for you", "Go to the shop"
   text "Here is a code for {gives} your next order: {code}" => "إليك رمزًا يمنحك {gives} على طلبك القادم: {code}";
   /// ShopGiftCode · text on the page
-  /// placeholders: {ToString} = until.ToString(…) (DateOnly)
+  /// placeholders: {until} = until.ToString(…) (DateOnly)
   /// shown through EmailNote.text
   /// beside: "A code for you", "Go to the shop"
-  text "Type it at the checkout. It is yours alone, for one order, until {ToString}." => "اكتبه عند إتمام الشراء. وهو لك وحدك، لطلب واحد، حتى {ToString}.";
+  text "Type it at the checkout. It is yours alone, for one order, until {until}." => "اكتبه عند إتمام الشراء. وهو لك وحدك، لطلب واحد، حتى {until}.";
 
   // ── ShopHero ──
   /// ShopHero · a control's name for screen readers
@@ -5548,8 +5627,8 @@ translations ar {
   /// shown through problem
   text "Choose what you would like instead." => "اختر ما تريده بدلًا منه.";
   /// ShopOrderHistory · text on the page
-  /// placeholders: {ToString} = m.At.ToString(…) (DateTime)
-  text "From the shop · {ToString}" => "من المتجر · {ToString}";
+  /// placeholders: {m.At} = m.At.ToString(…) (DateTime)
+  text "From the shop · {m.At}" => "من المتجر · {m.At}";
   /// ShopOrderHistory · text on the page
   text "Hand the parcel in and show this code:" => "سلّم الطرد واعرض هذا الرمز:";
   /// ShopOrderHistory · text on the page
@@ -5627,10 +5706,10 @@ translations ar {
   /// beside: "See your order"
   text "Hello {FirstName}" => "مرحبًا {FirstName}";
   /// ShopOrderMessage · text on the page
-  /// placeholders: {order.Reference} = order.Reference (string), {ToString} = order.PlacedAt.ToString(…) (DateTime), {StatusText} = StatusText(…) (string)
+  /// placeholders: {order.Reference} = order.Reference (string), {order.PlacedAt} = order.PlacedAt.ToString(…) (DateTime), {StatusText} = StatusText(…) (string)
   /// shown through EmailNote.text
   /// beside: "See your order"
-  text "Order {order.Reference}, placed {ToString} · {StatusText}" => "الطلب {order.Reference}، بتاريخ {ToString} · {StatusText}";
+  text "Order {order.Reference}, placed {order.PlacedAt} · {StatusText}" => "الطلب {order.Reference}، بتاريخ {order.PlacedAt} · {StatusText}";
 
   // ── ShopPasswordResetMail ──
   /// ShopPasswordResetMail · the preview line an inbox shows beside an email's subject
@@ -5673,9 +5752,6 @@ translations ar {
   /// placeholders: {MoneyIn} = MoneyIn(…) (string)
   /// also in ShopOrderByLink
   text "Of which VAT {MoneyIn}" => "منها ضريبة القيمة المضافة {MoneyIn}";
-  /// ShopPayByLink · text on the page
-  /// also in ShopOrderByLink
-  text "Off" => "خصم";
   /// ShopPayByLink · text on the page
   /// placeholders: {view.Reference} = view.Reference (string)
   text "Order {view.Reference}" => "الطلب {view.Reference}";
@@ -6224,24 +6300,27 @@ translations ar {
   /// shown through StatusWords()
   text "Voided" => "ملغى";
 
-  // ── StorefrontBagPanel ──
-  /// StorefrontBagPanel · a button's label · at most ~11 characters
-  /// shown through IconButton.label
-  /// also in StorefrontMenuDrawer
-  /// also in DeskOrderActions
-  /// also in DeskCampaignEditor
-  button "Close" => "إغلاق";
-
   // ── TakeBackAtCounter ──
   /// TakeBackAtCounter · an error message
   /// shown through Exception
   error "Choose what is coming back, and how many." => "اختر ما سيُرجَع وكميته.";
+
+  // ── TakeOfferedDescription ──
+  /// TakeOfferedDescription · an error message
+  /// shown through ValidationException
+  error "That draft is gone — somebody else took it or discarded it." => "هذه المسودة لم تعد موجودة — أخذها شخص آخر أو تخلّص منها.";
 
   // ── TellErased ──
   /// TellErased · an error message
   /// placeholders: {Key} = a.Key(…) (string), {ex.Message} = ex.Message (string)
   /// shown through Exception
   error "The erasure did not run: the shop add-on '{Key}' could not erase what it keeps of the customer ({ex.Message}). Nothing was erased — try again once it can." => "لم يتم الحذف: تعذّر على إضافة المتجر '{Key}' حذف ما تحتفظ به من بيانات العميل ({ex.Message}). لم يُحذف شيء، فحاول مجددًا عندما يصبح ذلك ممكنًا.";
+
+  // ── TurnProductWriterOn ──
+  /// TurnProductWriterOn · an error message
+  /// shown through ValidationException
+  /// also in TurnProductWriterOff
+  error "This shop has no description writer." => "ليس لهذا المتجر كاتب أوصاف.";
 
   // ── UndoReturnLine ──
   /// UndoReturnLine · an error message
@@ -6395,6 +6474,10 @@ translations ar {
 
   // ── __SiteBlocks.Site ──
   /// __SiteBlocks.Site · text on the page
+  text "Banner bg" => "خلفية الشريط";
+  /// __SiteBlocks.Site · text on the page
+  text "Banner line" => "حد الشريط";
+  /// __SiteBlocks.Site · text on the page
   text "Bg" => "الخلفية";
   /// __SiteBlocks.Site · text on the page
   text "Border" => "الحد";
@@ -6405,7 +6488,17 @@ translations ar {
   /// __SiteBlocks.Site · text on the page
   text "Danger" => "خطر";
   /// __SiteBlocks.Site · text on the page
+  text "Danger ink" => "لون نص الخطر";
+  /// __SiteBlocks.Site · text on the page
+  text "Danger tint" => "خلفية الخطر الفاتحة";
+  /// __SiteBlocks.Site · text on the page
   text "Elevated" => "مرتفع";
+  /// __SiteBlocks.Site · text on the page
+  text "Info" => "معلومات";
+  /// __SiteBlocks.Site · text on the page
+  text "Info ink" => "لون نص المعلومات";
+  /// __SiteBlocks.Site · text on the page
+  text "Info tint" => "خلفية المعلومات الفاتحة";
   /// __SiteBlocks.Site · text on the page
   text "Muted" => "باهت";
   /// __SiteBlocks.Site · text on the page
@@ -6417,13 +6510,37 @@ translations ar {
   /// __SiteBlocks.Site · text on the page
   text "On primary" => "على الأساسي";
   /// __SiteBlocks.Site · text on the page
+  text "Option chosen bg" => "خلفية الخيار المحدد";
+  /// __SiteBlocks.Site · text on the page
+  text "Pending line" => "حد قيد الانتظار";
+  /// __SiteBlocks.Site · text on the page
   text "Primary" => "أساسي";
   /// __SiteBlocks.Site · text on the page
+  text "Primary ink" => "لون النص الأساسي";
+  /// __SiteBlocks.Site · text on the page
+  text "Primary tint" => "الخلفية الأساسية الفاتحة";
+  /// __SiteBlocks.Site · text on the page
+  text "Setting locked ink" => "لون نص الإعداد المقفل";
+  /// __SiteBlocks.Site · text on the page
+  text "Setting locked tint" => "خلفية الإعداد المقفل الفاتحة";
+  /// __SiteBlocks.Site · text on the page
+  text "Setting saved ink" => "لون نص الإعداد المحفوظ";
+  /// __SiteBlocks.Site · text on the page
+  text "Setting set ink" => "لون نص الإعداد المحدد";
+  /// __SiteBlocks.Site · text on the page
+  text "Setting set tint" => "خلفية الإعداد المحدد الفاتحة";
+  /// __SiteBlocks.Site · text on the page
   text "Success" => "نجاح";
+  /// __SiteBlocks.Site · text on the page
+  text "Success ink" => "لون نص النجاح";
+  /// __SiteBlocks.Site · text on the page
+  text "Success tint" => "خلفية النجاح الفاتحة";
   /// __SiteBlocks.Site · text on the page
   text "Sunken" => "غائر";
   /// __SiteBlocks.Site · text on the page
   text "Surface" => "السطح";
+  /// __SiteBlocks.Site · text on the page
+  text "Tab current ink" => "لون نص التبويب الحالي";
   /// __SiteBlocks.Site · text on the page
   text "Text muted" => "نص باهت";
   /// __SiteBlocks.Site · text on the page
@@ -6431,5 +6548,13 @@ translations ar {
   /// __SiteBlocks.Site · text on the page
   text "Waiting" => "انتظار";
   /// __SiteBlocks.Site · text on the page
+  text "Waiting ink" => "لون نص الانتظار";
+  /// __SiteBlocks.Site · text on the page
+  text "Waiting tint" => "خلفية الانتظار الفاتحة";
+  /// __SiteBlocks.Site · text on the page
   text "Warning" => "تحذير";
+  /// __SiteBlocks.Site · text on the page
+  text "Warning ink" => "لون نص التحذير";
+  /// __SiteBlocks.Site · text on the page
+  text "Warning tint" => "خلفية التحذير الفاتحة";
 }

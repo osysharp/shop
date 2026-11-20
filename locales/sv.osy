@@ -10,6 +10,22 @@ translations sv {
   /// also in SettleReturn
   error "That return has nothing in it." => "Den returen är tom.";
 
+  // ── AccountDoorCodeMail ──
+  /// AccountDoorCodeMail · text on the page
+  /// shown through EmailHeading.text
+  /// beside: "The code works for fifteen minutes. If you did not ask, ignore this mail — nothing changes."
+  /// also in AccountVerifyMail
+  /// also in ShopConfirmAddressMail
+  text "Confirm your address" => "Bekräfta din adress";
+  /// AccountDoorCodeMail · text on the page
+  /// placeholders: {code} = code (string)
+  /// shown through EmailText.text
+  /// beside: "Confirm your address", "The code works for fifteen minutes. If you did not ask, ignore this mail — nothing changes."
+  /// also in AccountVerifyMail
+  /// also in AccountStepUpMail
+  /// also in ShopConfirmAddressMail
+  text "Type this code where you were asked for it: {code}" => "Skriv den här koden där du blev ombedd: {code}";
+
   // ── AccountExistsMail ──
   /// AccountExistsMail · a button's label · at most ~13 characters
   /// shown through EmailButton.label
@@ -65,19 +81,7 @@ translations sv {
   /// shown through EmailHeading.text
   /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask, ignore this mail — nothing changes."
   /// also in ShopConfirmAddressMail
-  text "Confirm your address" => "Bekräfta din adress";
-  /// AccountVerifyMail · text on the page
-  /// shown through EmailHeading.text
-  /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask, ignore this mail — nothing changes."
-  /// also in ShopConfirmAddressMail
   text "Confirm your new address" => "Bekräfta din nya adress";
-  /// AccountVerifyMail · text on the page
-  /// placeholders: {code} = code (string)
-  /// shown through EmailText.text
-  /// beside: "The code works for fifteen minutes, the link for three days. If you did not ask, ignore this mail — nothing changes."
-  /// also in AccountStepUpMail
-  /// also in ShopConfirmAddressMail
-  text "Type this code where you were asked for it: {code}" => "Skriv den här koden där du blev ombedd: {code}";
 
   // ── AddLocation ──
   /// AddLocation · an error message
@@ -395,10 +399,6 @@ translations sv {
   /// CheckoutGiftCard · a button's label · at most ~28 characters
   /// shown through Button.label
   button "Pay with a gift card" => "Betala med presentkort";
-  /// CheckoutGiftCard · a button's label · at most ~12 characters
-  /// shown through Button.label
-  /// beside: "220px"
-  button "Use it" => "Använd det";
   /// CheckoutGiftCard · a label (a field, a list item, a menu entry) · at most ~20 characters
   /// shown through Field.label
   /// also in ShopGiftCardBalance
@@ -464,9 +464,9 @@ translations sv {
   // ── ConfirmStep ──
   /// ConfirmStep · a button's label · at most ~12 characters
   /// shown through Button.label
+  /// also in SettingNumber
   /// also in AccountSettings
   /// also in DeskStock
-  /// also in DeskLocations
   button "Cancel" => "Avbryt";
 
   // ── CounterCode ──
@@ -581,9 +581,9 @@ translations sv {
   /// shown through Alert.message
   message " No ID to ask for. The carrier makes its own check at the door." => " Ingen legitimation behöver visas. Transportören gör sin egen kontroll vid dörren.";
   /// DeskAgeLine · message
-  /// placeholders: {ToString} = order.AgeVerifiedAt.Value.ToString(…) (DateTime)
+  /// placeholders: {order.AgeVerifiedAt} = order.AgeVerifiedAt.Value.ToString(…) (DateTime)
   /// shown through Alert.message
-  message " on {ToString}." => " den {ToString}.";
+  message " on {order.AgeVerifiedAt}." => " den {order.AgeVerifiedAt}.";
   /// DeskAgeLine · message
   /// placeholders: {order.AgeChecked} = order.AgeChecked (int) — {order.AgeChecked} is a count: give one text per plural form
   /// shown through Alert.message
@@ -679,8 +679,8 @@ translations sv {
   /// DeskCampaigns · text on the page
   text "No newsletters yet." => "Inga nyhetsbrev ännu.";
   /// DeskCampaigns · text on the page
-  /// placeholders: {c.State} = c.State (string), {ToString} = c.CreatedAt.ToString(…) (DateTime)
-  text "{c.State} · started {ToString}" => "{c.State} · påbörjat {ToString}";
+  /// placeholders: {c.State} = c.State (string), {c.CreatedAt} = c.CreatedAt.ToString(…) (DateTime)
+  text "{c.State} · started {c.CreatedAt}" => "{c.State} · påbörjat {c.CreatedAt}";
 
   // ── DeskCustomers ──
   /// DeskCustomers · a button's label · at most ~26 characters
@@ -695,6 +695,9 @@ translations sv {
   /// DeskCustomers · a button's label · at most ~26 characters
   /// shown through Button.label
   button "Give store credit…" => "Ge tillgodohavande…";
+  /// DeskCustomers · a button's label · at most ~12 characters
+  /// shown through Button.label
+  button "Orders" => "Ordrar";
   /// DeskCustomers · a label (a field, a list item, a menu entry) · at most ~12 characters
   /// shown through DecimalField.label
   /// beside: "Reason — they are mailed it", "Give it"
@@ -904,9 +907,9 @@ translations sv {
   /// placeholders: {f.Views} = f.Views (int), {f.Conversion} = f.Conversion (decimal) — {f.Views} is a count: give one text per plural form
   text "{f.Views} views · {f.Conversion}% bought" => { one: "{f.Views} visning · {f.Conversion} % köpte", other: "{f.Views} visningar · {f.Conversion} % köpte" };
   /// DeskFigures · text on the page
-  /// placeholders: {s.Product.Name} = s.Product.Name (string), {s.Percent} = s.Percent (int), {ToString} = s.EndsAt.ToString(…) (DateTime) — {s.Percent} is a count: give one text per plural form
+  /// placeholders: {s.Product.Name} = s.Product.Name (string), {s.Percent} = s.Percent (int), {s.EndsAt} = s.EndsAt.ToString(…) (DateTime) — {s.Percent} is a count: give one text per plural form
   /// beside: "End sale"
-  text "{s.Product.Name} · {s.Percent}% off until {ToString}" => { one: "{s.Product.Name} · {s.Percent} % rabatt till {ToString}", other: "{s.Product.Name} · {s.Percent} % rabatt till {ToString}" };
+  text "{s.Product.Name} · {s.Percent}% off until {s.EndsAt}" => { one: "{s.Product.Name} · {s.Percent} % rabatt till {s.EndsAt}", other: "{s.Product.Name} · {s.Percent} % rabatt till {s.EndsAt}" };
   /// DeskFigures · text on the page
   /// placeholders: {totals.Returns} = totals.Returns (int), {Money} = Money(…) (string) — {totals.Returns} is a count: give one text per plural form
   /// shown through Metric.text
@@ -1174,9 +1177,6 @@ translations sv {
   /// shown through Checkbox.label
   /// beside: "repeat(auto-fit, minmax(180px, 1fr))", "Sends parcels from here", "Cancel"
   label "Customers collect orders here" => "Kunder hämtar beställningar här";
-  /// DeskLocations · a label (a field, a list item, a menu entry) · at most ~13 characters
-  /// shown through Badge.label
-  label "Default" => "Standard";
   /// DeskLocations · a label (a field, a list item, a menu entry) · at most ~12 characters
   /// shown through Checkbox.label
   label "In use" => "Används";
@@ -1341,6 +1341,10 @@ translations sv {
   /// DeskOrderActions · a button's label · at most ~15 characters
   /// shown through Button.label
   button "Delivered" => "Levererad";
+  /// DeskOrderActions · a button's label · at most ~13 characters
+  /// shown through Button.label
+  /// also in DeskProductEditor
+  button "Details" => "Uppgifter";
   /// DeskOrderActions · a button's label · at most ~11 characters
   /// shown through Button.label
   button "Label" => "Etikett";
@@ -1445,9 +1449,9 @@ translations sv {
   /// shown through Dialog.subtitle
   subtitle "The reservation ends and its goods go back on sale." => "Reservationen upphör och varorna går tillbaka till försäljning.";
   /// DeskOrderActions · a subtitle
-  /// placeholders: {StatusText} = StatusText(…) (string), {ToString} = order.PlacedAt.ToString(…) (DateTime), {value} = … (string)
+  /// placeholders: {StatusText} = StatusText(…) (string), {order.PlacedAt} = order.PlacedAt.ToString(…) (DateTime), {value} = … (string)
   /// shown through Dialog.subtitle
-  subtitle "{StatusText} · placed {ToString} · {value}" => "{StatusText} · lagd {ToString} · {value}";
+  subtitle "{StatusText} · placed {order.PlacedAt} · {value}" => "{StatusText} · lagd {order.PlacedAt} · {value}";
   /// DeskOrderActions · a subtitle
   /// placeholders: {value} = … (string)
   /// shown through Dialog.subtitle
@@ -1589,8 +1593,8 @@ translations sv {
   /// DeskOutbox · text on the page
   text "Sent and waiting" => "Skickat och väntande";
   /// DeskOutbox · text on the page
-  /// placeholders: {m.To} = m.To (string), {ToString} = m.CreatedAt.ToString(…) (DateTime), {m.Status.Label} = m.Status.Label (string)
-  text "to {m.To} · {ToString} · {m.Status.Label}" => "till {m.To} · {ToString} · {m.Status.Label}";
+  /// placeholders: {m.To} = m.To (string), {m.CreatedAt} = m.CreatedAt.ToString(…) (DateTime), {m.Status.Label} = m.Status.Label (string)
+  text "to {m.To} · {m.CreatedAt} · {m.Status.Label}" => "till {m.To} · {m.CreatedAt} · {m.Status.Label}";
 
   // ── DeskPayLink ──
   /// DeskPayLink · a control's name for screen readers
@@ -1647,27 +1651,40 @@ translations sv {
   /// shown through Dialog.subtitle
   subtitle "The carrier comes to the shop for the day's parcels." => "Fraktbolaget kommer till butiken och hämtar dagens paket.";
   /// DeskPickups · text on the page
-  /// placeholders: {ToString} = p.Date.ToString(…) (DateOnly), {p.Reference} = p.Reference (string)
+  /// placeholders: {p.Date} = p.Date.ToString(…) (DateOnly), {p.Reference} = p.Reference (string)
   /// shown through done
-  text "Booked for {ToString} — reference {p.Reference}." => "Bokad till {ToString}, referens {p.Reference}.";
+  text "Booked for {p.Date} — reference {p.Reference}." => "Bokad till {p.Date}, referens {p.Reference}.";
   /// DeskPickups · text on the page
   /// shown through problem
   text "Choose the carrier and the day." => "Välj fraktbolag och dag.";
   /// DeskPickups · text on the page
-  /// placeholders: {value} = … (string), {ToString} = p.Date.ToString(…) (DateOnly), {p.Parcels} = p.Parcels (int), {p.Reference} = p.Reference (string) — {p.Parcels} is a count: give one text per plural form
-  text "{value} comes {ToString} for {p.Parcels} parcel(s) · {p.Reference}" => { one: "{value} kommer {ToString} för {p.Parcels} paket · {p.Reference}", other: "{value} kommer {ToString} för {p.Parcels} paket · {p.Reference}" };
+  /// placeholders: {value} = … (string), {p.Date} = p.Date.ToString(…) (DateOnly), {p.Parcels} = p.Parcels (int), {p.Reference} = p.Reference (string) — {p.Parcels} is a count: give one text per plural form
+  text "{value} comes {p.Date} for {p.Parcels} parcel(s) · {p.Reference}" => { one: "{value} kommer {p.Date} för {p.Parcels} paket · {p.Reference}", other: "{value} kommer {p.Date} för {p.Parcels} paket · {p.Reference}" };
   /// DeskPickups · a title
   /// shown through Dialog.title
   title "Book a pickup" => "Boka upphämtning";
 
   // ── DeskProductEditor ──
+  /// DeskProductEditor · a control's name for screen readers
+  accessibleName "Offered description" => "Föreslagen beskrivning";
   /// DeskProductEditor · a button's label · at most ~14 characters
   /// shown through Button.label
   /// beside: "90px", "120px", "90px", "110px"
   button "Add size" => "Lägg till storlek";
+  /// DeskProductEditor · a button's label · at most ~27 characters
+  /// shown through Button.label
+  button "Draft a description" => "Utkast till beskrivning";
+  /// DeskProductEditor · a button's label · at most ~33 characters
+  /// shown through Button.label
+  button "Drafting a description…" => "Skriver ett utkast…";
   /// DeskProductEditor · a button's label · at most ~18 characters
   /// shown through Button.label
   button "Save product" => "Spara produkt";
+  /// DeskProductEditor · a button's label · at most ~12 characters
+  /// shown through Button.label
+  /// beside: "Discard"
+  /// also in CheckoutGiftCard
+  button "Use it" => "Använd det";
   /// DeskProductEditor · a hint under a field
   /// shown through Field.hint
   /// beside: "The product", "Name", "Brand", "Category"
@@ -1751,6 +1768,9 @@ translations sv {
   /// shown through Field.label
   /// beside: "Tariff number (HS)", "Made in"
   label "What customs calls it" => "Vad tullen kallar den";
+  /// DeskProductEditor · note
+  /// shown through note
+  note "Put in the description — save the product to keep it." => "Lägg in beskrivningen – spara produkten för att behålla den.";
   /// DeskProductEditor · placeholder text inside an empty field · at most ~8 characters
   /// shown through Field.placeholder
   /// beside: "Tariff number (HS)", "What customs calls it"
@@ -1780,6 +1800,13 @@ translations sv {
   /// beside: "repeat(auto-fill, minmax(120px, 1fr))", "image/*"
   text "Photographs" => "Fotografier";
   /// DeskProductEditor · text on the page
+  /// placeholders: {offer.PreparedBy} = offer.PreparedBy (string)
+  /// beside: "Read it before you use it — nothing changes until you save the product.", "Use it"
+  text "Prepared by {offer.PreparedBy}" => "Framtagen av {offer.PreparedBy}";
+  /// DeskProductEditor · text on the page
+  /// beside: "Use it"
+  text "Read it before you use it — nothing changes until you save the product." => "Läs igenom den innan du använder den – inget ändras förrän du sparar produkten.";
+  /// DeskProductEditor · text on the page
   /// shown through SectionLabel.text
   /// beside: "90px"
   text "Sizes and stock" => "Storlekar och lager";
@@ -1798,6 +1825,24 @@ translations sv {
   /// DeskProductEditor · a title
   /// shown through Dialog.title
   title "One size" => "En storlek";
+
+  // ── DeskProductWriterSettings ──
+  /// DeskProductWriterSettings · a button's label · at most ~17 characters
+  /// shown through Button.label
+  button "Turn it off" => "Stäng av";
+  /// DeskProductWriterSettings · a button's label · at most ~16 characters
+  /// shown through Button.label
+  button "Turn it on" => "Slå på";
+  /// DeskProductWriterSettings · text on the page
+  /// placeholders: {now.Drafts} = now.Drafts (int), {value} = ….ToString(…) (decimal) — {now.Drafts} is a count: give one text per plural form
+  text "Last 30 days: {now.Drafts} drafts, ${value} at the model's list price." => { one: "Senaste 30 dagarna: {now.Drafts} utkast, ${value} till modellens listpris.", other: "Senaste 30 dagarna: {now.Drafts} utkast, ${value} till modellens listpris." };
+  /// DeskProductWriterSettings · text on the page
+  /// beside: "Turn it on"
+  text "Off — staff do not see “Draft a description”." => "Av – personalen ser inte ”Utkast till beskrivning”.";
+  /// DeskProductWriterSettings · text on the page
+  /// placeholders: {now.AnsweredFor} = now.AnsweredFor (string)
+  /// beside: "Turn it off"
+  text "On — staff see “Draft a description” on every product. {now.AnsweredFor} answers for it." => "På – personalen ser ”Utkast till beskrivning” på varje produkt. {now.AnsweredFor} svarar för den.";
 
   // ── DeskProducts ──
   /// DeskProducts · a control's name for screen readers
@@ -2289,8 +2334,8 @@ translations sv {
   /// shown through SectionLabel.text
   text "On the way" => "På väg";
   /// DeskTransfers · text on the page
-  /// placeholders: {t.From.Name} = t.From.Name (string), {t.To.Name} = t.To.Name (string), {ToString} = t.SentAt.ToString(…) (DateTime), {value} = … (string)
-  text "{t.From.Name} to {t.To.Name}, sent {ToString}{value}" => "{t.From.Name} till {t.To.Name}, skickat {ToString}{value}";
+  /// placeholders: {t.From.Name} = t.From.Name (string), {t.To.Name} = t.To.Name (string), {t.SentAt} = t.SentAt.ToString(…) (DateTime), {value} = … (string)
+  text "{t.From.Name} to {t.To.Name}, sent {t.SentAt}{value}" => "{t.From.Name} till {t.To.Name}, skickat {t.SentAt}{value}";
 
   // ── DeskWholesale ──
   /// DeskWholesale · a control's name for screen readers
@@ -2405,8 +2450,8 @@ translations sv {
   /// shown through SectionLabel.text
   text "Wholesale accounts" => "Grossistkonton";
   /// DeskWholesale · text on the page
-  /// placeholders: {value} = … (string), {ToString} = o.InvoiceDueAt.Value.ToString(…) (DateTime)
-  text "{value} · due {ToString}" => "{value} · förfaller {ToString}";
+  /// placeholders: {value} = … (string), {o.InvoiceDueAt} = o.InvoiceDueAt.Value.ToString(…) (DateTime)
+  text "{value} · due {o.InvoiceDueAt}" => "{value} · förfaller {o.InvoiceDueAt}";
   /// DeskWholesale · a title
   /// shown through Dialog.title
   title "A new price list" => "En ny prislista";
@@ -2425,9 +2470,9 @@ translations sv {
 
   // ── DistanceText ──
   /// DistanceText · text on the page
-  /// placeholders: {ToString} = Convert.ToString(…) (int), {ToString2} = Convert.ToString(…) (int) — {ToString} is a count: give one text per plural form
+  /// placeholders: {Convert} = Convert.ToString(…) (int), {Convert2} = Convert.ToString(…) (int) — {Convert} is a count: give one text per plural form
   /// shown through DistanceText()
-  text "{ToString}.{ToString2} km" => "{ToString},{ToString2} km";
+  text "{Convert}.{Convert2} km" => "{Convert},{Convert2} km";
   /// DistanceText · text on the page
   /// placeholders: {m} = m (int) — {m} is a count: give one text per plural form
   /// shown through DistanceText()
@@ -2453,6 +2498,27 @@ translations sv {
   /// DownloadProblem · text on the page
   /// shown through DownloadProblem()
   text "This download has been closed: the order was refunded or called off." => "Den här nedladdningen har stängts: ordern återbetalades eller avbröts.";
+
+  // ── DraftDescription ──
+  /// DraftDescription · text on the page
+  /// placeholders: {ToLower} = ….ToLower(…) (string)
+  /// shown through DescriptionDraft.Problem
+  text "The {ToLower} is off. Switch it on in the desk's Settings." => "{ToLower} är avstängd. Slå på den under Inställningar i disken.";
+  /// DraftDescription · text on the page
+  /// placeholders: {ToLower} = ….ToLower(…) (string)
+  /// shown through DescriptionDraft.Problem
+  text "The {ToLower} wrote nothing this time. Try again, or write it yourself." => "{ToLower} skrev ingenting den här gången. Försök igen, eller skriv själv.";
+  /// DraftDescription · text on the page
+  /// shown through DescriptionDraft.Problem
+  text "This shop has no description writer." => "Den här butiken har ingen beskrivningsskrivare.";
+
+  // ── Drawer ──
+  /// Drawer · a button's label · at most ~11 characters
+  /// shown through Drawer.closeLabel
+  /// also in StorefrontBagPanel
+  /// also in StorefrontMenuDrawer
+  /// also in DeskOrderActions
+  button "Close" => "Stäng";
 
   // ── DurationField ──
   /// DurationField · a button's label · at most ~10 characters
@@ -2628,9 +2694,9 @@ translations sv {
   /// shown through ImportRow()
   message "Stock \"{Get}\" is not a whole number." => "Lagersaldot \"{Get}\" är inte ett heltal.";
   /// ImportRow · message
-  /// placeholders: {value} = … (int) — {value} is a count: give one text per plural form
+  /// placeholders: {stock} = … (int) — {stock} is a count: give one text per plural form
   /// shown through ImportRow()
-  message "Stock {value} is less than the other locations hold. Move it with a transfer, or count it at each location on the desk." => { one: "Lagret {value} är mindre än de andra platserna har. Flytta det, eller räkna det på varje plats i disken.", other: "Lagret {value} är mindre än de andra platserna har. Flytta det, eller räkna det på varje plats i disken." };
+  message "Stock {stock} is less than the other locations hold. Move it with a transfer, or count it at each location on the desk." => { one: "Lagret {stock} är mindre än de andra platserna har. Flytta det, eller räkna det på varje plats i disken.", other: "Lagret {stock} är mindre än de andra platserna har. Flytta det, eller räkna det på varje plats i disken." };
   /// ImportRow · message
   /// placeholders: {categoryName} = categoryName (string)
   /// shown through ImportRow()
@@ -3552,6 +3618,13 @@ translations sv {
   /// beside: "Reduced rate", "Lower rate", "No VAT"
   label "Standard rate" => "Normal moms";
 
+  // ── Osysharp.Ui.SettingFrom ──
+  /// Osysharp.Ui.SettingFrom · a label (a field, a list item, a menu entry) · at most ~13 characters
+  /// shown through Osysharp.Ui.SettingFrom.Default
+  /// beside: "Inherited", "Set here", "Locked"
+  /// also in DeskLocations
+  label "Default" => "Standard";
+
   // ── PackingSlipPdf ──
   /// PackingSlipPdf · a title
   /// placeholders: {order.Reference} = order.Reference (string), {shop.Name} = shop.Name (string)
@@ -4015,9 +4088,9 @@ translations sv {
   /// SaveActions · a button's label · at most ~10 characters
   /// shown through Button.label
   /// beside: "Edited", "Discard"
+  /// also in SettingNumber
   /// also in SaveBar
   /// also in AccountSettings
-  /// also in DeskStock
   button "Save" => "Spara";
 
   // ── SavePriceList ──
@@ -4224,6 +4297,21 @@ translations sv {
   /// shown through Exception
   error "{code} is the shop's own currency — set the price itself." => "{code} är butikens egen valuta. Ändra priset direkt.";
 
+  // ── SettingReasonBox ──
+  /// SettingReasonBox · a label (a field, a list item, a menu entry) · at most ~9 characters
+  /// shown through Field.label
+  /// also in SettingsReview
+  /// also in ShopCounter
+  /// also in DeskOrderActions
+  label "Why" => "Varför";
+
+  // ── SettingSwitch ──
+  /// SettingSwitch · text on the page
+  /// shown through SettingSwitch.offWord
+  /// also in ShopPayByLink
+  /// also in ShopOrderByLink
+  text "Off" => "Rabatt";
+
   // ── SettleCounterReturn ──
   /// SettleCounterReturn · an error message
   /// shown through Exception
@@ -4284,43 +4372,40 @@ translations sv {
   text "Somebody — hopefully you — tried to open a {shop.Name} account with this address. It already has one, so nothing new was made." => "Någon — förhoppningsvis du — försökte skapa ett konto hos {shop.Name} med den här adressen. Den har redan ett, så inget nytt skapades.";
 
   // ── ShopAccountPanel ──
-  /// ShopAccountPanel · a button's label · at most ~13 characters
-  /// shown through Tab.label
-  /// beside: "Orders", "Store credit", "Downloads", "Gift cards"
-  /// also in DeskOrderActions
-  /// also in DeskProductEditor
-  button "Details" => "Uppgifter";
-  /// ShopAccountPanel · a button's label · at most ~15 characters
-  /// shown through Tab.label
-  /// beside: "Orders", "Store credit", "Gift cards", "Details"
-  button "Downloads" => "Nedladdningar";
-  /// ShopAccountPanel · a button's label · at most ~16 characters
-  /// shown through Tab.label
-  /// beside: "Orders", "Store credit", "Downloads", "Details"
-  /// also in ShopDesk
-  button "Gift cards" => "Presentkort";
-  /// ShopAccountPanel · a button's label · at most ~12 characters
-  /// shown through Tab.label
-  /// beside: "Store credit", "Downloads", "Gift cards", "Details"
-  /// also in ShopDesk
-  /// also in DeskCustomers
-  button "Orders" => "Ordrar";
   /// ShopAccountPanel · a button's label · at most ~14 characters
   /// shown through Button.label
   /// beside: "Your account"
   button "Sign out" => "Logga ut";
-  /// ShopAccountPanel · a button's label · at most ~13 characters
+  /// ShopAccountPanel · a tab's label · at most ~13 characters
   /// shown through Tab.label
   /// beside: "Orders", "Store credit", "Downloads", "Gift cards"
-  button "Sign-in" => "Inloggning";
-  /// ShopAccountPanel · a button's label · at most ~18 characters
+  tab "Details" => "Uppgifter";
+  /// ShopAccountPanel · a tab's label · at most ~15 characters
+  /// shown through Tab.label
+  /// beside: "Orders", "Store credit", "Gift cards", "Details"
+  tab "Downloads" => "Nedladdningar";
+  /// ShopAccountPanel · a tab's label · at most ~16 characters
+  /// shown through Tab.label
+  /// beside: "Orders", "Store credit", "Downloads", "Details"
+  /// also in ShopDesk
+  tab "Gift cards" => "Presentkort";
+  /// ShopAccountPanel · a tab's label · at most ~12 characters
+  /// shown through Tab.label
+  /// beside: "Store credit", "Downloads", "Gift cards", "Details"
+  /// also in ShopDesk
+  tab "Orders" => "Ordrar";
+  /// ShopAccountPanel · a tab's label · at most ~13 characters
+  /// shown through Tab.label
+  /// beside: "Orders", "Store credit", "Downloads", "Gift cards"
+  tab "Sign-in" => "Inloggning";
+  /// ShopAccountPanel · a tab's label · at most ~18 characters
   /// shown through Tab.label
   /// beside: "Orders", "Downloads", "Gift cards", "Details"
-  button "Store credit" => "Tillgodohavande";
-  /// ShopAccountPanel · a button's label · at most ~15 characters
+  tab "Store credit" => "Tillgodohavande";
+  /// ShopAccountPanel · a tab's label · at most ~15 characters
   /// shown through Tab.label
   /// beside: "Orders", "Store credit", "Downloads", "Gift cards"
-  button "Your data" => "Dina data";
+  tab "Your data" => "Dina data";
 
   // ── ShopAddress ──
   /// ShopAddress · a control's name for screen readers
@@ -4613,15 +4698,6 @@ translations sv {
   /// also in DeskProductEditor
   /// also in CheckoutGiftCard
   button "Remove" => "Ta bort";
-  /// ShopCounter · a button's label · at most ~13 characters
-  /// shown through Tab.label
-  /// beside: "Sale", "Today"
-  /// also in ShopDesk
-  button "Returns" => "Returer";
-  /// ShopCounter · a button's label · at most ~10 characters
-  /// shown through Tab.label
-  /// beside: "Returns", "Today"
-  button "Sale" => "Köp";
   /// ShopCounter · a button's label · at most ~33 characters
   /// shown through Button.label
   /// beside: "Their code"
@@ -4646,10 +4722,6 @@ translations sv {
   /// shown through Button.label
   /// beside: "Customer", "Gift card or code", "Total", "Email the receipt to"
   button "Take {Money}" => "Ta betalt {Money}";
-  /// ShopCounter · a button's label · at most ~11 characters
-  /// shown through Tab.label
-  /// beside: "Sale", "Returns"
-  button "Today" => "I dag";
   /// ShopCounter · a button's label · at most ~15 characters
   /// shown through Button.label
   button "Try again" => "Försök igen";
@@ -4694,13 +4766,6 @@ translations sv {
   /// ShopCounter · a label (a field, a list item, a menu entry) · at most ~16 characters
   /// shown through Field.label
   label "Their code" => "Deras kod";
-  /// ShopCounter · a label (a field, a list item, a menu entry) · at most ~9 characters
-  /// shown through Field.label
-  /// beside: "How many", "Take it back"
-  /// also in DeskOrderActions
-  /// also in DeskStock
-  /// also in DeskGiftCards
-  label "Why" => "Varför";
   /// ShopCounter · message
   /// placeholders: {Money} = Money(…) (string), {value} = … (string)
   /// shown through Alert.message
@@ -4725,6 +4790,19 @@ translations sv {
   /// ShopCounter · placeholder text inside an empty field · at most ~31 characters
   /// shown through Field.placeholder
   placeholder "Six letters and digits" => "Sex bokstäver och siffror";
+  /// ShopCounter · a tab's label · at most ~13 characters
+  /// shown through Tab.label
+  /// beside: "Sale", "Today"
+  /// also in ShopDesk
+  tab "Returns" => "Returer";
+  /// ShopCounter · a tab's label · at most ~10 characters
+  /// shown through Tab.label
+  /// beside: "Returns", "Today"
+  tab "Sale" => "Köp";
+  /// ShopCounter · a tab's label · at most ~11 characters
+  /// shown through Tab.label
+  /// beside: "Sale", "Returns"
+  tab "Today" => "I dag";
   /// ShopCounter · text on the page
   /// placeholders: {ask.PriceList} = ask.PriceList (string)
   text "Buys on {ask.PriceList}" => "Handlar på {ask.PriceList}";
@@ -4833,42 +4911,42 @@ translations sv {
   title "Counter" => "Kassa";
 
   // ── ShopDesk ──
-  /// ShopDesk · a button's label · at most ~15 characters
+  /// ShopDesk · a tab's label · at most ~15 characters
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Products", "Stock"
-  button "Customers" => "Kunder";
-  /// ShopDesk · a button's label · at most ~13 characters
+  tab "Customers" => "Kunder";
+  /// ShopDesk · a tab's label · at most ~13 characters
   /// shown through Tab.label
   /// beside: "Orders", "Products", "Stock", "Returns"
-  button "Figures" => "Siffror";
-  /// ShopDesk · a button's label · at most ~10 characters
+  tab "Figures" => "Siffror";
+  /// ShopDesk · a tab's label · at most ~10 characters
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Products", "Stock"
-  button "Mail" => "Mejl";
-  /// ShopDesk · a button's label · at most ~17 characters
+  tab "Mail" => "Mejl";
+  /// ShopDesk · a tab's label · at most ~17 characters
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Products", "Stock"
-  button "Newsletters" => "Nyhetsbrev";
-  /// ShopDesk · a button's label · at most ~14 characters
+  tab "Newsletters" => "Nyhetsbrev";
+  /// ShopDesk · a tab's label · at most ~14 characters
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Stock", "Returns"
-  button "Products" => "Produkter";
-  /// ShopDesk · a button's label · at most ~14 characters
+  tab "Products" => "Produkter";
+  /// ShopDesk · a tab's label · at most ~14 characters
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Products", "Stock"
-  button "Settings" => "Inställningar";
-  /// ShopDesk · a button's label · at most ~11 characters
+  tab "Settings" => "Inställningar";
+  /// ShopDesk · a tab's label · at most ~11 characters
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Products", "Returns"
-  button "Stock" => "Lager";
-  /// ShopDesk · a button's label · at most ~17 characters
+  tab "Stock" => "Lager";
+  /// ShopDesk · a tab's label · at most ~17 characters
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Products", "Stock"
-  button "Subscribers" => "Prenumeranter";
-  /// ShopDesk · a button's label · at most ~15 characters
+  tab "Subscribers" => "Prenumeranter";
+  /// ShopDesk · a tab's label · at most ~15 characters
   /// shown through Tab.label
   /// beside: "Orders", "Figures", "Products", "Stock"
-  button "Wholesale" => "Grossist";
+  tab "Wholesale" => "Grossist";
 
   // ── ShopDeskPage (/staff/desk) ──
   /// ShopDeskPage · /staff/desk · text on the page
@@ -4926,9 +5004,9 @@ translations sv {
   /// beside: "Your downloads are ready", "See your order"
   text "Thank you — order {order.Reference} is paid. Here is what you bought to download." => "Tack — order {order.Reference} är betald. Här är det du köpte att ladda ner.";
   /// ShopDownloadsMail · text on the page
-  /// placeholders: {DigitalConsentWords} = DigitalConsentWords(…) (string), {ToString} = order.DigitalConsentAt.Value.ToString(…) (DateTime)
+  /// placeholders: {DigitalConsentWords} = DigitalConsentWords(…) (string), {order.DigitalConsentAt} = order.DigitalConsentAt.Value.ToString(…) (DateTime)
   /// shown through EmailNote.text
-  text "You asked to have them at once: “{DigitalConsentWords}” ({ToString} UTC)." => "Du bad om att få dem direkt: ”{DigitalConsentWords}” ({ToString} UTC).";
+  text "You asked to have them at once: “{DigitalConsentWords}” ({order.DigitalConsentAt} UTC)." => "Du bad om att få dem direkt: ”{DigitalConsentWords}” ({order.DigitalConsentAt} UTC).";
   /// ShopDownloadsMail · text on the page
   /// shown through EmailHeading.text
   /// beside: "See your order"
@@ -5047,10 +5125,10 @@ translations sv {
   /// beside: "A code for you", "Go to the shop"
   text "Here is a code for {gives} your next order: {code}" => "Här är en kod för {gives} din nästa order: {code}";
   /// ShopGiftCode · text on the page
-  /// placeholders: {ToString} = until.ToString(…) (DateOnly)
+  /// placeholders: {until} = until.ToString(…) (DateOnly)
   /// shown through EmailNote.text
   /// beside: "A code for you", "Go to the shop"
-  text "Type it at the checkout. It is yours alone, for one order, until {ToString}." => "Skriv in den i kassan. Den gäller bara för dig och en order, till och med {ToString}.";
+  text "Type it at the checkout. It is yours alone, for one order, until {until}." => "Skriv in den i kassan. Den gäller bara för dig och en order, till och med {until}.";
 
   // ── ShopHero ──
   /// ShopHero · a control's name for screen readers
@@ -5536,8 +5614,8 @@ translations sv {
   /// shown through problem
   text "Choose what you would like instead." => "Välj vad du vill ha i stället.";
   /// ShopOrderHistory · text on the page
-  /// placeholders: {ToString} = m.At.ToString(…) (DateTime)
-  text "From the shop · {ToString}" => "Från butiken · {ToString}";
+  /// placeholders: {m.At} = m.At.ToString(…) (DateTime)
+  text "From the shop · {m.At}" => "Från butiken · {m.At}";
   /// ShopOrderHistory · text on the page
   text "Hand the parcel in and show this code:" => "Lämna in paketet och visa den här koden:";
   /// ShopOrderHistory · text on the page
@@ -5615,10 +5693,10 @@ translations sv {
   /// beside: "See your order"
   text "Hello {FirstName}" => "Hej {FirstName}";
   /// ShopOrderMessage · text on the page
-  /// placeholders: {order.Reference} = order.Reference (string), {ToString} = order.PlacedAt.ToString(…) (DateTime), {StatusText} = StatusText(…) (string)
+  /// placeholders: {order.Reference} = order.Reference (string), {order.PlacedAt} = order.PlacedAt.ToString(…) (DateTime), {StatusText} = StatusText(…) (string)
   /// shown through EmailNote.text
   /// beside: "See your order"
-  text "Order {order.Reference}, placed {ToString} · {StatusText}" => "Order {order.Reference}, lagd {ToString} · {StatusText}";
+  text "Order {order.Reference}, placed {order.PlacedAt} · {StatusText}" => "Order {order.Reference}, lagd {order.PlacedAt} · {StatusText}";
 
   // ── ShopPasswordResetMail ──
   /// ShopPasswordResetMail · the preview line an inbox shows beside an email's subject
@@ -5661,9 +5739,6 @@ translations sv {
   /// placeholders: {MoneyIn} = MoneyIn(…) (string)
   /// also in ShopOrderByLink
   text "Of which VAT {MoneyIn}" => "Varav moms {MoneyIn}";
-  /// ShopPayByLink · text on the page
-  /// also in ShopOrderByLink
-  text "Off" => "Rabatt";
   /// ShopPayByLink · text on the page
   /// placeholders: {view.Reference} = view.Reference (string)
   text "Order {view.Reference}" => "Order {view.Reference}";
@@ -6212,24 +6287,27 @@ translations sv {
   /// shown through StatusWords()
   text "Voided" => "Makulerad";
 
-  // ── StorefrontBagPanel ──
-  /// StorefrontBagPanel · a button's label · at most ~11 characters
-  /// shown through IconButton.label
-  /// also in StorefrontMenuDrawer
-  /// also in DeskOrderActions
-  /// also in DeskCampaignEditor
-  button "Close" => "Stäng";
-
   // ── TakeBackAtCounter ──
   /// TakeBackAtCounter · an error message
   /// shown through Exception
   error "Choose what is coming back, and how many." => "Välj vad som lämnas tillbaka, och hur många.";
+
+  // ── TakeOfferedDescription ──
+  /// TakeOfferedDescription · an error message
+  /// shown through ValidationException
+  error "That draft is gone — somebody else took it or discarded it." => "Utkastet finns inte kvar – någon annan har tagit det eller kastat det.";
 
   // ── TellErased ──
   /// TellErased · an error message
   /// placeholders: {Key} = a.Key(…) (string), {ex.Message} = ex.Message (string)
   /// shown through Exception
   error "The erasure did not run: the shop add-on '{Key}' could not erase what it keeps of the customer ({ex.Message}). Nothing was erased — try again once it can." => "Raderingen kördes inte: butikstillägget '{Key}' kunde inte radera det som det sparar om kunden ({ex.Message}). Inget raderades. Försök igen när det går.";
+
+  // ── TurnProductWriterOn ──
+  /// TurnProductWriterOn · an error message
+  /// shown through ValidationException
+  /// also in TurnProductWriterOff
+  error "This shop has no description writer." => "Den här butiken har ingen beskrivningsskrivare.";
 
   // ── UndoReturnLine ──
   /// UndoReturnLine · an error message
@@ -6383,6 +6461,10 @@ translations sv {
 
   // ── __SiteBlocks.Site ──
   /// __SiteBlocks.Site · text on the page
+  text "Banner bg" => "Bannerbakgrund";
+  /// __SiteBlocks.Site · text on the page
+  text "Banner line" => "Bannerkant";
+  /// __SiteBlocks.Site · text on the page
   text "Bg" => "Bakgrund";
   /// __SiteBlocks.Site · text on the page
   text "Border" => "Kant";
@@ -6393,7 +6475,17 @@ translations sv {
   /// __SiteBlocks.Site · text on the page
   text "Danger" => "Fara";
   /// __SiteBlocks.Site · text on the page
+  text "Danger ink" => "Fara, textfärg";
+  /// __SiteBlocks.Site · text on the page
+  text "Danger tint" => "Fara, ljus bakgrund";
+  /// __SiteBlocks.Site · text on the page
   text "Elevated" => "Upphöjd";
+  /// __SiteBlocks.Site · text on the page
+  text "Info" => "Information";
+  /// __SiteBlocks.Site · text on the page
+  text "Info ink" => "Information, textfärg";
+  /// __SiteBlocks.Site · text on the page
+  text "Info tint" => "Information, ljus bakgrund";
   /// __SiteBlocks.Site · text on the page
   text "Muted" => "Dämpad";
   /// __SiteBlocks.Site · text on the page
@@ -6405,13 +6497,37 @@ translations sv {
   /// __SiteBlocks.Site · text on the page
   text "On primary" => "På primärfärgen";
   /// __SiteBlocks.Site · text on the page
+  text "Option chosen bg" => "Vald alternativbakgrund";
+  /// __SiteBlocks.Site · text on the page
+  text "Pending line" => "Kant för väntande";
+  /// __SiteBlocks.Site · text on the page
   text "Primary" => "Primär";
   /// __SiteBlocks.Site · text on the page
+  text "Primary ink" => "Primär, textfärg";
+  /// __SiteBlocks.Site · text on the page
+  text "Primary tint" => "Primär, ljus bakgrund";
+  /// __SiteBlocks.Site · text on the page
+  text "Setting locked ink" => "Låst inställning, textfärg";
+  /// __SiteBlocks.Site · text on the page
+  text "Setting locked tint" => "Låst inställning, ljus bakgrund";
+  /// __SiteBlocks.Site · text on the page
+  text "Setting saved ink" => "Sparad inställning, textfärg";
+  /// __SiteBlocks.Site · text on the page
+  text "Setting set ink" => "Vald inställning, textfärg";
+  /// __SiteBlocks.Site · text on the page
+  text "Setting set tint" => "Vald inställning, ljus bakgrund";
+  /// __SiteBlocks.Site · text on the page
   text "Success" => "Klart";
+  /// __SiteBlocks.Site · text on the page
+  text "Success ink" => "Klart, textfärg";
+  /// __SiteBlocks.Site · text on the page
+  text "Success tint" => "Klart, ljus bakgrund";
   /// __SiteBlocks.Site · text on the page
   text "Sunken" => "Nedsänkt";
   /// __SiteBlocks.Site · text on the page
   text "Surface" => "Yta";
+  /// __SiteBlocks.Site · text on the page
+  text "Tab current ink" => "Aktuell flik, textfärg";
   /// __SiteBlocks.Site · text on the page
   text "Text muted" => "Dämpad text";
   /// __SiteBlocks.Site · text on the page
@@ -6419,5 +6535,13 @@ translations sv {
   /// __SiteBlocks.Site · text on the page
   text "Waiting" => "Väntar";
   /// __SiteBlocks.Site · text on the page
+  text "Waiting ink" => "Väntar, textfärg";
+  /// __SiteBlocks.Site · text on the page
+  text "Waiting tint" => "Väntar, ljus bakgrund";
+  /// __SiteBlocks.Site · text on the page
   text "Warning" => "Varning";
+  /// __SiteBlocks.Site · text on the page
+  text "Warning ink" => "Varning, textfärg";
+  /// __SiteBlocks.Site · text on the page
+  text "Warning tint" => "Varning, ljus bakgrund";
 }

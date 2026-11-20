@@ -51,10 +51,18 @@ void one_more_order_paid_and_sent_stays_within_its_budget() {
     var statements = Cost.StatementsSince(mark);
     var roundTrips = Cost.RoundTripsSince(mark);
     Assert.True(AddOnHeard.Any(h => h.What == "sent " + next));
-    // Paying and sending costs about 95 statements: the setup kept, reads sent once a unit of work, and a workflow leaving
-    // or arming a state reading its slots and their clocks once. The bound leaves 5% over that.
-    Assert.AtMost(100, statements);
-    Assert.AtMost(80, roundTrips);
+    // Paying and sending costs 110 statements (106 measured 2026-11-14, 4 since): 98 of the order's own work — the setup
+    // kept, reads sent once a unit of work, a workflow leaving or arming a state reading its slots and their clocks once —
+    // and 8 commit positions. Every commit a live page hears reads its place among the app's commits (its transaction id
+    // and the commit-position sequence) in its last write round trip, so a page places it by the database and never by a
+    // clock (ENG-LIVE-CORRECTNESS-4): needed, one statement and no round trip a commit. And 4 are the settle guard of the
+    // two mail runs the span starts (the payment's mail and the dispatch's, each a `ShopMailDelivery` that starts itself
+    // on its new row): 2 a start, the run's lock and its status as committed, which keep an operator's cancel during a
+    // start from being undone (measured 2026-11-20: 106 → 110, as the desk order below). The bound is that cost. The round
+    // trips measure 83: the 79 of before and the guard's 4, each a round trip of its own (the lock is held before the
+    // status is read). A run has measured one more or less, so their bound is one over.
+    Assert.AtMost(110, statements);
+    Assert.AtMost(84, roundTrips);
   }
 }
 
@@ -73,13 +81,18 @@ void one_more_order_placed_from_the_desk_stays_within_its_request_budget() {
   Ui.Click("Place the order");
   Assert.Visible("is placed and reserved");
   Said("Placed from the desk", mark);
-  // An order placed from the desk costs 5 requests, 3 server calls and about 124 statements: the setup kept, reads sent
+  // An order placed from the desk costs 7 requests, 3 server calls and about 128 statements: the setup kept, reads sent
   // once a unit of work. Each workflow that starts itself on a new row is one more read when a commit checks for rows
-  // still waiting for their run — sent with the others, so it adds no round trip. One request of margin, the calls held
-  // exactly, one statement of margin.
-  Assert.AtMost(6, Cost.RequestsSince(mark));
+  // still waiting for their run — sent with the others, so it adds no round trip. The 7 are the 3 calls and the desk's
+  // two live lists (the orders, and how many are in each stage) each read twice (measured 2026-11-14): the
+  // order's first commit is a change the page shows at once, and the call's later commits — the order's workflow setting
+  // its status, the bag's delete clearing the order's PlacedFrom — come in one burst the page reads once more when it is
+  // quiet. 4 of the statements are the two workflow starts' settle guard (2 each: the run's lock and its status as committed),
+  // which keeps an operator's cancel during a start from being undone (CANCEL-RACE CR-6/CR-8, measured 2026-11-18: 124 → 128).
+  // Requests and calls held exactly, one statement of margin.
+  Assert.AtMost(7, Cost.RequestsSince(mark));
   Assert.AtMost(3, Cost.ServerCallsSince(mark));
-  Assert.AtMost(125, Cost.StatementsSince(mark));
+  Assert.AtMost(129, Cost.Span("Placed from the desk", mark));
 }
 
 /// The desk's New order, filled in to the last click.

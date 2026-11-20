@@ -14,12 +14,17 @@ public entity ProductDayViews {
   int Count;
   security {
     allow create, update when IsAnonymous || IsAuthenticated;   // a visitor's page open counts itself — nothing more
+    // …and only through the count: no visitor makes a row or sets a count themselves.
+    // SECURITY-INVARIANT(a-shops-view-count-is-the-kits-alone).
+    deny create, update except via ViewedProduct;
     allow read, delete when IsShopStaff;
+    // `ViewedProduct` finds today's row past a visitor's read, so one row a day holds the count.
+    allow read via ViewedProduct;
   }
 }
 
 /// Counts one opening of a product's page. The product page calls it; it answers nothing and never fails the page.
-[AllowAnonymous]
+[Server, AllowAnonymous]
 public void ViewedProduct(Product product) {
   var today = DateTime.UtcNow.Date;
   var raised = ProductDayViews.Where(v => v.Product == product && v.Day == today).Update(v => { v.Count = v.Count + 1; });

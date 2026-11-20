@@ -24,6 +24,7 @@ page and the desk list on a staff page.
 ```osy
 // app.osy
 use Osysharp.Shop@1 { egress "api.resend.com"; secret "ResendApiKey"; }
+use Osysharp.Resend@0 { egress "api.resend.com"; }
 use Osysharp.Shop.Reviews@0;
 ```
 

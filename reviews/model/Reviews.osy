@@ -38,7 +38,7 @@ public entity ReviewSettings {
   /// requires every review to be read first may set it for every shop it runs.
   [Setting("Publish new reviews at once", Group = "Moderation",
            Hint = "Off, a review waits in the desk until somebody publishes it. On, it goes up as it is written — hide one if it should not be there.")]
-  [OrgPolicy(OrgPolicyMode.Lock)] bool PublishAtOnce = false;
+  [OrgPolicy(OrgPolicyMode.Lock, Name = "Reviews published without moderation")] bool PublishAtOnce = false;
   security {
     allow read when IsAnonymous || IsAuthenticated;
     allow create, update when IsShopStaff;

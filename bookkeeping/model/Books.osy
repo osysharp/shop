@@ -48,38 +48,38 @@ using Osysharp.Storage;
 [SettingsGroup("Gift cards and store credit", "What the shop owes on cards and credit it has sold or given, and what it gives away.")]
 public entity BookkeepingAccounts {
   /// Sales, per VAT class of rate.
-  [Setting("Sales, standard rate", Group = "Sales", Order = 1), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string SalesStandard = "3001";
-  [Setting("Sales, reduced rate", Group = "Sales", Order = 2), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string SalesReduced = "3002";
-  [Setting("Sales, lower rate", Group = "Sales", Order = 3), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string SalesLower = "3003";
-  [Setting("Sales, no VAT", Group = "Sales", Order = 4), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string SalesExempt = "3004";
+  [Setting("Sales, standard rate", Group = "Sales", Order = 1), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: sales, standard rate")] string SalesStandard = "3001";
+  [Setting("Sales, reduced rate", Group = "Sales", Order = 2), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: sales, reduced rate")] string SalesReduced = "3002";
+  [Setting("Sales, lower rate", Group = "Sales", Order = 3), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: sales, lower rate")] string SalesLower = "3003";
+  [Setting("Sales, no VAT", Group = "Sales", Order = 4), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: sales, no VAT")] string SalesExempt = "3004";
   /// Goods sold without VAT to a business in another EU country (reverse charge).
-  [Setting("Sales to EU businesses", Group = "Sales", Order = 5), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string SalesEuReverseCharge = "3108";
+  [Setting("Sales to EU businesses", Group = "Sales", Order = 5), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: sales to EU businesses")] string SalesEuReverseCharge = "3108";
   /// Goods sold to a country outside the EU — an export, without VAT.
-  [Setting("Sales outside the EU", Group = "Sales", Order = 6), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string SalesExport = "3105";
+  [Setting("Sales outside the EU", Group = "Sales", Order = 6), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: sales outside the EU")] string SalesExport = "3105";
   /// Output VAT, per rate.
-  [Setting("VAT, standard rate", Group = "VAT", Order = 8), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string VatStandard = "2611";
-  [Setting("VAT, reduced rate", Group = "VAT", Order = 9), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string VatReduced = "2621";
-  [Setting("VAT, lower rate", Group = "VAT", Order = 10), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string VatLower = "2631";
+  [Setting("VAT, standard rate", Group = "VAT", Order = 8), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: VAT, standard rate")] string VatStandard = "2611";
+  [Setting("VAT, reduced rate", Group = "VAT", Order = 9), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: VAT, reduced rate")] string VatReduced = "2621";
+  [Setting("VAT, lower rate", Group = "VAT", Order = 10), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: VAT, lower rate")] string VatLower = "2631";
   /// Where the money is while a payment provider holds it (card, Klarna) — and the bank, for what was paid by hand.
-  [Setting("Payment provider clearing", Group = "Money", Order = 11), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string ProviderClearing = "1580";
-  [Setting("Bank", Group = "Money", Order = 12), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string Bank = "1930";
+  [Setting("Payment provider clearing", Group = "Money", Order = 11), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: payment provider clearing")] string ProviderClearing = "1580";
+  [Setting("Bank", Group = "Money", Order = 12), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: bank")] string Bank = "1930";
   /// What customers owe on invoices sent on terms (a wholesale account's) — until the money arrives.
-  [Setting("Invoices not yet paid", Group = "Money", Order = 13), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string Receivables = "1510";
+  [Setting("Invoices not yet paid", Group = "Money", Order = 13), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: invoices not yet paid")] string Receivables = "1510";
   /// What a payment provider keeps of a payout — a cost.
-  [Setting("Payment provider fees", Group = "Money", Order = 14), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string ProviderFees = "6570";
+  [Setting("Payment provider fees", Group = "Money", Order = 14), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: payment provider fees")] string ProviderFees = "6570";
   /// What the shop owes on gift cards not yet spent, and on its customers' store credit.
-  [Setting("Gift cards not yet spent", Group = "Gift cards and store credit", Order = 17), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string GiftCards = "2421";
-  [Setting("Customers' store credit", Group = "Gift cards and store credit", Order = 18), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string StoreCredit = "2420";
+  [Setting("Gift cards not yet spent", Group = "Gift cards and store credit", Order = 17), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: gift cards not yet spent")] string GiftCards = "2421";
+  [Setting("Customers' store credit", Group = "Gift cards and store credit", Order = 18), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: customers' store credit")] string StoreCredit = "2420";
   /// What the shop gives away — a gift card or store credit staff issue, with their reason — a cost.
-  [Setting("Given away (cards and credit)", Group = "Gift cards and store credit", Order = 19), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string GivenAway = "5990";
+  [Setting("Given away (cards and credit)", Group = "Gift cards and store credit", Order = 19), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: cards and credit given away")] string GivenAway = "5990";
   /// What is left on a gift card when it expires or is voided — the shop owes it no longer: income, without VAT.
-  [Setting("Gift cards expired or voided", Group = "Gift cards and store credit", Order = 20), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string Unredeemed = "3990";
+  [Setting("Gift cards expired or voided", Group = "Gift cards and store credit", Order = 20), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: expired or voided gift cards")] string Unredeemed = "3990";
   /// What a SINGLE-purpose gift card paid for — a sale whose VAT was declared when the card was sold, so it carries none
   /// now. A sub-account of the Swedish sales range, apart from 3001–3003 (which carry VAT); staff may point it elsewhere.
-  [Setting("Paid by single-purpose cards", Group = "Sales", Order = 7, Hint = "Their VAT was declared when the card was sold."), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string SalesSinglePurpose = "3009";
+  [Setting("Paid by single-purpose cards", Group = "Sales", Order = 7, Hint = "Their VAT was declared when the card was sold."), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: single-purpose card sales")] string SalesSinglePurpose = "3009";
   /// What a sale in another currency brought in more, or less, than it was booked at — settled at another rate.
-  [Setting("Currency gains", Group = "Money", Order = 15), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string CurrencyGain = "3960";
-  [Setting("Currency losses", Group = "Money", Order = 16), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default)] string CurrencyLoss = "7960";
+  [Setting("Currency gains", Group = "Money", Order = 15), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: currency gains")] string CurrencyGain = "3960";
+  [Setting("Currency losses", Group = "Money", Order = 16), Required, MaxLength(10), OrgPolicy(OrgPolicyMode.Default, Name = "Ledger account: currency losses")] string CurrencyLoss = "7960";
   security { allow read, create, update when IsShopStaff; }
 }
 

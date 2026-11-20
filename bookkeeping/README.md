@@ -54,6 +54,7 @@ An add-on to [Osysharp.Shop](https://osyrin.com/templates/kits/shop/): `use` it,
 ```osy
 // app.osy
 use Osysharp.Shop@1 { egress "api.resend.com"; secret "ResendApiKey"; }
+use Osysharp.Resend@0 { egress "api.resend.com"; }
 use Osysharp.Shop.Bookkeeping@0;
 ```
 

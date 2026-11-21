@@ -12,6 +12,7 @@ is valid, and the registered name and address where the member state publishes t
 ```osy
 app MyShop {
   use Osysharp.Shop@1 { … }
+  use Osysharp.Resend@0 { egress "api.resend.com"; }
   use Osysharp.Shop.VatNumbers@0 { egress "ec.europa.eu"; }
   …
 }

@@ -58,7 +58,7 @@ public class ShopSetup {
   public string CheckoutPath = "/checkout";
   /// Checks a business buyer's VAT number (`Osysharp.Shop.VatNumbers`). Null: the shop sells to everyone with VAT.
   public IVatNumberCheck? VatNumbers = null;
-  /// Proves a buyer's age with an identity provider (`Osysharp.Shop.AgeCheck.BankId`'s `BankIdAgeCheck`) — AgeChecks.osy.
+  /// Proves a buyer's age with an identity provider (`Osysharp.Shop.BankIdAgeCheck`'s `BankIdAgeCheck`) — AgeChecks.osy.
   /// Null, or not `Offered()` yet: the checkout asks for a date of birth, and the parcel is handed over against ID.
   public AgeVerifier? AgeVerifier = null;
   /// With a provider offered: whether goods with an age are sold ONLY to a verified buyer. False lets a buyer give a

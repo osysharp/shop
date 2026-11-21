@@ -1,0 +1,143 @@
+# Osysharp.Shop.BankIdAgeCheck — prove a buyer's age with Swedish BankID
+
+The shop's age check (`Osysharp.Shop`'s `AgeVerifier`) over [BankID](https://www.bankid.com). A buyer of wine — or of
+anything with `Product.MinimumAge` — identifies with BankID instead of typing a date of birth, and the shop learns
+that they are old enough. Nothing else it keeps.
+
+## Use case
+
+A Swedish shop that sells goods with an age: wine, beer, tobacco, knives, games with a rating. A typed date of birth
+proves nothing, so a parcel sold that way has to be handed over against ID. A BankID check proves the age at the
+checkout, and the order says so: the desk and the packing slip read "Age 20+ verified with BankID. No ID to ask for."
+
+![The checkout's age step in Grounds & Grapes, scanning BankID's code](docs/grounds-and-grapes-age-step.jpg)
+
+*The Grounds & Grapes demo store: on a computer the animated code the BankID app scans; on a phone the
+button that opens BankID there. The page and its words are the store's; the check is this kit's.*
+
+## Use
+
+```osy
+// app.osy
+app MyShop {
+  model "**/*.osy";
+  use Osysharp.Shop@1 { egress "api.resend.com"; secret "ResendApiKey"; }
+  use Osysharp.Resend@0 { egress "api.resend.com"; }
+  // Osysharp.Shop.BankIdAgeCheck is not written: it arrives by itself, because the app uses what it completes (`osy lock` says so)
+  use Osysharp.BankId@0 {
+    egress     "appapi2.bankid.com";
+    egress     "appapi2.test.bankid.com";
+    clientCert "BankIdCert";
+    serverCa   "BankIdCa";
+  }
+}
+
+app.Secrets = [ new Secret("BankIdCert"), new Secret("BankIdCertPassword"), new Secret("BankIdCa") ];
+
+app.Shop = new ShopSetup {
+  // …
+  AgeVerifier = new BankIdAgeCheck { CertificateSet = Security.IsSecretSet("BankIdCert") },
+  AgeMustBeVerified = false,       // true: a date of birth is not taken at all
+};
+```
+
+Then the checkout's age step calls `AgeVerifiedWith()` ("BankID", or "" while the certificate is not set, and the
+page asks for a date of birth), `StartAgeCheck(Visitor.Id, "/checkout")`, and `AgeCheckNow(Visitor.Id)` once a second
+while it waits: its `Qr` rows are the code to draw (dark on light, a four-module margin), its `AppLink` opens BankID on
+the same device. `PlaceOrder` does the rest.
+
+`BaseUrl` defaults to PRODUCTION. For BankID's test environment set
+`BaseUrl = "https://appapi2.test.bankid.com/rp/v6.0"` and use the test certificate and root BankID
+publishes for it — the [BankId kit](https://osyrin.com/templates/kits/bankid/) carries both in its `testcert/` folder
+(never commit a certificate to your app).
+
+## What is kept, and what is not
+
+BankID answers a completed order with the person's **personal identity number** and name. `BankIdAgeCheck.Collect`
+turns the number into a date of birth (`BirthDateOfPersonalNumber`: twelve or ten digits, the `-`/`+` century rule,
+the check digit, a coordination number's day + 60, an unknown day read as the youngest the person could be) and hands
+the shop only that date. The shop compares it with the bag's age and keeps **only that the buyer is at least that
+old, when, and by whom** — no number, no name, no date of birth. That is all selling the goods, booking the parcel or
+answering an inspector needs (data minimisation, GDPR art. 5(1)(c)).
+
+## How it cannot be faked
+
+The check is the customer's own row, so what it says is worth nothing on its own. The server asks BankID itself; a
+verified check carries a seal only the server can compute, over the bag it was made for, the provider, the age and the
+time; the order's workflow prices the order again and compares. A check copied to another visit's bag, a seal written
+by hand, or BankID's handle lifted from somebody else's check proves nothing.
+
+`endUserIp` is the buyer's address as the platform received the request (`Request.ClientAddress`), never the
+server's.
+
+## Source and tests
+
+`model/BankIdAgeCheck.osy`, over `Osysharp.BankId`. `tests/` is the producer's project, every call to BankID stubbed —
+the personal identity number rules among them.
+
+
+## Changes
+
+**0.4.0** — the package and its namespace are renamed from `Osysharp.Shop.AgeCheck.BankId` to
+`Osysharp.Shop.BankIdAgeCheck`. The old name made `Osysharp.Shop.AgeCheck` both the shop's entity and a namespace, which
+the compiler refuses (`NAME_IS_TYPE_AND_NAMESPACE`). Change `using Osysharp.Shop.AgeCheck.BankId;` to
+`using Osysharp.Shop.BankIdAgeCheck;`. Nothing else changes.
+
+## Examples
+
+Taken from this package's own tests, which compile and run on every release.
+
+```osy
+using Osysharp.Http;
+using Osysharp.Shop;
+using Osysharp.Shop.BankIdAgeCheck;
+
+[Test]
+void twelve_digits_as_bankid_gives_them_are_a_date() {
+  Assert.Equal(Day(1990, 1, 1), BirthDateOfPersonalNumber("199001012385", Day(2026, 9, 29)));
+  Assert.Equal(Day(2000, 1, 1), BirthDateOfPersonalNumber("200001019876", Day(2026, 9, 29)));
+  Assert.Equal(Day(1990, 1, 1), BirthDateOfPersonalNumber("19900101-2385", Day(2026, 9, 29)));
+}
+```
+
+From [`tests/bankid-age.test.osy`](tests/bankid-age.test.osy).
+
+```osy
+using Osysharp.Http;
+using Osysharp.Shop;
+using Osysharp.Shop.BankIdAgeCheck;
+
+[Test]
+void ten_digits_take_their_century_from_the_separator() {
+  // `-` under 100 years old; `+` 100 or older. The same six digits, a century apart.
+  Assert.Equal(Day(2012, 12, 12), BirthDateOfPersonalNumber("121212-1212", Day(2026, 9, 29)));
+  Assert.Equal(Day(1912, 12, 12), BirthDateOfPersonalNumber("121212+1212", Day(2026, 9, 29)));
+  // A date later this century than today is last century's.
+  Assert.Equal(Day(1990, 1, 1), BirthDateOfPersonalNumber("900101-2385", Day(2026, 9, 29)));
+}
+```
+
+From [`tests/bankid-age.test.osy`](tests/bankid-age.test.osy).
+
+```osy
+using Osysharp.Http;
+using Osysharp.Shop;
+using Osysharp.Shop.BankIdAgeCheck;
+
+[Test]
+void a_coordination_number_carries_the_day_plus_sixty() {
+  Assert.Equal(Day(1990, 1, 1), BirthDateOfPersonalNumber("199001611236", Day(2026, 9, 29)));
+}
+```
+
+From [`tests/bankid-age.test.osy`](tests/bankid-age.test.osy).
+
+## Learn more
+
+- [Osysharp.Shop.BankIdAgeCheck in the package catalogue](https://osysharp.com/packages/#osysharp-shop-bankidagecheck)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE).

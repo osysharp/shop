@@ -1,5 +1,5 @@
 package Osysharp.Shop {
-  version "1.13.0";
+  version "1.14.0";
   // Osysharp.UserAccounts 1.3's "cancel the change" link reaches the shop's address mail, and needs 0.15.1's slot.
   minPlatform "0.24.0";
   // A product capability: other kits meet it through a bridge that `completes` it, never by using it.
@@ -10,7 +10,7 @@ package Osysharp.Shop {
   use Osysharp.Ui;
   // Who signs in — customers and staff alike — is an Osysharp.UserAccounts `User`: the shop's `ShopAccount` derives from it.
   use Osysharp.Identity@0;
-  use Osysharp.UserAccounts@1;
+  use Osysharp.UserAccounts@2;
   use Osysharp.Storage;
   use Osysharp.PdfWriter@0;
   // How it is paid and how goods reach the customer are contracts; the providers are the app's choice (`app.Shop`).

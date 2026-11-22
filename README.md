@@ -93,7 +93,7 @@ app MyShop {
   }
   // Who signs in — customers and staff — is Osysharp.UserAccounts'; its mail goes through Osysharp.Mail.
   use Osysharp.Identity@0;
-  use Osysharp.UserAccounts@1;
+  use Osysharp.UserAccounts@2;
   use Osysharp.Mail@0;
   use Osysharp.Payments.Stripe@0 { egress "api.stripe.com"; }
   use Osysharp.Payments.Klarna@0 { egress "api.klarna.com"; egress "api.playground.klarna.com"; }

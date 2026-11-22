@@ -160,6 +160,7 @@ public string ShopNameOf(Principal account) {
 }
 
 /// Whether the signed-in account is staff — what a page asks before it offers the desk.
+[AllowAnonymous]
 public bool AmStaff() {
   var me = Session.CurrentUser;
   return me != null && RoleGrant.Any(g => g.Member == me && g.Role == ShopRole.Staff);

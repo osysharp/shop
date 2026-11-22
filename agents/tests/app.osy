@@ -10,7 +10,7 @@ app ShopAgentsKitTests {
   use Osysharp.Agents.Testing@2;
   use Osysharp.Llm@3;
   use Osysharp.Identity@0;
-  use Osysharp.UserAccounts@1;
+  use Osysharp.UserAccounts@2;
   use Osysharp.Payments@0;
   use Osysharp.Shipping@0;
   use Osysharp.Seo@0;

@@ -1,9 +1,10 @@
 // Osysharp.Shop.ExchangeRates — the European Central Bank's daily euro reference rates, as the shop's exchange-rate provider
 // (`ShopSetup.ExchangeRates`), so a store can show a visitor prices in their own currency. Public, free, no key.
 package Osysharp.Shop.ExchangeRates {
-  version     "0.3.0";
-  minPlatform "0.14.0";
+  version     "1.0.0";
+  minPlatform "0.25.0";
   summary     "the European Central Bank's daily reference rates, for showing a visitor prices in their own currency.";
+  layout "Osysharp.Shop.ExchangeRates" members;
   model "model/*.osy";
   use Osysharp.Shop@1;
   use Osysharp.Http;

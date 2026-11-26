@@ -17,7 +17,7 @@ information purposes only, which is how the shop uses them: nothing is charged a
 app MyShop {
   use Osysharp.Shop@1 { egress "api.resend.com"; secret "ResendApiKey"; }
   use Osysharp.Resend@0 { egress "api.resend.com"; }
-  use Osysharp.Shop.ExchangeRates@0 { egress "www.ecb.europa.eu"; }
+  use Osysharp.Shop.ExchangeRates@1 { egress "www.ecb.europa.eu"; }
   …
 }
 ```
@@ -34,7 +34,7 @@ maintenance page served as 200 — is refused rather than stored.
 
 ## Source and tests
 
-`model/Ecb.osy` (`EcbRates : IExchangeRates`, `EcbSheet(xml)`), and tests in `tests/ecb.test.osy` with every call to
+`model/EcbRates.osy` (`EcbRates : IExchangeRates`, `EcbRates.Sheet(xml)`), and tests in `tests/ecb.test.osy` with every call to
 the ECB stubbed.
 
 ## Examples
@@ -86,7 +86,7 @@ using Osysharp.Shop.ExchangeRates;
 void a_page_that_is_not_the_sheet_is_not_a_day_of_rates() {
   Http.Get.Stub((url, headers) => new HttpResponse { StatusCode = 200, Body = "<html><body>Down for maintenance</body></html>" });
   Assert.Throws<ExternalServiceException>(() => new EcbRates().Fetch());
-  Assert.Throws<ExternalServiceException>(() => EcbSheet("<Cube time='2026-09-28'></Cube>"));
+  Assert.Throws<ExternalServiceException>(() => EcbRates.Sheet("<Cube time='2026-09-28'></Cube>"));
 }
 ```
 

@@ -13,7 +13,7 @@ is valid, and the registered name and address where the member state publishes t
 app MyShop {
   use Osysharp.Shop@1 { … }
   use Osysharp.Resend@0 { egress "api.resend.com"; }
-  use Osysharp.Shop.VatNumbers@0 { egress "ec.europa.eu"; }
+  use Osysharp.Shop.VatNumbers@1 { egress "ec.europa.eu"; }
   …
 }
 ```
@@ -30,9 +30,9 @@ VAT where the rules say so. A VIES answer that is not a success is refused with 
 
 ## Source and package
 
-- Source: `model/Vies.osy` (`ViesCheck : IVatNumberCheck`).
+- Source: `model/ViesCheck.osy` (`ViesCheck : IVatNumberCheck`).
 - Tests: `tests/vies.test.osy`, with every call to VIES stubbed.
-- Package: `use Osysharp.Shop.VatNumbers@0;` — `osy lock` fetches the release archive from this repository's releases.
+- Package: `use Osysharp.Shop.VatNumbers@1;` — `osy lock` fetches the release archive from this repository's releases.
 
 ## Examples
 
